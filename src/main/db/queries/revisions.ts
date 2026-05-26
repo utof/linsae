@@ -95,9 +95,14 @@ export function appendRevision(
  * top, walking back through the `supersedes` chain. The
  * `idx_note_revisions_note(note_id, saved_at)` index makes this O(log n + k).
  *
+ * `rowid DESC` tiebreaker: two appends in the same millisecond (common on fast
+ * machines / in tests) would otherwise tie on `saved_at` and order is
+ * implementation-defined. SQLite assigns rowid in insertion order, so the
+ * later append always sorts first. Matches the `listNotes` pattern in notes.ts.
+ *
  * @param db - Open better-sqlite3 Database.
  * @param noteId - The owning note's id.
- * @returns Revisions ordered by `saved_at DESC` (newest first); empty if none.
+ * @returns Revisions ordered by `saved_at DESC, rowid DESC` (newest first); empty if none.
  * @see docs/specs/v0.1-rolling-feed-and-search.md §Data model (note_revisions)
  */
 export function listRevisions(db: DB, noteId: string): Revision[] {
@@ -106,7 +111,7 @@ export function listRevisions(db: DB, noteId: string): Revision[] {
       `SELECT id, note_id, body, type, saved_at, supersedes
        FROM note_revisions
        WHERE note_id = ?
-       ORDER BY saved_at DESC`,
+       ORDER BY saved_at DESC, rowid DESC`,
     )
     .all(noteId) as Revision[]
 }

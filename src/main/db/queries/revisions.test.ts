@@ -37,10 +37,8 @@ describe('revisions', () => {
     expect(r2.supersedes).toBe('r1')
   })
 
-  it('listRevisions returns newest first', async () => {
+  it('listRevisions returns newest first (rowid tiebreaker for same-ms appends)', () => {
     appendRevision(db, { revisionId: 'r1', noteId: 'n1', body: 'v1', type: 'claim' })
-    // 2ms gap so r2.saved_at > r1.saved_at deterministically (matches notes.test.ts pattern).
-    await new Promise((resolve) => setTimeout(resolve, 2))
     appendRevision(db, { revisionId: 'r2', noteId: 'n1', body: 'v2', type: 'claim' })
     expect(listRevisions(db, 'n1').map((r) => r.id)).toEqual(['r2', 'r1'])
   })
