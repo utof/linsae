@@ -8,7 +8,7 @@
  *  3. For each on-disk file:
  *     - Malformed frontmatter → skip + count (NEVER delete).
  *     - File present, DB row absent → INSERT + insert links from body.
- *     - File present, DB row present but body hash differs → UPDATE + replace links.
+ *     - File present, DB row present but body hash differs → UPDATE + replace links + append note_revisions.
  *  4. For each DB row whose id is NOT on disk → set `deleted_at = now()`.
  *  5. If `logsDir` was provided AND there were skips, append one TSV line per
  *     skipped file (`<iso_stamp>\t<id>\t<error>`) to `<logsDir>/reconcile.log`.
@@ -22,10 +22,12 @@ import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
+import { uuidv7 } from 'uuidv7'
 import type { ReconcileReport } from '../../shared/types'
 import type { NotesDir } from '../files/notes-dir'
 import { extractWikilinks } from '../text/wikilinks'
 import { replaceLinksForNote } from './queries/links'
+import { appendRevision } from './queries/revisions'
 
 type DB = Database.Database
 
@@ -120,6 +122,10 @@ export function reconcile(db: DB, nd: NotesDir, logsDir?: string): ReconcileRepo
       } else if (hashBody(prev.body) !== hashBody(r.body)) {
         updateStmt.run(r.body, fm.slug, fm.type, fm.updated_at, deletedAt, id)
         replaceLinksForNote(db, id, extractWikilinks(r.body))
+        // Spec §Reconciler algorithm line 180: external-edit UPDATE must
+        // append a note_revisions row so the v0.2 edit-history pane has
+        // continuous coverage for externally-edited notes.
+        appendRevision(db, { revisionId: uuidv7(), noteId: id, body: r.body, type: fm.type })
         report.updated++
       }
     }

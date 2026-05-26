@@ -24,6 +24,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { NotesDir } from '../files/notes-dir'
 import { openDb } from './client'
 import { runMigrations } from './migrate'
+import { listRevisions } from './queries/revisions'
 import { reconcile } from './reconcile'
 
 type DB = Database.Database
@@ -109,5 +110,9 @@ describe('reconcile', () => {
       .prepare('SELECT body FROM notes WHERE id = ?')
       .get('aaaaaaaa-aaaa-7aaa-aaaa-aaaaaaaaaaaa') as { body: string } | undefined
     expect(after?.body).toBe('v2')
+    // Spec §Reconciler algorithm: external-edit UPDATE appends a note_revisions row.
+    const revs = listRevisions(db, 'aaaaaaaa-aaaa-7aaa-aaaa-aaaaaaaaaaaa')
+    expect(revs).toHaveLength(1)
+    expect(revs[0]?.body).toBe('v2')
   })
 })
