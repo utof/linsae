@@ -1,0 +1,21 @@
+# Lefthook v2 pre-commit hooks (order matches CLAUDE.md ## Precommit).
+# See: https://lefthook.dev/configuration/
+pre-commit:
+  parallel: false
+  commands:
+    biome:
+      run: pnpm lint:check
+    typecheck:
+      run: pnpm typecheck
+    test:
+      run: pnpm test
+    # TODO: re-enable knip after Task ~10 when runtime deps start being imported.
+    # Until then, knip reports dozens of "unused dependencies" for all the
+    # not-yet-imported runtime deps from Task 2, which would block every commit.
+    # knip:
+    #   run: pnpm knip
+    #
+    # TODO: re-enable design-tokens in Task 4 when both
+    # scripts/check-design-tokens.sh and src/renderer/src/styles/colors_and_type.css exist.
+    # design-tokens:
+    #   run: bash scripts/check-design-tokens.sh

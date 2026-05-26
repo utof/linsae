@@ -13,7 +13,7 @@
     "rebuild:electron": "electron-rebuild -f -w better-sqlite3",
     "rebuild:node": "pnpm rebuild better-sqlite3",
     "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
-    "lint": "biome check --apply .",
+    "lint": "biome check --write .",
     "lint:check": "biome check .",
     "test": "vitest run",
     "test:watch": "vitest",
