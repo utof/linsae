@@ -89,10 +89,12 @@ export function getNote(db: DB, id: string): Note | null {
  * @see docs/specs/v0.1-rolling-feed-and-search.md §User-facing surfaces
  */
 export function listNotes(db: DB, opts: { limit: number; before?: number }): Note[] {
-  const where = opts.before
-    ? 'WHERE deleted_at IS NULL AND created_at < ?'
-    : 'WHERE deleted_at IS NULL'
-  const params = opts.before ? [opts.before, opts.limit] : [opts.limit]
+  // Use `!== undefined` so `before: 0` (valid epoch cursor) doesn't get treated as "no cursor".
+  const where =
+    opts.before !== undefined
+      ? 'WHERE deleted_at IS NULL AND created_at < ?'
+      : 'WHERE deleted_at IS NULL'
+  const params = opts.before !== undefined ? [opts.before, opts.limit] : [opts.limit]
   return db
     .prepare(
       `SELECT id, slug, body, type, created_at, updated_at, deleted_at

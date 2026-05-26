@@ -49,12 +49,25 @@ describe('notes queries', () => {
   })
 
   it('updateNote updates body, type, updated_at', async () => {
-    createNote(db, { id: 'n1', slug: 'a', body: 'old', type: 'claim' })
+    const before = createNote(db, { id: 'n1', slug: 'a', body: 'old', type: 'claim' })
     await new Promise((r) => setTimeout(r, 5))
     updateNote(db, { id: 'n1', body: 'new', type: 'question' })
     const after = getNote(db, 'n1')
     expect(after?.body).toBe('new')
     expect(after?.type).toBe('question')
+    expect(after?.updated_at).toBeGreaterThan(before.updated_at)
+  })
+
+  it('listNotes(before) returns only notes strictly older than the cursor', () => {
+    createNote(db, { id: 'n1', slug: 'a', body: 'a', type: 'claim' })
+    // 2ms gap so n2.created_at > n1.created_at deterministically.
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        const n2 = createNote(db, { id: 'n2', slug: 'b', body: 'b', type: 'claim' })
+        expect(listNotes(db, { limit: 10, before: n2.created_at }).map((n) => n.id)).toEqual(['n1'])
+        resolve()
+      }, 2)
+    })
   })
 
   it('softDeleteNote sets deleted_at; getNote still returns it (for backlink history)', () => {
