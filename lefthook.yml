@@ -15,7 +15,5 @@ pre-commit:
     # knip:
     #   run: pnpm knip
     #
-    # TODO: re-enable design-tokens in Task 4 when both
-    # scripts/check-design-tokens.sh and src/renderer/src/styles/colors_and_type.css exist.
-    # design-tokens:
-    #   run: bash scripts/check-design-tokens.sh
+    design-tokens:
+      run: ./scripts/check-design-tokens.sh
