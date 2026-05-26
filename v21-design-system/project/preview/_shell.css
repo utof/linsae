@@ -1,0 +1,17 @@
+/* Shared frame for preview cards. Tight, neutral, no titles —
+   the asset name renders outside the card. */
+html, body { margin: 0; padding: 0; background: var(--bg-0); }
+body {
+  font-family: var(--font-sans);
+  color: var(--fg-0);
+  display: flex; align-items: center; justify-content: flex-start;
+  padding: 20px 24px;
+  box-sizing: border-box;
+  min-height: 100vh;
+}
+* { box-sizing: border-box; }
+.row { display: flex; align-items: center; gap: 12px; }
+.col { display: flex; flex-direction: column; gap: 8px; }
+.card-root { width: 100%; }
+.muted { color: var(--fg-2); font-size: 12px; font-family: var(--font-mono); }
+.dim { color: var(--fg-3); }
