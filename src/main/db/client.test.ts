@@ -35,8 +35,8 @@ describe('openDb', () => {
     db = openDb(':memory:')
     expect(db.open).toBe(true)
     const mode = db.pragma('journal_mode', { simple: true })
-    // In-memory DBs report 'memory' — WAL is not applied for :memory: paths.
-    expect(['wal', 'memory']).toContain(mode)
+    // openDb skips the WAL pragma for ':memory:', so mode must report 'memory'.
+    expect(mode).toBe('memory')
   })
 
   it('opens an on-disk database with WAL journal mode and foreign keys enabled', () => {
@@ -79,6 +79,7 @@ describe('runMigrations', () => {
     expect(tableNames).toContain('note_revisions')
     expect(tableNames).toContain('topic_paths')
     expect(tableNames).toContain('note_actions')
+    expect(tableNames).toContain('notes_fts')
     expect(tableNames).toContain('_migrations')
   })
 
