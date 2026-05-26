@@ -43,7 +43,7 @@
 
 **Nit threshold:** see `## Inline-fix gate` below. **Never** mention Claude Code / sessions / AI authorship in issue / PR / commit text.
 
-## Inline-fix gate (ALL must hold; else `gh issue create -R utof/utofme -l nit`)
+## Inline-fix gate (ALL must hold; else `gh issue create -R utof/linsae -l nit`)
 **Scope: nits only.** Blockers (failing tests, spec / ADR violations, security regressions, hard-gate breaches) fix on the branch regardless of size — gate doesn't apply.
 
 **Hard gates (never relax — independent of model power):**
