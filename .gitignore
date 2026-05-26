@@ -1,0 +1,21 @@
+node_modules
+dist
+out
+.DS_Store
+.eslintcache
+*.log*
+
+# linsae additions
+out/
+dist/
+.electron-builder-cache/
+*.log
+.vite/
+
+# Allow markdown in docs/ and adrs/ even though *.md is globally gitignored (CLAUDE.md rule)
+*.md
+!/README.md
+!/LICENSE
+!/CLAUDE.md
+!/docs/**/*.md
+!/adrs/**/*.md
