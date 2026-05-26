@@ -70,9 +70,13 @@ export type SaveInput =
  * the file/DB clocks by 1+ ms).
  *
  * Update mode also un-soft-deletes: editing a note that was previously
- * soft-deleted drops `deleted_at` from the frontmatter and (implicitly) leaves
- * the DB column unset because the explicit UPDATE doesn't touch it — pair
- * this with the inline UPDATE which writes only `body, type, updated_at`.
+ * soft-deleted clears `deleted_at` from BOTH the frontmatter (via the
+ * rest-destructure below) AND the DB row (the inline UPDATE writes
+ * `deleted_at = NULL`). Both sides must clear in lockstep — leaving
+ * `deleted_at` set on the DB row while the file says "live" would let the
+ * reconciler revert the un-delete by trusting the disk file, and the
+ * `idx_notes_slug_live` partial unique index (where `deleted_at IS NULL`)
+ * would let a new note collide on the same slug.
  *
  * @param db    - Open better-sqlite3 Database.
  * @param nd    - {@link NotesDir} pointed at the user's notes directory.

@@ -88,4 +88,19 @@ describe('saveNote', () => {
       c: 0,
     })
   })
+
+  it('update on a soft-deleted note un-deletes both DB row and file frontmatter', () => {
+    const n = saveNote(db, nd, { mode: 'create', body: '# Foo\n\nv1', type: 'claim' })
+    saveNote(db, nd, { mode: 'softDelete', id: n.id })
+    const revived = saveNote(db, nd, {
+      mode: 'update',
+      id: n.id,
+      body: '# Foo\n\nv2',
+      type: 'claim',
+    })
+    expect(revived.deleted_at).toBe(null)
+    const file = nd.readNote(n.id)
+    expect(file.ok).toBe(true)
+    if (file.ok) expect(file.frontmatter.deleted_at).toBeUndefined()
+  })
 })
