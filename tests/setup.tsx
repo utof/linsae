@@ -1,16 +1,18 @@
 import '@testing-library/jest-dom/vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { type RenderOptions, render } from '@testing-library/react'
+import { type RenderOptions, type RenderResult, render } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { vi } from 'vitest'
+import { afterEach, vi } from 'vitest'
 import type { Note, SearchHit } from '../src/shared/types'
 
 /**
  * Wraps UI in a fresh QueryClientProvider for component tests.
  * @see src/shared/types.ts
  * Why: tests must not share query-cache state; new QueryClient per render.
+ * Why explicit return type: avoids TS2742 — the inferred RenderResult references
+ * @testing-library/dom queries via pnpm's deep store path, which TS warns is not portable.
  */
-export function renderWithProviders(ui: ReactNode, opts?: RenderOptions) {
+export function renderWithProviders(ui: ReactNode, opts?: RenderOptions): RenderResult {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>, opts)
 }
@@ -29,7 +31,11 @@ export interface MockApi {
   }
   search: { run: ReturnType<typeof vi.fn> }
   links: { backlinks: ReturnType<typeof vi.fn>; resolve: ReturnType<typeof vi.fn> }
-  system: { revealNotesFolder: ReturnType<typeof vi.fn>; openLogsFolder: ReturnType<typeof vi.fn> }
+  system: {
+    revealNotesFolder: ReturnType<typeof vi.fn>
+    openLogsFolder: ReturnType<typeof vi.fn>
+    getReconcileSkipped: ReturnType<typeof vi.fn>
+  }
 }
 
 /**
@@ -56,6 +62,7 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
     system: {
       revealNotesFolder: vi.fn(async () => ({ ok: true })),
       openLogsFolder: vi.fn(async () => ({ ok: true })),
+      getReconcileSkipped: vi.fn(async () => 0),
     },
     ...overrides,
   }
@@ -63,3 +70,10 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
   ;(globalThis as unknown as { window: { api: MockApi } }).window.api = api
   return api
 }
+
+// Reset vi.fn() call histories between tests so previous-test state doesn't leak.
+// Why: installMockApi overwrites window.api in beforeEach but does not clear per-fn
+// call histories across describe blocks; clearAllMocks ensures fresh assertions.
+afterEach(() => {
+  vi.clearAllMocks()
+})

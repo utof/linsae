@@ -18,8 +18,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@main': fileURLToPath(new URL('./src/main', import.meta.url)),
-      '@shared': fileURLToPath(new URL('./src/shared', import.meta.url)),
+      // Only @renderer is mirrored in electron.vite.config.ts + tsconfig.web.json paths today.
+      // Add @main / @shared here AND in those configs when a test or src file actually uses them.
       '@renderer': fileURLToPath(new URL('./src/renderer/src', import.meta.url)),
     },
   },
