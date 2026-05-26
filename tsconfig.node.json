@@ -3,6 +3,10 @@
   "include": ["src/main/**/*", "src/preload/**/*", "src/shared/**/*", "electron.vite.config.*"],
   "compilerOptions": {
     "composite": true,
-    "types": ["electron-vite/node"]
+    "types": ["electron-vite/node"],
+    "noImplicitAny": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noFallthroughCasesInSwitch": true
   }
 }

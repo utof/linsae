@@ -9,6 +9,10 @@
       "@renderer/*": [
         "src/renderer/src/*"
       ]
-    }
+    },
+    "noImplicitAny": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noFallthroughCasesInSwitch": true
   }
 }

@@ -11,6 +11,7 @@ dist/
 .electron-builder-cache/
 *.log
 .vite/
+*.tsbuildinfo
 
 # Allow markdown in docs/ and adrs/ even though *.md is globally gitignored (CLAUDE.md rule)
 *.md
