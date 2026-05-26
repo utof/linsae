@@ -23,11 +23,11 @@ describe('atomicWriteFile', () => {
     atomicWriteFile(p, 'old')
     atomicWriteFile(p, 'new')
     expect(readFileSync(p, 'utf8')).toBe('new')
-    expect(existsSync(p + '.tmp')).toBe(false)
+    expect(existsSync(`${p}.tmp`)).toBe(false)
   })
   it('does not leave a temp file when target dir does not exist (throws first)', () => {
     const p = join(dir, 'nonexistent-subdir', 'a.md')
     expect(() => atomicWriteFile(p, 'x')).toThrow()
-    expect(existsSync(p + '.tmp')).toBe(false)
+    expect(existsSync(`${p}.tmp`)).toBe(false)
   })
 })
