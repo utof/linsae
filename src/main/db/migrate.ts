@@ -35,9 +35,8 @@ const migrations = import.meta.glob('./migrations/*.sql', {
 /**
  * Applies any pending SQL migrations to `db` in filename order.
  *
- * - Creates `_migrations` table if absent (allows the table to be absent
- *   before the first run — the migration SQL itself also creates it, so
- *   the runner ensures it exists before querying it).
+ * - Tolerates `_migrations` not existing yet: checks sqlite_master first; the
+ *   migration SQL (0001_init.sql) is what actually creates the table.
  * - Skips already-applied migrations.
  * - Wraps each migration in a transaction for atomicity.
  *

@@ -108,20 +108,20 @@ export const SearchRunInputSchema = z.object({
 })
 
 /**
- * Input schema for the `notes:backlinks` IPC channel.
+ * Input schema for the `links:backlinks` IPC channel.
  *
  * Why: uses `noteId` (camelCase) rather than `id` to distinguish this from
  * NoteIdSchema — backlinks are looked up by the target note's ID, not the
  * link row's own ID.
- * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 6
+ * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 20 (handler registration)
  */
 export const BacklinksInputSchema = z.object({ noteId: z.string().min(1) })
 
 /**
- * Input schema for the `notes:resolve` IPC channel.
+ * Input schema for the `links:resolve` IPC channel.
  *
  * Why: wikilink resolution takes a slug (the human-readable identifier
  * written in [[double brackets]]) and returns the matching note, if any.
- * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 6
+ * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 20 (handler registration)
  */
 export const ResolveInputSchema = z.object({ slug: z.string().min(1) })
