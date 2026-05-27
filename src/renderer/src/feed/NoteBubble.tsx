@@ -279,9 +279,16 @@ export function NoteBubble({
   // positioned time still sits in the bottom-right corner. Only applied when
   // there is no expand button — when overCap is true the bottom flex row is
   // already used by the expand control + time, so the floating trick isn't
-  // needed there. ~12 nbsps ≈ 70-85px depending on font, covers the time
-  // (~50px) + edited icon (~14px) + small gap.
-  const TIME_RESERVATION = '\u00A0'.repeat(12)
+  // needed there.
+  //
+  // Reservation budget (must exceed time element width or text overlaps):
+  //   time text "12:42 AM" ≈ 50px @ 11px Inter
+  //   edited pen + gap     ≈ 14px
+  //   right padding offset = 12px
+  //   total worst-case     ≈ 76px
+  // Inter nbsp width @ 14px ≈ 4-5px → 18 nbsps ≈ 72-90px. Comfortable cover
+  // for claim bubbles (14px) and question bubbles (16px italic).
+  const TIME_RESERVATION = '\u00A0'.repeat(18)
   const displayBody = overCap ? rawDisplayBody : `${rawDisplayBody}${TIME_RESERVATION}`
 
   const handleTrashClick = (e: MouseEvent) => {
