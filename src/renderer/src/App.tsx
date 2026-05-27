@@ -81,6 +81,9 @@ export function App() {
     onSuccess: () => {
       invalidate()
       setEditingNoteId(null)
+      // Also clear any lingering dangling-link draft so the create-mode composer
+      // doesn't reappear with the previous prefill after an unrelated edit.
+      setDraftBody(null)
     },
   })
   const deleteMut = useMutation({
