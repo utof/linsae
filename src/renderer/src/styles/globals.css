@@ -1,0 +1,15 @@
+/* Electron renderer global resets — keep the app pinned to the OS window so
+ * the only scroll surfaces are the explicit internal ones (feed, backlinks,
+ * eventually the composer). v21's colors_and_type.css is a static-page
+ * prototype that assumes browser body-scroll defaults; without these resets
+ * the body's 8px UA margin pushes our `height: 100vh` shell 8px below the
+ * viewport and the window itself starts scrolling. */
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
