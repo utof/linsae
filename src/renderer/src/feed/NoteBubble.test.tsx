@@ -322,6 +322,64 @@ describe('NoteBubble', () => {
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
 
+  // ── Footer (time + edited indicator) ──────────────────────────────────────
+
+  it('renders a timestamp footer derived from created_at', () => {
+    // Pick a fixed ms value and assert the rendered string contains the
+    // formatted minute portion. Avoids locale brittleness on the hour
+    // (12h vs 24h, AM/PM) and the date portion (locale-dependent month
+    // abbreviation), both of which vary by the test runner's environment.
+    const d = new Date()
+    d.setHours(14, 23, 0, 0)
+    const ms = d.getTime()
+    render(
+      <NoteBubble
+        note={{ ...baseNote, created_at: ms, updated_at: ms }}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    // ":23" appears in both 12h ("2:23 PM") and 24h ("14:23") formats.
+    expect(screen.getByText(/:23/)).toBeInTheDocument()
+  })
+
+  it('does NOT show the edited indicator when updated_at == created_at', () => {
+    render(
+      <NoteBubble
+        note={{ ...baseNote, created_at: 1737000000000, updated_at: 1737000000000 }}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    // The hover toolbar's edit button (aria-label="edit") is conditionally
+    // mounted on hover, so without mouseEnter the only "edited" semantic node
+    // in the DOM should be absent. The edited pen icon uses aria-label="edited".
+    expect(screen.queryByLabelText('edited')).not.toBeInTheDocument()
+  })
+
+  it('shows the edited indicator when updated_at > created_at', () => {
+    render(
+      <NoteBubble
+        note={{ ...baseNote, created_at: 1737000000000, updated_at: 1737000060000 }}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    expect(screen.getByLabelText('edited')).toBeInTheDocument()
+  })
+
   it('click outside closes the context menu', () => {
     const { container } = render(
       <div>

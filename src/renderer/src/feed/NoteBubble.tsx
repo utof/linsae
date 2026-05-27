@@ -161,6 +161,32 @@ function BubbleContextMenu({
  */
 const BODY_TRUNCATE_AT = 4096
 
+/**
+ * Telegram-style timestamp for the bubble footer.
+ *
+ * Today → just the time ("14:23" or "2:23 PM" depending on OS locale).
+ * Older → month-day prefix ("May 27, 2:23 PM") so a bubble from days ago
+ * isn't ambiguous with one from this morning. linsae has no day-separator
+ * row (unlike Telegram) so the bubble itself must carry the date for
+ * non-today entries.
+ */
+function formatTimestamp(ms: number): string {
+  const d = new Date(ms)
+  const now = new Date()
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  return sameDay
+    ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    : d.toLocaleString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      })
+}
+
 interface Props {
   note: Note
   focused: boolean
@@ -361,6 +387,38 @@ export function NoteBubble({
           {expanded ? 'collapse' : `expand (${wordCount.toLocaleString()} words)`}
         </button>
       )}
+
+      {/* Telegram-style metadata footer: edited pen icon (if updated_at >
+         created_at) + timestamp, both flush-right at small font in fg-3.
+         A future git/history icon will sit here too (see issue tracker). */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'flex-end',
+          gap: 4,
+          marginTop: 4,
+          color: 'var(--fg-3)',
+          fontFamily: 'var(--font-sans)',
+          fontSize: 11,
+          fontStyle: 'normal',
+          lineHeight: 1,
+        }}
+      >
+        {note.updated_at > note.created_at && (
+          <span
+            role="img"
+            aria-label="edited"
+            title={`edited ${new Date(note.updated_at).toLocaleString()}`}
+            style={{ display: 'inline-flex' }}
+          >
+            <Pen size={10} />
+          </span>
+        )}
+        <span title={new Date(note.created_at).toLocaleString()}>
+          {formatTimestamp(note.created_at)}
+        </span>
+      </div>
 
       {hover && (
         // biome-ignore lint/a11y/noStaticElementInteractions: container only captures clicks to stop propagation to the parent bubble; semantic targets are the inner <button>s.
