@@ -132,12 +132,24 @@ export function Feed({
     const el = containerRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      if (atBottomRef.current && lastIndexRef.current >= 0) {
-        virtuoso.current?.scrollToIndex({
-          index: lastIndexRef.current,
-          align: 'end',
-        })
-      }
+      const scroller = scrollerRef.current
+      if (!scroller || !atBottomRef.current) return
+      // Bypass Virtuoso's `scrollToIndex({align:'end'})` — its per-item size
+      // cache is systematically UNDER-reported because:
+      //   - NoteBubble's root div has `margin: '6px 0'`
+      //   - the react-markdown subtree emits <p>/<ul>/<pre> with default
+      //     browser margins, untreated by globals.css
+      // and Virtuoso sizes items via ResizeObserver.contentRect, which
+      // EXCLUDES margins. The computed end position therefore lands short
+      // of the true bottom — the latest bubble stays clipped below the
+      // viewport regardless of how correct our at-bottom guard is.
+      //
+      // Direct `scrollTop = scrollHeight` uses the browser's native scroll
+      // extent (which DOES respect margins via actual painted bounds),
+      // hitting the true bottom every time.
+      // @see https://virtuoso.dev/react-virtuoso/troubleshooting
+      //      ("List does not scroll to the bottom / items jump around")
+      scroller.scrollTop = scroller.scrollHeight
     })
     ro.observe(el)
     return () => ro.disconnect()
