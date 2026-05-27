@@ -1,5 +1,6 @@
-import { render } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import { renderWithProviders as render } from '../../../../tests/setup'
 import { Markdown } from './markdown'
 
 describe('Markdown', () => {
@@ -43,5 +44,27 @@ describe('Markdown', () => {
     )
     const link = container.querySelector('a.wikilink') as HTMLAnchorElement
     expect(link.classList.contains('dangling')).toBe(false)
+  })
+
+  it('click on wikilink calls onWikilinkClick with normalized slug and preventDefault', () => {
+    const onWikilinkClick = vi.fn()
+    const { container } = render(
+      <Markdown body="see [[Some Target]]" onWikilinkClick={onWikilinkClick} />,
+    )
+    const link = container.querySelector('a.wikilink') as HTMLAnchorElement
+    const ev = new MouseEvent('click', { bubbles: true, cancelable: true })
+    link.dispatchEvent(ev)
+    expect(onWikilinkClick).toHaveBeenCalledExactlyOnceWith('some target')
+    expect(ev.defaultPrevented).toBe(true)
+  })
+
+  it('click on a regular markdown link does NOT call onWikilinkClick', () => {
+    const onWikilinkClick = vi.fn()
+    const { container } = render(
+      <Markdown body="[plain](https://example.com)" onWikilinkClick={onWikilinkClick} />,
+    )
+    const link = container.querySelector('a:not(.wikilink)') as HTMLAnchorElement
+    fireEvent.click(link)
+    expect(onWikilinkClick).not.toHaveBeenCalled()
   })
 })

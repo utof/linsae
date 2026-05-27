@@ -64,6 +64,15 @@ export const remarkWikilinks: Plugin<[], Root> = () => (tree) => {
       const targetPart = targetParts[0] ?? ''
       const display = (afterPipe ?? targetPart).trim()
       const slug = targetPart.trim().toLowerCase().replace(/\s+/g, ' ')
+      // Skip empty-slug wikilinks ([[]], [[ ]], [[#section]], [[|display]])
+      // for parity with src/main/text/wikilinks.ts:59. Otherwise the renderer
+      // would emit an invisible interactive anchor with empty data-slug that
+      // catches focus but can never resolve.
+      if (!slug) {
+        out.push({ type: 'text', value: node.value.slice(start, start + (m[0] ?? '').length) })
+        lastEnd = start + (m[0] ?? '').length
+        continue
+      }
       out.push({
         type: 'wikilink',
         data: {
