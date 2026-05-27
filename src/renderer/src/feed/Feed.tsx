@@ -63,10 +63,27 @@ export function Feed({
   const virtuoso = useRef<VirtuosoHandle | null>(null)
   const lastCount = useRef(notes.length)
   const containerRef = useRef<HTMLDivElement | null>(null)
-  // Track whether the user is currently pinned to the bottom of the feed.
-  // Updated by Virtuoso's atBottomStateChange. Used by the ResizeObserver
-  // below to decide whether to re-pin after the container shrinks (e.g.
-  // when the composer auto-grows). Default true matches initialTopMostItemIndex.
+  // Inner scrollable element that Virtuoso renders. Captured via the
+  // scrollerRef callback below so we can attach a `scroll` listener for our
+  // own at-bottom tracking (see atBottomRef comment).
+  const scrollerRef = useRef<HTMLElement | null>(null)
+  // Whether the user is currently pinned to the bottom of the feed.
+  //
+  // We do NOT use Virtuoso's `atBottomStateChange` callback because of a
+  // race that breaks the composer-grow case: when the composer auto-grows,
+  // the feed container shrinks via flex; Virtuoso's internal ResizeObserver
+  // fires FIRST (child useEffects run before parent's, so its observer was
+  // registered earlier), recomputes at-bottom (now `false` because the
+  // bottom items just got hidden), and synchronously fires
+  // `atBottomStateChange(false)`. By the time our own ResizeObserver fires
+  // next, the ref is already `false` and the re-pin guard fails — the
+  // latest bubble stays clipped.
+  //
+  // Instead we maintain the ref ourselves from `scroll` events on the
+  // inner scroller. The browser does NOT fire a `scroll` event on resize
+  // (scrollTop stays put even if the user is visually no longer at the
+  // bottom), so the ref accurately reflects the user's PRE-resize position
+  // — exactly the signal the re-pin guard needs.
   const atBottomRef = useRef(true)
   // Mirror notes.length into a ref so the ResizeObserver callback (created
   // once on mount) can read the latest index without re-binding.
@@ -83,6 +100,25 @@ export function Feed({
     lastCount.current = notes.length
     lastIndexRef.current = notes.length - 1
   }, [notes.length])
+
+  // User-driven at-bottom tracking. Fires only on actual scroll events
+  // (wheel / trackpad / drag / programmatic scrollToIndex), never on
+  // container resize — see atBottomRef comment for why this matters.
+  // Re-binds when scroller becomes available (Virtuoso may render the
+  // inner scroller on its second pass, so scrollerRef.current can be
+  // null on the first effect run).
+  useEffect(() => {
+    const scroller = scrollerRef.current
+    if (!scroller) return
+    const update = () => {
+      // 10px slack: rounding + virtualization gaps can leave a sub-pixel
+      // difference even when visually "at the bottom".
+      atBottomRef.current = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 10
+    }
+    update()
+    scroller.addEventListener('scroll', update, { passive: true })
+    return () => scroller.removeEventListener('scroll', update)
+  }, [])
 
   // Re-pin the latest note to the bottom whenever the feed's container
   // height changes (the composer just auto-grew via shift-Enter, the
@@ -117,8 +153,8 @@ export function Feed({
           initialTopMostItemIndex={{ index: Math.max(0, notes.length - 1), align: 'end' }}
           alignToBottom
           followOutput="auto"
-          atBottomStateChange={(b) => {
-            atBottomRef.current = b
+          scrollerRef={(el) => {
+            scrollerRef.current = el as HTMLElement | null
           }}
           itemContent={(_, note) => (
             <NoteBubble
