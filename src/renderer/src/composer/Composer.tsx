@@ -7,6 +7,20 @@ interface Props {
   initialBody: string
   initialMode: NoteType
   editMode?: boolean
+  /**
+   * User-facing error from the last submit attempt (e.g. duplicate-slug).
+   * When non-null, the textarea border turns red (`--status-wtf`) and the
+   * message renders below the textarea. The body text + cursor are NOT
+   * mutated — the user can edit and retry. Cleared by the next keystroke
+   * via `onClearError`.
+   */
+  error?: string | null
+  /**
+   * Called on the next keystroke when `error` is set. Lets the parent
+   * (App.tsx) drop its `submitError` state so the next render passes
+   * `error={null}` and the red UI disappears.
+   */
+  onClearError?: () => void
 }
 
 /**
@@ -46,6 +60,8 @@ export function Composer({
   initialBody,
   initialMode,
   editMode = false,
+  error = null,
+  onClearError,
 }: Props) {
   const [body, setBody] = useState(initialBody)
   const [mode, setMode] = useState<NoteType>(initialMode)
@@ -58,8 +74,11 @@ export function Composer({
   const submit = () => {
     if (!body.trim()) return
     onSubmit({ body, type: mode })
-    setBody('')
-    setMode('claim')
+    // Do NOT clear local body/mode here. The parent owns success-vs-failure
+    // (the mutation is async) and remounts this Composer via a key change on
+    // success, which gives us a fresh `initialBody=''`. On failure the parent
+    // leaves the key alone, so this Composer keeps the user's text + cursor
+    // intact — they edit and retry without retyping. See issue #23 (Option B).
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -90,7 +109,13 @@ export function Composer({
   }
 
   const isQuestion = mode === 'question'
-  const borderColor = isQuestion ? 'var(--type-question)' : 'var(--border-1)'
+  // Error border wins over question-mode border so the user sees the failure
+  // state even when the composer is in amber question mode.
+  const borderColor = error
+    ? 'var(--status-wtf)'
+    : isQuestion
+      ? 'var(--type-question)'
+      : 'var(--border-1)'
 
   return (
     <div
@@ -133,7 +158,10 @@ export function Composer({
           <textarea
             ref={ref}
             value={body}
-            onChange={(e) => setBody(e.target.value)}
+            onChange={(e) => {
+              if (error && onClearError) onClearError()
+              setBody(e.target.value)
+            }}
             onKeyDown={onKeyDown}
             aria-label={isQuestion ? 'ask a question' : 'write a note'}
             placeholder={isQuestion ? 'ask a question…' : 'write — or press ? for a question'}
@@ -151,6 +179,19 @@ export function Composer({
               background: 'transparent',
             }}
           />
+          {error && (
+            <div
+              role="alert"
+              style={{
+                marginTop: 6,
+                color: 'var(--status-wtf)',
+                fontSize: 12,
+                lineHeight: 1.4,
+              }}
+            >
+              {error}
+            </div>
+          )}
           <div
             style={{
               display: 'flex',

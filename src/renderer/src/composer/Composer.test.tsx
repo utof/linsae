@@ -119,6 +119,69 @@ describe('Composer', () => {
     expect(bubbled).toBe(false)
   })
 
+  it('renders the `error` prop inside a role=alert region for screen readers', () => {
+    render(
+      <Composer
+        onSubmit={() => {}}
+        initialBody="abc"
+        initialMode="claim"
+        onCancel={() => {}}
+        error={'a note named "abc" already exists'}
+      />,
+    )
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('a note named "abc" already exists')
+  })
+
+  it('calls onClearError on the next keystroke when an error is present', () => {
+    const onClearError = vi.fn()
+    render(
+      <Composer
+        onSubmit={() => {}}
+        initialBody="abc"
+        initialMode="claim"
+        onCancel={() => {}}
+        error="dup!"
+        onClearError={onClearError}
+      />,
+    )
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'abcd' } })
+    expect(onClearError).toHaveBeenCalledOnce()
+  })
+
+  it('does NOT call onClearError on keystroke when error is null', () => {
+    const onClearError = vi.fn()
+    render(
+      <Composer
+        onSubmit={() => {}}
+        initialBody=""
+        initialMode="claim"
+        onCancel={() => {}}
+        error={null}
+        onClearError={onClearError}
+      />,
+    )
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'a' } })
+    expect(onClearError).not.toHaveBeenCalled()
+  })
+
+  it('does NOT clear body text on submit — parent owns success-clear via remount', () => {
+    // The mutation is async in App.tsx; the composer can't know synchronously
+    // whether the submit succeeded. Clearing pre-emptively would wipe the
+    // user's text on a failure (e.g. duplicate-slug rejection). Parent
+    // remounts this Composer via key-bump on success to get a fresh
+    // `initialBody=''`; on failure, the key stays, this state stays. See #23.
+    const onSubmit = vi.fn()
+    render(<Composer onSubmit={onSubmit} initialBody="" initialMode="claim" onCancel={() => {}} />)
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'abc' } })
+    fireEvent.keyDown(ta, { key: 'Enter' })
+    expect(onSubmit).toHaveBeenCalledWith({ body: 'abc', type: 'claim' })
+    expect(ta.value).toBe('abc')
+  })
+
   it('Esc in plain claim mode (no edit, no question) does NOT stopPropagation — lets global handler fire', () => {
     let bubbled = false
     render(
