@@ -18,7 +18,7 @@
  * @see docs/specs/v0.1-rolling-feed-and-search.md §Soft delete and backlinks
  */
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
@@ -51,6 +51,29 @@ describe('saveNote', () => {
     const raw = readFileSync(join(dir, `${n.id}.md`), 'utf8')
     expect(raw).toContain('slug: foo')
     expect(listRevisions(db, n.id).length).toBe(1)
+  })
+
+  it('creates: rejects duplicate slug BEFORE writing file or DB row (no orphans)', () => {
+    saveNote(db, nd, { mode: 'create', body: 'abc', type: 'claim' })
+    const before = readdirSync(dir).length
+    expect(() => saveNote(db, nd, { mode: 'create', body: 'abc', type: 'claim' })).toThrow(
+      /a note named "abc" already exists/,
+    )
+    // No orphan .md file was written for the rejected attempt.
+    expect(readdirSync(dir).length).toBe(before)
+    // Exactly one row in the DB — the rejected attempt did not INSERT.
+    expect(db.prepare('SELECT COUNT(*) AS c FROM notes').get()).toEqual({ c: 1 })
+  })
+
+  it('creates: a soft-deleted slug does NOT block a new note with the same slug', () => {
+    const first = saveNote(db, nd, { mode: 'create', body: 'abc', type: 'claim' })
+    saveNote(db, nd, { mode: 'softDelete', id: first.id })
+    // After soft-delete, the partial unique index (WHERE deleted_at IS NULL) no
+    // longer covers the row, so a fresh note with the same slug must be allowed.
+    const second = saveNote(db, nd, { mode: 'create', body: 'abc', type: 'claim' })
+    expect(second.slug).toBe('abc')
+    expect(second.id).not.toBe(first.id)
+    expect(existsSync(join(dir, `${second.id}.md`))).toBe(true)
   })
 
   it('creates: parses [[wikilink]] and inserts a links row', () => {
