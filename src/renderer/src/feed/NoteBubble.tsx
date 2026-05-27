@@ -3,6 +3,150 @@ import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { Markdown } from '../lib/markdown'
 
+interface ContextMenuPos {
+  x: number
+  y: number
+}
+
+/**
+ * Floating context menu shown on right-click of a NoteBubble.
+ *
+ * Why custom React (not native Electron Menu.popup via IPC): testable in jsdom
+ * without a new IPC channel, matches the v21 inline-style aesthetic, and avoids
+ * the async round-trip that would prevent synchronous callback assertions in RTL.
+ *
+ * Why single-click delete (no arm pattern): the labeled menu item is itself the
+ * confirmation surface — the user explicitly chose "Delete" from a named list,
+ * unlike the hover toolbar where the trash icon is 14px next to copy-link.
+ *
+ * @see docs/specs/v0.1-rolling-feed-and-search.md §Feed bubble
+ */
+function BubbleContextMenu({
+  pos,
+  onEdit,
+  onCopyLink,
+  onDelete,
+  onClose,
+}: {
+  pos: ContextMenuPos
+  onEdit: () => void
+  onCopyLink: () => void
+  onDelete: () => void
+  onClose: () => void
+}) {
+  const menuRef = useRef<HTMLDivElement | null>(null)
+
+  // Close on Escape key and mousedown-outside via document listeners.
+  // Why document-level (not window): document captures events before window in
+  // the bubbling phase, matching the expected "click outside" contract in jsdom.
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    const handleMouseDown = (e: globalThis.MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        onClose()
+      }
+    }
+    document.addEventListener('keydown', handleKey)
+    document.addEventListener('mousedown', handleMouseDown)
+    return () => {
+      document.removeEventListener('keydown', handleKey)
+      document.removeEventListener('mousedown', handleMouseDown)
+    }
+  }, [onClose])
+
+  const itemStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    width: '100%',
+    padding: '6px 12px',
+    fontSize: 13,
+    fontFamily: 'var(--font-sans)',
+    color: 'var(--fg-0)',
+    border: 0,
+    background: 'transparent',
+    cursor: 'pointer',
+    textAlign: 'left',
+    borderRadius: 2,
+  }
+
+  const makeHandler = (cb: () => void) => (e: MouseEvent) => {
+    e.stopPropagation()
+    cb()
+    onClose()
+  }
+
+  return (
+    <div
+      ref={menuRef}
+      role="menu"
+      style={{
+        position: 'fixed',
+        top: pos.y,
+        left: pos.x,
+        zIndex: 1000,
+        background: '#fff',
+        border: '1px solid var(--border-1)',
+        borderRadius: 4,
+        padding: 4,
+        boxShadow: 'var(--shadow-1)',
+        minWidth: 140,
+      }}
+    >
+      <button
+        type="button"
+        role="menuitem"
+        aria-label="edit"
+        style={itemStyle}
+        onClick={makeHandler(onEdit)}
+        onMouseEnter={(e) => {
+          ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-3)'
+        }}
+        onMouseLeave={(e) => {
+          ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+        }}
+      >
+        <Pen size={14} />
+        Edit
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        aria-label="copy link"
+        style={itemStyle}
+        onClick={makeHandler(onCopyLink)}
+        onMouseEnter={(e) => {
+          ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-3)'
+        }}
+        onMouseLeave={(e) => {
+          ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+        }}
+      >
+        <Link2 size={14} />
+        Copy link
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        aria-label="delete"
+        style={{ ...itemStyle, color: 'var(--status-wtf)' }}
+        onClick={makeHandler(onDelete)}
+        onMouseEnter={(e) => {
+          ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-3)'
+        }}
+        onMouseLeave={(e) => {
+          ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+        }}
+      >
+        <Trash2 size={14} />
+        Delete
+      </button>
+    </div>
+  )
+}
+
 /**
  * Hard cap on the rendered body length before the fade-out + expand
  * affordance kicks in. 4096 is a "data-structure nice" power-of-two
@@ -63,9 +207,18 @@ export function NoteBubble({
   const [hover, setHover] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
   const [expanded, setExpanded] = useState(false)
+  const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null)
   // window.setTimeout returns number in renderer (DOM lib); Node's setTimeout
   // returns NodeJS.Timeout. Tests run in jsdom — the number variant is correct.
   const armTimer = useRef<number | null>(null)
+
+  const handleContextMenu = (e: MouseEvent) => {
+    e.preventDefault()
+    // Design decision: right-click also selects the bubble so subsequent
+    // actions apply to the right item (matches standard desktop app behaviour).
+    onFocus()
+    setContextMenu({ x: e.clientX, y: e.clientY })
+  }
 
   const isQuestion = note.type === 'question'
   const bg = focused ? 'var(--bg-3)' : isQuestion ? '#FFFBF0' : '#FFFFFF'
@@ -112,6 +265,7 @@ export function NoteBubble({
     <div
       data-bubble
       onClick={onFocus}
+      onContextMenu={handleContextMenu}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
@@ -253,6 +407,16 @@ export function NoteBubble({
             <Trash2 size={14} />
           </button>
         </div>
+      )}
+
+      {contextMenu && (
+        <BubbleContextMenu
+          pos={contextMenu}
+          onEdit={onEdit}
+          onCopyLink={onCopyLink}
+          onDelete={onDelete}
+          onClose={() => setContextMenu(null)}
+        />
       )}
     </div>
   )

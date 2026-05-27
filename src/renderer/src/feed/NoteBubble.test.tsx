@@ -184,4 +184,164 @@ describe('NoteBubble', () => {
     fireEvent.click(trash)
     expect(onDelete).toHaveBeenCalledOnce()
   })
+
+  // ── Context menu tests ──────────────────────────────────────────────────────
+
+  it('context menu does NOT appear without a contextmenu event', () => {
+    render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('right-click on the bubble opens the context menu', () => {
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+  })
+
+  it('right-click also calls onFocus (design decision: select on right-click)', () => {
+    const onFocus = vi.fn()
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        onFocus={onFocus}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    expect(onFocus).toHaveBeenCalledOnce()
+  })
+
+  it('context menu Edit item calls onEdit and closes menu', () => {
+    const onEdit = vi.fn()
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={onEdit}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    fireEvent.click(screen.getByRole('menuitem', { name: /edit/i }))
+    expect(onEdit).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('context menu Copy link item calls onCopyLink and closes menu', () => {
+    const onCopyLink = vi.fn()
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={onCopyLink}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    fireEvent.click(screen.getByRole('menuitem', { name: /copy link/i }))
+    expect(onCopyLink).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('context menu Delete item calls onDelete directly (no arm pattern) and closes menu', () => {
+    const onDelete = vi.fn()
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={onDelete}
+        onCopyLink={() => {}}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    fireEvent.click(screen.getByRole('menuitem', { name: /delete/i }))
+    expect(onDelete).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('Escape key closes the context menu', () => {
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('click outside closes the context menu', () => {
+    const { container } = render(
+      <div>
+        <NoteBubble
+          note={baseNote}
+          focused={false}
+          onFocus={() => {}}
+          onWikilinkClick={() => {}}
+          onEdit={() => {}}
+          onDelete={() => {}}
+          onCopyLink={() => {}}
+        />
+        <div data-testid="outside">outside</div>
+      </div>,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    fireEvent.mouseDown(screen.getByTestId('outside'))
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
 })
