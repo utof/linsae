@@ -89,7 +89,8 @@ export function Composer({
     }
   }
 
-  const accent = mode === 'question' ? 'var(--type-question)' : 'var(--border-1)'
+  const isQuestion = mode === 'question'
+  const borderColor = isQuestion ? 'var(--type-question)' : 'var(--border-1)'
 
   return (
     <div
@@ -103,13 +104,13 @@ export function Composer({
         <div
           style={{
             background: '#fff',
-            border: `1px solid ${accent}`,
+            border: `1px solid ${borderColor}`,
             borderRadius: 10,
             boxShadow: 'var(--shadow-2)',
             padding: '10px 12px 8px',
           }}
         >
-          {mode === 'question' && (
+          {isQuestion && (
             <div
               style={{
                 display: 'inline-flex',
@@ -118,7 +119,7 @@ export function Composer({
                 marginBottom: 6,
                 padding: '2px 8px',
                 borderRadius: 2,
-                background: accent,
+                background: 'var(--type-question)',
                 color: '#fff',
                 fontSize: 11,
                 fontWeight: 600,
@@ -134,18 +135,17 @@ export function Composer({
             value={body}
             onChange={(e) => setBody(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder={
-              mode === 'question' ? 'ask a question…' : 'write — or press ? for a question'
-            }
-            rows={mode === 'question' ? 2 : 1}
+            aria-label={isQuestion ? 'ask a question' : 'write a note'}
+            placeholder={isQuestion ? 'ask a question…' : 'write — or press ? for a question'}
+            rows={isQuestion ? 2 : 1}
             style={{
               width: '100%',
               border: 0,
               outline: 'none',
               resize: 'none',
-              fontFamily: mode === 'question' ? 'var(--font-serif)' : 'var(--font-sans)',
-              fontStyle: mode === 'question' ? 'italic' : 'normal',
-              fontSize: mode === 'question' ? 16 : 14,
+              fontFamily: isQuestion ? 'var(--font-serif)' : 'var(--font-sans)',
+              fontStyle: isQuestion ? 'italic' : 'normal',
+              fontSize: isQuestion ? 16 : 14,
               lineHeight: 1.5,
               color: 'var(--fg-0)',
               background: 'transparent',
