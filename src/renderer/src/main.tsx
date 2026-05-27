@@ -6,6 +6,11 @@ import { StrictMode } from 'react'
 import ReactDOM from 'react-dom/client'
 import { App } from './App'
 import { queryClient } from './lib/query-client'
+import { installScrollbarFade } from './lib/scrollbar-fade'
+
+// Capture-phase scroll listener that fades the global scrollbar thumbs
+// in/out — quiet by default, visible while scrolling or on hover.
+installScrollbarFade()
 
 // StrictMode double-invokes mount effects + state initialisers in dev so
 // unsafe lifecycle patterns surface immediately. Production builds strip
