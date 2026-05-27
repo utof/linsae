@@ -19,6 +19,11 @@ interface ContextMenuPos {
  * confirmation surface — the user explicitly chose "Delete" from a named list,
  * unlike the hover toolbar where the trash icon is 14px next to copy-link.
  *
+ * Why right-click does NOT also fire onFocus: this app wires `focusedId` to
+ * the BacklinksPane's visibility (App.tsx), so opening a context menu would
+ * silently open the backlinks panel as a side-effect. The menu's actions
+ * capture bubble identity via closure, so selection is implicit anyway.
+ *
  * @see docs/specs/v0.1-rolling-feed-and-search.md §Feed bubble
  */
 function BubbleContextMenu({
@@ -214,9 +219,11 @@ export function NoteBubble({
 
   const handleContextMenu = (e: MouseEvent) => {
     e.preventDefault()
-    // Design decision: right-click also selects the bubble so subsequent
-    // actions apply to the right item (matches standard desktop app behaviour).
-    onFocus()
+    // Why we do NOT call onFocus here: in this app, focusing a bubble opens
+    // the BacklinksPane (App.tsx wires focusedId → pane visibility). Opening
+    // a context menu shouldn't also open backlinks — the menu's actions
+    // already capture the bubble's identity via closure, so selection is
+    // implicit.
     setContextMenu({ x: e.clientX, y: e.clientY })
   }
 

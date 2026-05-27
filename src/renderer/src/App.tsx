@@ -248,7 +248,11 @@ export function App() {
           <Feed
             notes={notes}
             focusedId={focusedId}
-            onFocus={setFocusedId}
+            // Toggle behaviour: clicking an unfocused bubble focuses it (opens
+            // BacklinksPane); clicking the already-focused bubble unfocuses it
+            // (closes the pane). Wikilink / palette / pane-jump callbacks set
+            // focus directly without toggling — those are navigation gestures.
+            onFocus={(id) => setFocusedId((cur) => (cur === id ? null : id))}
             onWikilinkClick={onWikilinkClick}
             resolveSlug={resolveSlug}
             onEdit={setEditingNoteId}

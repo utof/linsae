@@ -220,7 +220,7 @@ describe('NoteBubble', () => {
     expect(screen.getByRole('menu')).toBeInTheDocument()
   })
 
-  it('right-click also calls onFocus (design decision: select on right-click)', () => {
+  it('right-click does NOT call onFocus (avoids opening backlinks pane as a side-effect)', () => {
     const onFocus = vi.fn()
     const { container } = render(
       <NoteBubble
@@ -236,7 +236,7 @@ describe('NoteBubble', () => {
     const bubble = container.querySelector('[data-bubble]')
     if (!bubble) throw new Error('bubble not found')
     fireEvent.contextMenu(bubble)
-    expect(onFocus).toHaveBeenCalledOnce()
+    expect(onFocus).not.toHaveBeenCalled()
   })
 
   it('context menu Edit item calls onEdit and closes menu', () => {
