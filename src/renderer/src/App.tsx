@@ -171,134 +171,149 @@ export function App() {
     <div
       style={{
         display: 'flex',
+        flexDirection: 'column',
         height: '100vh',
         overflow: 'hidden',
         background: 'var(--bg-0)',
       }}
     >
-      <main
+      <WindowFrame onOpenPalette={() => setPaletteOpen(true)} />
+      {/* Body row: position:relative so BacklinksPane can absolutely overlay
+         it without pushing the feed left when the pane opens (the previous
+         flex-sibling layout shifted the entire feed; user feedback called
+         that "annoying and too much for such a small action"). The pane
+         covers the feed area only — WindowFrame stays visible above. */}
+      <div
         style={{
           display: 'flex',
-          flexDirection: 'column',
           flex: 1,
-          minWidth: 0,
           minHeight: 0,
+          position: 'relative',
         }}
       >
-        <WindowFrame onOpenPalette={() => setPaletteOpen(true)} />
-        {skipped > 0 && !skipBannerDismissed && (
-          <div
-            style={{
-              padding: '8px 16px',
-              background: '#FDECEC',
-              borderBottom: '1px solid #FAEAC2',
-              fontSize: 13,
-              color: 'var(--fg-1)',
-              display: 'flex',
-              gap: 12,
-              alignItems: 'center',
-            }}
-          >
-            <span>{skipped} notes had unreadable frontmatter and were skipped.</span>
-            <button
-              type="button"
-              onClick={() => {
-                void api.system.openLogsFolder()
-              }}
+        <main
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            flex: 1,
+            minWidth: 0,
+            minHeight: 0,
+          }}
+        >
+          {skipped > 0 && !skipBannerDismissed && (
+            <div
               style={{
-                border: 0,
-                background: 'transparent',
-                color: 'var(--accent)',
-                cursor: 'pointer',
-                textDecoration: 'underline',
+                padding: '8px 16px',
+                background: '#FDECEC',
+                borderBottom: '1px solid #FAEAC2',
+                fontSize: 13,
+                color: 'var(--fg-1)',
+                display: 'flex',
+                gap: 12,
+                alignItems: 'center',
               }}
             >
-              view log.
-            </button>
-            <div style={{ flex: 1 }} />
-            <button
-              type="button"
-              onClick={() => setSkipBannerDismissed(true)}
+              <span>{skipped} notes had unreadable frontmatter and were skipped.</span>
+              <button
+                type="button"
+                onClick={() => {
+                  void api.system.openLogsFolder()
+                }}
+                style={{
+                  border: 0,
+                  background: 'transparent',
+                  color: 'var(--accent)',
+                  cursor: 'pointer',
+                  textDecoration: 'underline',
+                }}
+              >
+                view log.
+              </button>
+              <div style={{ flex: 1 }} />
+              <button
+                type="button"
+                onClick={() => setSkipBannerDismissed(true)}
+                style={{
+                  border: 0,
+                  background: 'transparent',
+                  cursor: 'pointer',
+                  color: 'var(--fg-2)',
+                }}
+              >
+                dismiss
+              </button>
+            </div>
+          )}
+          {notes.length === 0 ? (
+            <div
               style={{
-                border: 0,
-                background: 'transparent',
-                cursor: 'pointer',
-                color: 'var(--fg-2)',
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--fg-3)',
+                fontFamily: 'var(--font-sans)',
+                fontSize: 14,
               }}
             >
-              dismiss
-            </button>
-          </div>
-        )}
-        {notes.length === 0 ? (
-          <div
-            style={{
-              flex: 1,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--fg-3)',
-              fontFamily: 'var(--font-sans)',
-              fontSize: 14,
-            }}
-          >
-            nothing yet. start anywhere.
-          </div>
-        ) : (
-          <Feed
-            notes={notes}
-            focusedId={focusedId}
-            // Toggle behaviour: clicking an unfocused bubble focuses it (opens
-            // BacklinksPane); clicking the already-focused bubble unfocuses it
-            // (closes the pane). Wikilink / palette / pane-jump callbacks set
-            // focus directly without toggling — those are navigation gestures.
-            onFocus={(id) => setFocusedId((cur) => (cur === id ? null : id))}
-            onWikilinkClick={onWikilinkClick}
-            resolveSlug={resolveSlug}
-            onEdit={setEditingNoteId}
-            onDelete={(id) => {
-              deleteMut.mutate(id)
-              if (focusedId === id) setFocusedId(null)
-            }}
-            onCopyLink={(id) => {
-              void navigator.clipboard.writeText(`linsae://note/${id}`)
-            }}
+              nothing yet. start anywhere.
+            </div>
+          ) : (
+            <Feed
+              notes={notes}
+              focusedId={focusedId}
+              // Toggle behaviour: clicking an unfocused bubble focuses it (opens
+              // BacklinksPane); clicking the already-focused bubble unfocuses it
+              // (closes the pane). Wikilink / palette / pane-jump callbacks set
+              // focus directly without toggling — those are navigation gestures.
+              onFocus={(id) => setFocusedId((cur) => (cur === id ? null : id))}
+              onWikilinkClick={onWikilinkClick}
+              resolveSlug={resolveSlug}
+              onEdit={setEditingNoteId}
+              onDelete={(id) => {
+                deleteMut.mutate(id)
+                if (focusedId === id) setFocusedId(null)
+              }}
+              onCopyLink={(id) => {
+                void navigator.clipboard.writeText(`linsae://note/${id}`)
+              }}
+            />
+          )}
+          {editingNote ? (
+            <Composer
+              key={editingNote.id}
+              initialBody={editingNote.body}
+              initialMode={editingNote.type}
+              editMode
+              error={submitError}
+              onClearError={() => setSubmitError(null)}
+              onSubmit={({ body, type }) => updateMut.mutate({ id: editingNote.id, body, type })}
+              onCancel={() => setEditingNoteId(null)}
+            />
+          ) : (
+            // Composite key: `draftBody ?? 'fresh'` handles the dangling-wikilink
+            // prefill remount; `successCount` ticks on successful create to
+            // force a remount → fresh empty textarea. Failed creates leave the
+            // key unchanged so the user's text + cursor survive.
+            <Composer
+              key={`${draftBody ?? 'fresh'}-${successCount}`}
+              initialBody={draftBody ?? ''}
+              initialMode="claim"
+              error={submitError}
+              onClearError={() => setSubmitError(null)}
+              onSubmit={({ body, type }) => createMut.mutate({ body, type })}
+              onCancel={() => setDraftBody(null)}
+            />
+          )}
+        </main>
+        {focusedId && (
+          <BacklinksPane
+            focusedNoteId={focusedId}
+            onClose={() => setFocusedId(null)}
+            onJump={setFocusedId}
           />
         )}
-        {editingNote ? (
-          <Composer
-            key={editingNote.id}
-            initialBody={editingNote.body}
-            initialMode={editingNote.type}
-            editMode
-            error={submitError}
-            onClearError={() => setSubmitError(null)}
-            onSubmit={({ body, type }) => updateMut.mutate({ id: editingNote.id, body, type })}
-            onCancel={() => setEditingNoteId(null)}
-          />
-        ) : (
-          // Composite key: `draftBody ?? 'fresh'` handles the dangling-wikilink
-          // prefill remount; `successCount` ticks on successful create to
-          // force a remount → fresh empty textarea. Failed creates leave the
-          // key unchanged so the user's text + cursor survive.
-          <Composer
-            key={`${draftBody ?? 'fresh'}-${successCount}`}
-            initialBody={draftBody ?? ''}
-            initialMode="claim"
-            error={submitError}
-            onClearError={() => setSubmitError(null)}
-            onSubmit={({ body, type }) => createMut.mutate({ body, type })}
-            onCancel={() => setDraftBody(null)}
-          />
-        )}
-      </main>
-      {focusedId && (
-        <BacklinksPane
-          focusedNoteId={focusedId}
-          onClose={() => setFocusedId(null)}
-          onJump={setFocusedId}
-        />
-      )}
+      </div>
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
