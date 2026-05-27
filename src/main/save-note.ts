@@ -129,6 +129,23 @@ export function saveNote(db: DB, nd: NotesDir, input: SaveInput): Note {
   // using the uuidv7 as the slug keeps wikilink resolution well-defined until
   // the user types a first line.
   const slug = input.mode === 'create' ? slugFromBody(input.body) || id : existing!.slug
+
+  // Duplicate-slug pre-check (create only; update preserves the existing slug
+  // per spec §Stable slug from frontmatter and therefore cannot collide).
+  // Without this, the INSERT below would throw a raw SqliteError after we'd
+  // already written the file to disk — leaving an orphan .md that the next
+  // reconcile would then skip+log on every startup. Pre-checking lets us
+  // throw a user-facing message BEFORE any disk or DB write, so the composer
+  // can show an inline error with the user's text + cursor preserved.
+  // Single-process Electron + sync better-sqlite3 means no TOCTOU race.
+  // @see https://github.com/utof/linsae/issues/23
+  if (input.mode === 'create' && slug !== id) {
+    const collision = db
+      .prepare('SELECT 1 FROM notes WHERE slug = ? AND deleted_at IS NULL LIMIT 1')
+      .get(slug)
+    if (collision) throw new Error(`a note named "${slug}" already exists`)
+  }
+
   const created_at = input.mode === 'create' ? now : existing!.created_at
   const links = extractWikilinks(input.body)
 

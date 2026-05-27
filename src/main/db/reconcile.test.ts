@@ -16,7 +16,7 @@
  * @see docs/specs/v0.1-rolling-feed-and-search.md §Reconciler algorithm
  */
 
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
@@ -80,6 +80,68 @@ describe('reconcile', () => {
     const r = reconcile(db, nd)
     expect(r.skipped).toBe(1)
     expect(existsSync(join(dir, 'corrupted-id.md'))).toBe(true) // NOT deleted
+  })
+
+  it('skips files whose slug collides with another live file (UNIQUE constraint) without aborting the scan', () => {
+    // Two valid frontmatters that derive the same slug — the partial unique
+    // index `idx_notes_slug_live` rejects the second INSERT. Without the
+    // savepoint wrapper added to fix issue #23, this throw kills the entire
+    // outer transaction at startup and the renderer fails to launch.
+    nd.writeNote(
+      {
+        id: 'aaaaaaaa-aaaa-7aaa-aaaa-aaaaaaaaaaa1',
+        slug: 'dup',
+        type: 'claim',
+        created_at: 1,
+        updated_at: 1,
+      },
+      'abc',
+    )
+    nd.writeNote(
+      {
+        id: 'aaaaaaaa-aaaa-7aaa-aaaa-aaaaaaaaaaa2',
+        slug: 'dup',
+        type: 'claim',
+        created_at: 2,
+        updated_at: 2,
+      },
+      'abc',
+    )
+    const r = reconcile(db, nd)
+    expect(r.inserted).toBe(1)
+    expect(r.skipped).toBe(1)
+    // Both files remain on disk; neither is destroyed.
+    expect(existsSync(join(dir, 'aaaaaaaa-aaaa-7aaa-aaaa-aaaaaaaaaaa1.md'))).toBe(true)
+    expect(existsSync(join(dir, 'aaaaaaaa-aaaa-7aaa-aaaa-aaaaaaaaaaa2.md'))).toBe(true)
+    // Exactly one row landed in the DB (whichever fs.readdir surfaced first).
+    expect(db.prepare('SELECT COUNT(*) AS c FROM notes').get()).toEqual({ c: 1 })
+  })
+
+  it('writes dup-slug skips to reconcile.log when logsDir is provided', () => {
+    const logsDir = join(dir, 'logs')
+    nd.writeNote(
+      {
+        id: 'aaaaaaaa-aaaa-7aaa-aaaa-aaaaaaaaaaa3',
+        slug: 'dup',
+        type: 'claim',
+        created_at: 1,
+        updated_at: 1,
+      },
+      'abc',
+    )
+    nd.writeNote(
+      {
+        id: 'aaaaaaaa-aaaa-7aaa-aaaa-aaaaaaaaaaa4',
+        slug: 'dup',
+        type: 'claim',
+        created_at: 2,
+        updated_at: 2,
+      },
+      'abc',
+    )
+    reconcile(db, nd, logsDir)
+    const log = readFileSync(join(logsDir, 'reconcile.log'), 'utf8')
+    expect(log).toMatch(/UNIQUE constraint failed/)
   })
 
   it('updates a row when the file body hash changed', () => {

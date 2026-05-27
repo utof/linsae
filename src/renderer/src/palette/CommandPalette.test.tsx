@@ -1,13 +1,7 @@
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../../tests/setup'
 import { CommandPalette } from './CommandPalette'
-
-// vitest.config.ts sets globals: false, so RTL's auto-cleanup (which is gated on
-// `globalThis.afterEach`) is inert — without an explicit cleanup, every test in
-// this file would leave its DOM in place and `screen.getByPlaceholderText(...)`
-// could find multiple inputs across renders. Mirrors Composer.test.tsx workaround.
-afterEach(cleanup)
 
 let mockApi: MockApi
 beforeEach(() => {

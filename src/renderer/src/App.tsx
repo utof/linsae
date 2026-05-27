@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import type { Note, NoteType } from '../../shared/types'
 import { BacklinksPane } from './backlinks/BacklinksPane'
@@ -60,6 +60,26 @@ export function App() {
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null)
   const [draftBody, setDraftBody] = useState<string | null>(null)
   const [skipBannerDismissed, setSkipBannerDismissed] = useState(false)
+  // submitError surfaces a user-facing message from the last failed
+  // create/update mutation (e.g. duplicate-slug). The Composer renders it
+  // inline; the next keystroke clears it via onClearError. See issue #23.
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  // successCount ticks on every successful create. Used in the create-mode
+  // Composer's `key` so a successful submit forces a remount → fresh
+  // `initialBody=''`. We can't clear body inside the Composer itself
+  // because the mutation is async — clearing pre-emptively would wipe the
+  // user's text on failure (which is the entire point of the Option B
+  // body-preservation contract).
+  const [successCount, setSuccessCount] = useState(0)
+
+  // Clear submitError whenever the composer's context changes (user clicks
+  // edit on a different note, opens a dangling-wikilink draft, etc.). Without
+  // this, an unrelated create error from a previous attempt would briefly
+  // render in the new edit-mode composer until the first keystroke.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: setSubmitError is stable
+  useEffect(() => {
+    setSubmitError(null)
+  }, [editingNoteId, draftBody])
 
   // Synchronous slug-only resolver for the Markdown component's dangling
   // class pass. The full alias-aware resolver runs only on click (below).
@@ -76,7 +96,10 @@ export function App() {
     onSuccess: () => {
       invalidate()
       setDraftBody(null)
+      setSubmitError(null)
+      setSuccessCount((c) => c + 1)
     },
+    onError: (err: Error) => setSubmitError(err.message),
   })
   const updateMut = useMutation({
     mutationFn: ({ id, body, type }: { id: string; body: string; type: NoteType }) =>
@@ -87,7 +110,9 @@ export function App() {
       // Also clear any lingering dangling-link draft so the create-mode composer
       // doesn't reappear with the previous prefill after an unrelated edit.
       setDraftBody(null)
+      setSubmitError(null)
     },
+    onError: (err: Error) => setSubmitError(err.message),
   })
   const deleteMut = useMutation({
     mutationFn: (id: string) => api.notes.delete(id),
@@ -242,14 +267,22 @@ export function App() {
             initialBody={editingNote.body}
             initialMode={editingNote.type}
             editMode
+            error={submitError}
+            onClearError={() => setSubmitError(null)}
             onSubmit={({ body, type }) => updateMut.mutate({ id: editingNote.id, body, type })}
             onCancel={() => setEditingNoteId(null)}
           />
         ) : (
+          // Composite key: `draftBody ?? 'fresh'` handles the dangling-wikilink
+          // prefill remount; `successCount` ticks on successful create to
+          // force a remount → fresh empty textarea. Failed creates leave the
+          // key unchanged so the user's text + cursor survive.
           <Composer
-            key={draftBody ?? 'fresh'}
+            key={`${draftBody ?? 'fresh'}-${successCount}`}
             initialBody={draftBody ?? ''}
             initialMode="claim"
+            error={submitError}
+            onClearError={() => setSubmitError(null)}
             onSubmit={({ body, type }) => createMut.mutate({ body, type })}
             onCancel={() => setDraftBody(null)}
           />

@@ -1,13 +1,7 @@
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../../tests/setup'
 import { BacklinksPane } from './BacklinksPane'
-
-// vitest.config.ts sets globals: false, so RTL's auto-cleanup (which is gated on
-// `globalThis.afterEach`) is inert — without an explicit cleanup, every test in
-// this file would leave its DOM in place and subsequent queries could find
-// multiple panes across renders. Mirrors Composer.test.tsx + CommandPalette.test.tsx.
-afterEach(cleanup)
 
 let mockApi: MockApi
 beforeEach(() => {

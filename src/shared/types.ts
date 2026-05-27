@@ -14,12 +14,6 @@ export interface Note {
   deleted_at: number | null
 }
 
-export interface Link {
-  from_note_id: string
-  to_slug: string
-  edge_type: string
-}
-
 export interface SearchHit {
   note: Note
   snippet: string

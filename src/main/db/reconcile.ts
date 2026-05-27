@@ -115,18 +115,35 @@ export function reconcile(db: DB, nd: NotesDir, logsDir?: string): ReconcileRepo
       // better-sqlite3's binding accepts `null` (not `undefined`); coerce.
       const deletedAt: number | null = fm.deleted_at ?? null
       const prev = existing.get(id)
-      if (!prev) {
-        insertStmt.run(id, fm.slug, r.body, fm.type, fm.created_at, fm.updated_at, deletedAt)
-        replaceLinksForNote(db, id, extractWikilinks(r.body))
-        report.inserted++
-      } else if (hashBody(prev.body) !== hashBody(r.body)) {
-        updateStmt.run(r.body, fm.slug, fm.type, fm.updated_at, deletedAt, id)
-        replaceLinksForNote(db, id, extractWikilinks(r.body))
-        // Spec §Reconciler algorithm line 180: external-edit UPDATE must
-        // append a note_revisions row so the v0.2 edit-history pane has
-        // continuous coverage for externally-edited notes.
-        appendRevision(db, { revisionId: uuidv7(), noteId: id, body: r.body, type: fm.type })
-        report.updated++
+      // Per-file work runs inside a nested db.transaction → SAVEPOINT. Without
+      // it, one constraint violation (most commonly duplicate slug — two files
+      // derive the same slug from their first line via slugFromBody) throws out
+      // of the outer transaction and the entire startup reconcile rolls back,
+      // crashing pnpm dev with an unhandled rejection before the renderer can
+      // open. With the savepoint, the bad file is logged + skipped exactly like
+      // malformed frontmatter, and every sibling file imports normally. The
+      // counter increment is the LAST statement inside the savepoint body so
+      // that a throw earlier in the body leaves the counter unmoved.
+      // @see https://github.com/utof/linsae/issues/23
+      try {
+        db.transaction(() => {
+          if (!prev) {
+            insertStmt.run(id, fm.slug, r.body, fm.type, fm.created_at, fm.updated_at, deletedAt)
+            replaceLinksForNote(db, id, extractWikilinks(r.body))
+            report.inserted++
+          } else if (hashBody(prev.body) !== hashBody(r.body)) {
+            updateStmt.run(r.body, fm.slug, fm.type, fm.updated_at, deletedAt, id)
+            replaceLinksForNote(db, id, extractWikilinks(r.body))
+            // Spec §Reconciler algorithm line 180: external-edit UPDATE must
+            // append a note_revisions row so the v0.2 edit-history pane has
+            // continuous coverage for externally-edited notes.
+            appendRevision(db, { revisionId: uuidv7(), noteId: id, body: r.body, type: fm.type })
+            report.updated++
+          }
+        })()
+      } catch (err) {
+        report.skipped++
+        skippedFiles.push({ id, error: err instanceof Error ? err.message : String(err) })
       }
     }
 

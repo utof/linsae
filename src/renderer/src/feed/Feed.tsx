@@ -62,6 +62,32 @@ export function Feed({
 }: Props) {
   const virtuoso = useRef<VirtuosoHandle | null>(null)
   const lastCount = useRef(notes.length)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  // Inner scrollable element that Virtuoso renders. Captured via the
+  // scrollerRef callback below so we can attach a `scroll` listener for our
+  // own at-bottom tracking (see atBottomRef comment).
+  const scrollerRef = useRef<HTMLElement | null>(null)
+  // Whether the user is currently pinned to the bottom of the feed.
+  //
+  // We do NOT use Virtuoso's `atBottomStateChange` callback because of a
+  // race that breaks the composer-grow case: when the composer auto-grows,
+  // the feed container shrinks via flex; Virtuoso's internal ResizeObserver
+  // fires FIRST (child useEffects run before parent's, so its observer was
+  // registered earlier), recomputes at-bottom (now `false` because the
+  // bottom items just got hidden), and synchronously fires
+  // `atBottomStateChange(false)`. By the time our own ResizeObserver fires
+  // next, the ref is already `false` and the re-pin guard fails — the
+  // latest bubble stays clipped.
+  //
+  // Instead we maintain the ref ourselves from `scroll` events on the
+  // inner scroller. The browser does NOT fire a `scroll` event on resize
+  // (scrollTop stays put even if the user is visually no longer at the
+  // bottom), so the ref accurately reflects the user's PRE-resize position
+  // — exactly the signal the re-pin guard needs.
+  const atBottomRef = useRef(true)
+  // Mirror notes.length into a ref so the ResizeObserver callback (created
+  // once on mount) can read the latest index without re-binding.
+  const lastIndexRef = useRef(notes.length - 1)
 
   useEffect(() => {
     if (notes.length > lastCount.current) {
@@ -72,10 +98,65 @@ export function Feed({
       })
     }
     lastCount.current = notes.length
+    lastIndexRef.current = notes.length - 1
   }, [notes.length])
 
+  // User-driven at-bottom tracking. Fires only on actual scroll events
+  // (wheel / trackpad / drag / programmatic scrollToIndex), never on
+  // container resize — see atBottomRef comment for why this matters.
+  // Re-binds when scroller becomes available (Virtuoso may render the
+  // inner scroller on its second pass, so scrollerRef.current can be
+  // null on the first effect run).
+  useEffect(() => {
+    const scroller = scrollerRef.current
+    if (!scroller) return
+    const update = () => {
+      // 10px slack: rounding + virtualization gaps can leave a sub-pixel
+      // difference even when visually "at the bottom".
+      atBottomRef.current = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 10
+    }
+    update()
+    scroller.addEventListener('scroll', update, { passive: true })
+    return () => scroller.removeEventListener('scroll', update)
+  }, [])
+
+  // Re-pin the latest note to the bottom whenever the feed's container
+  // height changes (the composer just auto-grew via shift-Enter, the
+  // window was resized, the skip-banner appeared/dismissed). Virtuoso's
+  // default behaviour preserves the top-edge scroll offset on resize, so
+  // bottom items silently get pushed out of view — defeating the
+  // chat-style "latest is always visible when I'm at the bottom" contract.
+  // Guarded on atBottomRef so a user scrolled up reading history is NOT
+  // yanked back down.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      const scroller = scrollerRef.current
+      if (!scroller || !atBottomRef.current) return
+      // Bypass Virtuoso's `scrollToIndex({align:'end'})` — its per-item size
+      // cache is systematically UNDER-reported because:
+      //   - NoteBubble's root div has `margin: '6px 0'`
+      //   - the react-markdown subtree emits <p>/<ul>/<pre> with default
+      //     browser margins, untreated by globals.css
+      // and Virtuoso sizes items via ResizeObserver.contentRect, which
+      // EXCLUDES margins. The computed end position therefore lands short
+      // of the true bottom — the latest bubble stays clipped below the
+      // viewport regardless of how correct our at-bottom guard is.
+      //
+      // Direct `scrollTop = scrollHeight` uses the browser's native scroll
+      // extent (which DOES respect margins via actual painted bounds),
+      // hitting the true bottom every time.
+      // @see https://virtuoso.dev/react-virtuoso/troubleshooting
+      //      ("List does not scroll to the bottom / items jump around")
+      scroller.scrollTop = scroller.scrollHeight
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
   return (
-    <div style={{ flex: 1, minHeight: 0, padding: '0 32px' }}>
+    <div ref={containerRef} style={{ flex: 1, minHeight: 0, padding: '0 32px' }}>
       <div style={{ maxWidth: 720, margin: '0 auto', height: '100%' }}>
         <Virtuoso
           ref={virtuoso}
@@ -84,6 +165,9 @@ export function Feed({
           initialTopMostItemIndex={{ index: Math.max(0, notes.length - 1), align: 'end' }}
           alignToBottom
           followOutput="auto"
+          scrollerRef={(el) => {
+            scrollerRef.current = el as HTMLElement | null
+          }}
           itemContent={(_, note) => (
             <NoteBubble
               note={note}
