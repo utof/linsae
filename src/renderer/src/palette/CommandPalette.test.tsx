@@ -40,6 +40,10 @@ describe('CommandPalette', () => {
     const input = screen.getByPlaceholderText(/type to search/i)
     fireEvent.change(input, { target: { value: 'spectral' } })
     await waitFor(() => expect(mockApi.search.run).toHaveBeenCalled())
+    // Verify the snippet renders to the DOM (search→fetch→render integration,
+    // not just the IPC wiring). Catches regressions where dangerouslySetInnerHTML
+    // silently breaks.
+    await waitFor(() => expect(screen.getByText(/sequences/i)).toBeInTheDocument())
   })
 
   it('shows "no matches" when query has no results', async () => {
