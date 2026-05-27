@@ -45,13 +45,21 @@ describe('file↔DB round trip', () => {
     const db = openDb(dbPath)
     runMigrations(db)
 
-    const n = saveNote(db, nd, { mode: 'create', body: '# Foo\n\nbody', type: 'claim' })
+    const n = saveNote(db, nd, {
+      mode: 'create',
+      body: '# Foo\n\nbody with [[target]] link',
+      type: 'claim',
+    })
     expect(existsSync(join(notesDir, `${n.id}.md`))).toBe(true)
     const raw = readFileSync(join(notesDir, `${n.id}.md`), 'utf8')
     expect(raw).toContain('slug: foo')
     expect(
       db.prepare('SELECT COUNT(*) AS c FROM note_revisions WHERE note_id = ?').get(n.id),
     ).toEqual({ c: 1 })
+    // Spec §367: roundtrip must assert links rows too (saveNote → replaceLinksForNote).
+    expect(db.prepare('SELECT to_slug FROM links WHERE from_note_id = ?').all(n.id)).toEqual([
+      { to_slug: 'target' },
+    ])
 
     const report = reconcile(db, nd)
     expect(report.inserted + report.updated + report.deleted).toBe(0)
