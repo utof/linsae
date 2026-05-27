@@ -321,7 +321,7 @@ export function NoteBubble({
         borderLeft: focused ? '2px solid #0D99FF' : `1px solid ${border}`,
         borderRadius: 14,
         padding: '6px 12px',
-        margin: '3px 0',
+        margin: '6px 0',
         maxWidth: 560,
         fontFamily: isQuestion ? 'var(--font-serif)' : 'var(--font-sans)',
         fontStyle: isQuestion ? 'italic' : 'normal',
