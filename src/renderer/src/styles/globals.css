@@ -13,3 +13,15 @@ body,
   height: 100%;
   overflow: hidden;
 }
+
+/* Composer textarea hides its native scrollbar — past the auto-grow cap the
+ * cursor still drives native scroll (typing keeps the caret in view; arrow
+ * keys reach earlier lines), but no scroll thumb chrome ever shows. Telegram
+ * + iMessage parity. Inline `style={{ scrollbarWidth: 'none' }}` cannot
+ * target `::-webkit-scrollbar`, so the rule lives here. */
+.composer-textarea {
+  scrollbar-width: none;
+}
+.composer-textarea::-webkit-scrollbar {
+  display: none;
+}

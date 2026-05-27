@@ -149,7 +149,6 @@ export function Composer({
       style={{
         padding: '12px 32px 24px',
         background: 'var(--bg-0)',
-        borderTop: '1px solid var(--border-0)',
       }}
     >
       <div style={{ maxWidth: 720, margin: '0 auto' }}>
@@ -192,6 +191,9 @@ export function Composer({
             onKeyDown={onKeyDown}
             aria-label={isQuestion ? 'ask a question' : 'write a note'}
             placeholder={isQuestion ? 'ask a question…' : 'write — or press ? for a question'}
+            // Class hides the native scrollbar (rules in globals.css); native
+            // caret-driven scroll still works for past-cap content.
+            className="composer-textarea"
             style={{
               width: '100%',
               border: 0,

@@ -62,6 +62,15 @@ export function Feed({
 }: Props) {
   const virtuoso = useRef<VirtuosoHandle | null>(null)
   const lastCount = useRef(notes.length)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  // Track whether the user is currently pinned to the bottom of the feed.
+  // Updated by Virtuoso's atBottomStateChange. Used by the ResizeObserver
+  // below to decide whether to re-pin after the container shrinks (e.g.
+  // when the composer auto-grows). Default true matches initialTopMostItemIndex.
+  const atBottomRef = useRef(true)
+  // Mirror notes.length into a ref so the ResizeObserver callback (created
+  // once on mount) can read the latest index without re-binding.
+  const lastIndexRef = useRef(notes.length - 1)
 
   useEffect(() => {
     if (notes.length > lastCount.current) {
@@ -72,10 +81,34 @@ export function Feed({
       })
     }
     lastCount.current = notes.length
+    lastIndexRef.current = notes.length - 1
   }, [notes.length])
 
+  // Re-pin the latest note to the bottom whenever the feed's container
+  // height changes (the composer just auto-grew via shift-Enter, the
+  // window was resized, the skip-banner appeared/dismissed). Virtuoso's
+  // default behaviour preserves the top-edge scroll offset on resize, so
+  // bottom items silently get pushed out of view — defeating the
+  // chat-style "latest is always visible when I'm at the bottom" contract.
+  // Guarded on atBottomRef so a user scrolled up reading history is NOT
+  // yanked back down.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      if (atBottomRef.current && lastIndexRef.current >= 0) {
+        virtuoso.current?.scrollToIndex({
+          index: lastIndexRef.current,
+          align: 'end',
+        })
+      }
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
   return (
-    <div style={{ flex: 1, minHeight: 0, padding: '0 32px' }}>
+    <div ref={containerRef} style={{ flex: 1, minHeight: 0, padding: '0 32px' }}>
       <div style={{ maxWidth: 720, margin: '0 auto', height: '100%' }}>
         <Virtuoso
           ref={virtuoso}
@@ -84,6 +117,9 @@ export function Feed({
           initialTopMostItemIndex={{ index: Math.max(0, notes.length - 1), align: 'end' }}
           alignToBottom
           followOutput="auto"
+          atBottomStateChange={(b) => {
+            atBottomRef.current = b
+          }}
           itemContent={(_, note) => (
             <NoteBubble
               note={note}
