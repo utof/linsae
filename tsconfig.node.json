@@ -4,6 +4,7 @@
     "src/main/**/*",
     "src/preload/**/*",
     "src/shared/**/*",
+    "tests/integration/**/*",
     "electron.vite.config.*",
     "vitest.config.*"
   ],

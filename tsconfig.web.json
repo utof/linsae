@@ -1,6 +1,7 @@
 {
   "extends": "@electron-toolkit/tsconfig/tsconfig.web.json",
   "include": ["src/renderer/src/**/*", "src/shared/**/*", "src/preload/index.d.ts", "tests/**/*"],
+  "exclude": ["tests/integration/**/*"],
   "compilerOptions": {
     "composite": true,
     "outDir": "out/types/web",
