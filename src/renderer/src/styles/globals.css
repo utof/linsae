@@ -54,37 +54,13 @@ body,
   margin-bottom: 0;
 }
 
-/* Auto-fading scrollbars for every internal scrollable surface (feed,
- * command palette results, backlinks pane). Default-invisible thumb;
- * fades in within ~280ms when the user starts scrolling or hovers the
- * scrollable surface, fades back out 800ms after the last scroll event
- * (timing driven by lib/scrollbar-fade.ts which adds .scrolled-recently
- * to the scrolled element). Direct hover on the thumb itself gets a
- * faster ~120ms fade-in + the darker fg-3 color so the grab affordance
- * feels snappier than the show-on-scroll motion. 4px thumb (~33%
- * thinner than the prior 6px) keeps the rail visually quiet without
- * losing grab-ability. Composer textarea is excluded above
- * (.composer-textarea hides its scrollbar entirely). */
-::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
-}
-::-webkit-scrollbar-button {
+/* Hide native scrollbars on every surface wrapped by `<ScrollArea>` (or
+ * via the `useScrollThumb` hook directly — Feed/Virtuoso). The custom
+ * thumb overlay in src/renderer/src/components/ScrollArea.tsx renders
+ * its own `<div>` and owns visibility / hover / drag — see ADR 0003 for
+ * why we don't use the native scrollbar (Chromium doesn't animate
+ * `::-webkit-scrollbar` pseudo-element transitions). `.composer-textarea`
+ * has its own hide rule above for the same reason. */
+.scroll-area-inner::-webkit-scrollbar {
   display: none;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 2px;
-  transition: background 280ms ease;
-}
-:hover::-webkit-scrollbar-thumb,
-.scrolled-recently::-webkit-scrollbar-thumb {
-  background: var(--border-2);
-}
-::-webkit-scrollbar-thumb:hover {
-  background: var(--fg-3);
-  transition-duration: 120ms;
 }

@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
+import { ScrollArea } from '../components/ScrollArea'
 import { api } from '../lib/api'
 
 interface Props {
@@ -99,7 +100,7 @@ export function BacklinksPane({ focusedNoteId, onClose, onJump }: Props) {
           <X size={14} />
         </button>
       </div>
-      <div style={{ overflowY: 'auto', flex: 1, padding: 12 }}>
+      <ScrollArea style={{ flex: 1, minHeight: 0 }} scrollStyle={{ padding: 12 }}>
         {notes.length === 0 && (
           <div style={{ padding: '12px 4px', color: 'var(--fg-3)', fontSize: 12 }}>
             nothing links here yet.
@@ -126,7 +127,7 @@ export function BacklinksPane({ focusedNoteId, onClose, onJump }: Props) {
             {(n.body.split('\n')[0] ?? '').slice(0, 100)}
           </div>
         ))}
-      </div>
+      </ScrollArea>
     </aside>
   )
 }

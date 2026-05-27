@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import type { Note } from '../../../shared/types'
+import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { NoteBubble } from './NoteBubble'
 
 interface Props {
@@ -67,6 +68,11 @@ export function Feed({
   // scrollerRef callback below so we can attach a `scroll` listener for our
   // own at-bottom tracking (see atBottomRef comment).
   const scrollerRef = useRef<HTMLElement | null>(null)
+  // State mirror of scrollerRef so the useScrollThumb hook (below) re-runs
+  // its effect when Virtuoso captures its scroller on the second render
+  // pass. Plain refs don't trigger re-renders; state does.
+  const [scrollerEl, setScrollerEl] = useState<HTMLElement | null>(null)
+  const thumb = useScrollThumb(scrollerEl)
   // Whether the user is currently pinned to the bottom of the feed.
   //
   // We do NOT use Virtuoso's `atBottomStateChange` callback because of a
@@ -156,8 +162,13 @@ export function Feed({
   }, [])
 
   return (
-    <div ref={containerRef} style={{ flex: 1, minHeight: 0, padding: '0 32px' }}>
-      <div style={{ maxWidth: 720, margin: '0 auto', height: '100%' }}>
+    <div
+      ref={containerRef}
+      onPointerEnter={thumb.onAreaEnter}
+      onPointerLeave={thumb.onAreaLeave}
+      style={{ flex: 1, minHeight: 0, padding: '0 32px' }}
+    >
+      <div style={{ maxWidth: 720, margin: '0 auto', height: '100%', position: 'relative' }}>
         <Virtuoso
           ref={virtuoso}
           data={notes}
@@ -166,7 +177,16 @@ export function Feed({
           alignToBottom
           followOutput="auto"
           scrollerRef={(el) => {
-            scrollerRef.current = el as HTMLElement | null
+            const node = el as HTMLElement | null
+            scrollerRef.current = node
+            setScrollerEl(node)
+            // Hide Virtuoso's native scrollbar — the custom thumb above
+            // owns visibility. .scroll-area-inner globals.css rule covers
+            // ::-webkit-scrollbar; inline scrollbarWidth covers Firefox.
+            if (node) {
+              node.classList.add('scroll-area-inner')
+              node.style.scrollbarWidth = 'none'
+            }
           }}
           itemContent={(_, note) => (
             <NoteBubble
@@ -181,6 +201,13 @@ export function Feed({
             />
           )}
           style={{ height: '100%' }}
+        />
+        <ScrollThumb
+          geometry={thumb.geometry}
+          thumbHovered={thumb.thumbHovered}
+          areaHovered={thumb.areaHovered}
+          setThumbHovered={thumb.setThumbHovered}
+          onPointerDown={thumb.onThumbPointerDown}
         />
       </div>
     </div>
