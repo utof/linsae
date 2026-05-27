@@ -86,6 +86,81 @@ describe('NoteBubble', () => {
     expect(onFocus).toHaveBeenCalledOnce()
   })
 
+  it('does NOT render the expand button when body is under the 4096-char cap', () => {
+    render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: /expand note/i })).not.toBeInTheDocument()
+  })
+
+  it('renders the expand button with word count when body exceeds 4096 chars', () => {
+    // 1100 words at ~5 chars each ≈ 5500 chars — comfortably over the cap.
+    const longBody = Array.from({ length: 1100 }, (_, i) => `word${i}`).join(' ')
+    render(
+      <NoteBubble
+        note={{ ...baseNote, body: longBody }}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    const btn = screen.getByRole('button', { name: /expand note — 1100 words/i })
+    expect(btn).toBeInTheDocument()
+    expect(btn).toHaveTextContent(/expand \(1,100 words\)/)
+  })
+
+  it('expand toggle: clicking flips to collapse + reveals full body', () => {
+    // Suffix marker placed PAST the 4096-char cap so a "rendered" assertion
+    // proves the truncation actually lifted.
+    const longBody = `${'x '.repeat(2100)}TAIL_MARKER`
+    expect(longBody.length).toBeGreaterThan(4096)
+    const { container } = render(
+      <NoteBubble
+        note={{ ...baseNote, body: longBody }}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    // Pre-expand: TAIL_MARKER is past the cap, so it's not in the DOM.
+    expect(container.textContent).not.toContain('TAIL_MARKER')
+    fireEvent.click(screen.getByRole('button', { name: /expand note/i }))
+    expect(screen.getByRole('button', { name: /collapse note/i })).toBeInTheDocument()
+    expect(container.textContent).toContain('TAIL_MARKER')
+  })
+
+  it('expand button click does NOT trigger onFocus (stops propagation)', () => {
+    const onFocus = vi.fn()
+    const longBody = 'x'.repeat(5000)
+    render(
+      <NoteBubble
+        note={{ ...baseNote, body: longBody }}
+        focused={false}
+        onFocus={onFocus}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /expand note/i }))
+    expect(onFocus).not.toHaveBeenCalled()
+  })
+
   it('delete requires double-click within 2s', () => {
     const onDelete = vi.fn()
     const { container } = render(

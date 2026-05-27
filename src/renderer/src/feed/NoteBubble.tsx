@@ -1,7 +1,16 @@
-import { Link2, Pen, Trash2 } from 'lucide-react'
+import { ChevronDown, Link2, Pen, Trash2 } from 'lucide-react'
 import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { Markdown } from '../lib/markdown'
+
+/**
+ * Hard cap on the rendered body length before the fade-out + expand
+ * affordance kicks in. 4096 is a "data-structure nice" power-of-two
+ * round number chosen by the user — large enough that essentially no
+ * normal note bumps into it, small enough that one bubble rendering a
+ * pasted 10k-char log doesn't dominate the feed's visual rhythm.
+ */
+const BODY_TRUNCATE_AT = 4096
 
 interface Props {
   note: Note
@@ -53,6 +62,7 @@ export function NoteBubble({
 }: Props) {
   const [hover, setHover] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   // window.setTimeout returns number in renderer (DOM lib); Node's setTimeout
   // returns NodeJS.Timeout. Tests run in jsdom — the number variant is correct.
   const armTimer = useRef<number | null>(null)
@@ -60,6 +70,16 @@ export function NoteBubble({
   const isQuestion = note.type === 'question'
   const bg = focused ? 'var(--bg-3)' : isQuestion ? '#FFFBF0' : '#FFFFFF'
   const border = isQuestion ? '#FAEAC2' : 'var(--border-0)'
+
+  // Truncate display body at BODY_TRUNCATE_AT chars and surface an expand
+  // affordance when the user hasn't expanded yet. Word count uses the FULL
+  // body so the affordance shows the cost of expansion ("expand (3.2k
+  // words)"). split(/\s+/) on a trimmed string is fine for word-counting
+  // English-ish prose at v0.1; CJK and other scripts will under-count
+  // (tracked as nit, not blocking).
+  const overCap = note.body.length > BODY_TRUNCATE_AT
+  const displayBody = overCap && !expanded ? note.body.slice(0, BODY_TRUNCATE_AT) : note.body
+  const wordCount = overCap ? note.body.trim().split(/\s+/).length : 0
 
   const handleTrashClick = (e: MouseEvent) => {
     e.stopPropagation()
@@ -104,13 +124,78 @@ export function NoteBubble({
         fontSize: isQuestion ? 16 : 14,
         color: 'var(--fg-0)',
         cursor: 'pointer',
+        // Let long unbroken tokens (URLs, no-space pastes) break inside the
+        // bubble instead of clipping past the right edge. `anywhere` is
+        // more aggressive than `break-word` — it breaks at any character
+        // before content overflows, matching the v21 "card grows vertically
+        // to fit text" aesthetic.
+        overflowWrap: 'anywhere',
       }}
     >
-      <Markdown
-        body={note.body}
-        onWikilinkClick={onWikilinkClick}
-        {...(resolveSlug ? { resolveSlug } : {})}
-      />
+      {overCap && !expanded ? (
+        // Wrapper is positioned so the fade-out overlay can absolutely-
+        // position over the bottom of the truncated markdown. pointer-events
+        // none on the overlay so clicks pass through to the bubble below.
+        <div style={{ position: 'relative' }}>
+          <Markdown
+            body={displayBody}
+            onWikilinkClick={onWikilinkClick}
+            {...(resolveSlug ? { resolveSlug } : {})}
+          />
+          <div
+            aria-hidden
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: 56,
+              background: `linear-gradient(to bottom, transparent, ${bg})`,
+              pointerEvents: 'none',
+            }}
+          />
+        </div>
+      ) : (
+        <Markdown
+          body={displayBody}
+          onWikilinkClick={onWikilinkClick}
+          {...(resolveSlug ? { resolveSlug } : {})}
+        />
+      )}
+
+      {overCap && (
+        <button
+          type="button"
+          aria-label={expanded ? 'collapse note' : `expand note — ${wordCount} words`}
+          onClick={(e) => {
+            e.stopPropagation()
+            setExpanded((v) => !v)
+          }}
+          style={{
+            marginTop: 8,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            border: 0,
+            background: 'transparent',
+            color: 'var(--fg-2)',
+            fontFamily: 'var(--font-sans)',
+            fontSize: 12,
+            fontStyle: 'normal',
+            cursor: 'pointer',
+            padding: 0,
+          }}
+        >
+          <ChevronDown
+            size={12}
+            style={{
+              transform: expanded ? 'rotate(180deg)' : 'none',
+              transition: 'transform 120ms ease',
+            }}
+          />
+          {expanded ? 'collapse' : `expand (${wordCount.toLocaleString()} words)`}
+        </button>
+      )}
 
       {hover && (
         // biome-ignore lint/a11y/noStaticElementInteractions: container only captures clicks to stop propagation to the parent bubble; semantic targets are the inner <button>s.
