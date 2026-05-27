@@ -5,6 +5,22 @@ import type { ReactNode } from 'react'
 import { afterEach, vi } from 'vitest'
 import type { Note, SearchHit } from '../src/shared/types'
 
+// jsdom lacks ResizeObserver, but @radix-ui/react-dialog (transitively used by
+// cmdk's Command.Dialog) calls `new ResizeObserver(...)` during mount. A no-op
+// stub is sufficient for component tests that don't assert on resize behaviour.
+// Why a stub (not a real impl): jsdom never lays out, so observed sizes would
+// always be 0 — tests that actually care about size mock per-test instead.
+// @see https://github.com/jsdom/jsdom/issues/3368
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  class ResizeObserverStub {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  ;(globalThis as unknown as { ResizeObserver: typeof ResizeObserverStub }).ResizeObserver =
+    ResizeObserverStub
+}
+
 /**
  * Wraps UI in a fresh QueryClientProvider for component tests.
  * @see src/shared/types.ts
