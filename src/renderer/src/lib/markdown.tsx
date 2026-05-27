@@ -1,0 +1,80 @@
+import { type MouseEvent, memo, useCallback } from 'react'
+import ReactMarkdown from 'react-markdown'
+import rehypeKatex from 'rehype-katex'
+import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import { remarkWikilinks } from './remark-wikilinks'
+
+interface Props {
+  body: string
+  onWikilinkClick: (slug: string) => void
+  resolveSlug?: (slug: string) => boolean
+}
+
+/**
+ * Renders a markdown `body` with GFM, math (KaTeX), and our custom wikilinks
+ * plugin. Wikilinks emit `<a class="wikilink" data-slug="…">` anchors; clicks
+ * are intercepted by `onWikilinkClick(slug)` (no navigation).
+ *
+ * When `resolveSlug` is supplied, each rendered wikilink is post-processed to
+ * toggle a `.dangling` class + tooltip when `resolveSlug(slug)` returns false,
+ * matching spec §Wikilinks resolution rule 4 (orange `--type-question`
+ * dangling state).
+ *
+ * Why a ref-callback (not `useEffect`) for the dangling pass: keeps the
+ * `resolveSlug` identity OUT of `ReactMarkdown`'s plugin array — re-running
+ * the remark plugins on every parent render would discard the cached mdast/hast
+ * tree. The ref-callback runs after the DOM is committed, mutating the
+ * already-rendered anchors in place. `body` is in the deps so the pass
+ * re-runs when the markdown content changes (new anchors to mark).
+ *
+ * Why `memo`: a single note bubble's markdown subtree is the most expensive
+ * thing the feed renders (parser + KaTeX); upstream `NoteBubble` keys by
+ * `(note.id, note.updated_at)` so this `memo` short-circuits all re-renders
+ * caused by sibling-bubble scroll.
+ *
+ * @see src/renderer/src/lib/remark-wikilinks.ts
+ * @see docs/specs/v0.1-rolling-feed-and-search.md §Markdown rendering
+ */
+export const Markdown = memo(function Markdown({ body, onWikilinkClick, resolveSlug }: Props) {
+  const handleClick = useCallback(
+    (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      if (target.classList.contains('wikilink')) {
+        e.preventDefault()
+        const slug = target.dataset.slug
+        if (slug) onWikilinkClick(slug)
+      }
+    },
+    [onWikilinkClick],
+  )
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `body` is depended on so the ref-callback re-fires after ReactMarkdown emits new anchors; keeps `resolveSlug` out of the plugin array to avoid busting the mdast/hast cache.
+  const containerRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      if (!el || !resolveSlug) return
+      for (const a of el.querySelectorAll<HTMLAnchorElement>('a.wikilink')) {
+        const slug = a.dataset.slug
+        if (!slug) continue
+        const dangling = !resolveSlug(slug)
+        a.classList.toggle('dangling', dangling)
+        a.title = dangling ? 'not a note yet — click to start one.' : ''
+        a.style.color = dangling ? 'var(--type-question)' : 'var(--accent)'
+      }
+    },
+    [resolveSlug, body],
+  )
+
+  return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: click delegated to nested <a class="wikilink"> anchors which are themselves keyboard-focusable; the div carries no semantic role.
+    // biome-ignore lint/a11y/useKeyWithClickEvents: anchors handle keyboard activation (Enter dispatches click on focused <a>); no key handler needed on the delegating wrapper.
+    <div ref={containerRef} onClick={handleClick}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath, remarkWikilinks]}
+        rehypePlugins={[rehypeKatex]}
+      >
+        {body}
+      </ReactMarkdown>
+    </div>
+  )
+})

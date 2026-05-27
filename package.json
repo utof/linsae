@@ -32,6 +32,8 @@
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
+    "unified": "^11.0.5",
+    "unist-util-visit": "^5.1.0",
     "uuidv7": "^1.2.1",
     "zod": "^4.4.3"
   },
@@ -43,6 +45,7 @@
     "@testing-library/react": "^16.3.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9",
+    "@types/mdast": "^4.0.4",
     "@types/node": "^22.19.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",

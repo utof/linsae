@@ -44,6 +44,12 @@ importers:
       remark-math:
         specifier: ^6.0.0
         version: 6.0.0
+      unified:
+        specifier: ^11.0.5
+        version: 11.0.5
+      unist-util-visit:
+        specifier: ^5.1.0
+        version: 5.1.0
       uuidv7:
         specifier: ^1.2.1
         version: 1.2.1
@@ -72,6 +78,9 @@ importers:
       '@types/js-yaml':
         specifier: ^4.0.9
         version: 4.0.9
+      '@types/mdast':
+        specifier: ^4.0.4
+        version: 4.0.4
       '@types/node':
         specifier: ^22.19.1
         version: 22.19.19
