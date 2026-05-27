@@ -27,12 +27,20 @@ interface Props {
  *
  * Why the `useEffect` watching `notes.length` (vs relying on `followOutput`
  * alone): `followOutput="auto"` only fires when the user is currently at the
- * bottom. When `notes` mutates from outside (e.g. a reconciler tick imports
- * an external edit while the user is scrolled up reading), we still want the
- * latest item visible; the imperative `scrollToIndex` with `behavior: 'smooth'`
- * + `align: 'end'` handles that case. `initialTopMostItemIndex` covers the
- * mount-time "start at the last bubble" requirement so the first paint is
- * already at the bottom — no scroll jump on load.
+ * bottom. When the list grows from outside (e.g. a reconciler tick adds an
+ * externally-created note while the user is scrolled up reading), we still
+ * want the new tail visible; the imperative `scrollToIndex` handles that.
+ * The `>` (not `!==`) comparison deliberately narrows to additions only:
+ * deletes shouldn't yank the viewport, and edits that swap a note for
+ * another at the same index aren't flagged here (same-length, identity
+ * change). `initialTopMostItemIndex` covers the mount-time "start at the
+ * last bubble" requirement so the first paint is already at the bottom.
+ *
+ * Why `computeItemKey={(_, note) => note.id}`: default vanilla-Virtuoso keys
+ * by array index, which under delete/reorder would let downstream bubbles
+ * reuse the wrong DOM node — leaking `NoteBubble`'s internal `useState`
+ * (`hover`, `deleteArmed`) and `armTimer` ref across notes. uuidv7 ids are
+ * stable per note, so keying by id makes React mount/unmount correctly.
  *
  * The `resolveSlug` prop is forwarded with a conditional spread to satisfy
  * `exactOptionalPropertyTypes` — passing `undefined` explicitly is a type
@@ -72,6 +80,7 @@ export function Feed({
         <Virtuoso
           ref={virtuoso}
           data={notes}
+          computeItemKey={(_, note) => note.id}
           initialTopMostItemIndex={{ index: Math.max(0, notes.length - 1), align: 'end' }}
           alignToBottom
           followOutput="auto"
