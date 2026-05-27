@@ -268,8 +268,21 @@ export function NoteBubble({
   // English-ish prose at v0.1; CJK and other scripts will under-count
   // (tracked as nit, not blocking).
   const overCap = note.body.length > BODY_TRUNCATE_AT
-  const displayBody = overCap && !expanded ? note.body.slice(0, BODY_TRUNCATE_AT) : note.body
+  const rawDisplayBody = overCap && !expanded ? note.body.slice(0, BODY_TRUNCATE_AT) : note.body
   const wordCount = overCap ? note.body.trim().split(/\s+/).length : 0
+
+  // Telegram-style "time floats inline with the last line of text" trick:
+  // append a run of non-breaking spaces to the body so the last paragraph's
+  // last line reserves enough horizontal width for the absolute-positioned
+  // time + edited pen to sit at its end. If the reservation pushes the line
+  // past the bubble width, the nbsps wrap to a new line and the absolutely-
+  // positioned time still sits in the bottom-right corner. Only applied when
+  // there is no expand button — when overCap is true the bottom flex row is
+  // already used by the expand control + time, so the floating trick isn't
+  // needed there. ~12 nbsps ≈ 70-85px depending on font, covers the time
+  // (~50px) + edited icon (~14px) + small gap.
+  const TIME_RESERVATION = '\u00A0'.repeat(12)
+  const displayBody = overCap ? rawDisplayBody : `${rawDisplayBody}${TIME_RESERVATION}`
 
   const handleTrashClick = (e: MouseEvent) => {
     e.stopPropagation()
@@ -354,26 +367,25 @@ export function NoteBubble({
         />
       )}
 
-      {/* Bottom row: expand button (when overCap) on the left, edited indicator
-         + timestamp on the right. Single flex line so the two never stack —
-         the expand button used to sit above the time, wasting a row. If the
-         last line of body text is short, the bubble looks tight; if long,
-         this row wraps cleanly below without overlap. */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 8,
-          marginTop: 2,
-          color: 'var(--fg-3)',
-          fontFamily: 'var(--font-sans)',
-          fontSize: 11,
-          fontStyle: 'normal',
-          lineHeight: 1,
-        }}
-      >
-        {overCap ? (
+      {/* Bottom row when overCap: expand button on the left, time on the right.
+         The flex row anchors the expand button to the same baseline as the
+         time; it cannot use the floating-time trick because the expand
+         control needs to be a real layout element. */}
+      {overCap && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+            marginTop: 2,
+            color: 'var(--fg-3)',
+            fontFamily: 'var(--font-sans)',
+            fontSize: 11,
+            fontStyle: 'normal',
+            lineHeight: 1,
+          }}
+        >
           <button
             type="button"
             aria-label={expanded ? 'collapse note' : `expand note — ${wordCount} words`}
@@ -403,10 +415,46 @@ export function NoteBubble({
             />
             {expanded ? 'collapse' : `expand (${wordCount.toLocaleString()} words)`}
           </button>
-        ) : (
-          <span />
-        )}
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            {note.updated_at > note.created_at && (
+              <span
+                role="img"
+                aria-label="edited"
+                title={`edited ${new Date(note.updated_at).toLocaleString()}`}
+                style={{ display: 'inline-flex' }}
+              >
+                <Pen size={10} />
+              </span>
+            )}
+            <span title={new Date(note.created_at).toLocaleString()}>
+              {formatTimestamp(note.created_at)}
+            </span>
+          </span>
+        </div>
+      )}
+
+      {/* When not overCap: absolutely position the time over the trailing
+         nbsps appended to the markdown body. If the last line has room,
+         the time floats inline at the end; if the last line wraps, the
+         nbsps wrap with it and the time sits in the bottom-right of the
+         expanded bubble — still visually inline with the wrapped nbsps. */}
+      {!overCap && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 6,
+            right: 12,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            color: 'var(--fg-3)',
+            fontFamily: 'var(--font-sans)',
+            fontSize: 11,
+            fontStyle: 'normal',
+            lineHeight: 1,
+            pointerEvents: 'none',
+          }}
+        >
           {note.updated_at > note.created_at && (
             <span
               role="img"
@@ -420,8 +468,8 @@ export function NoteBubble({
           <span title={new Date(note.created_at).toLocaleString()}>
             {formatTimestamp(note.created_at)}
           </span>
-        </span>
-      </div>
+        </div>
+      )}
 
       {hover && (
         // biome-ignore lint/a11y/noStaticElementInteractions: container only captures clicks to stop propagation to the parent bubble; semantic targets are the inner <button>s.
