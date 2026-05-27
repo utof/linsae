@@ -9,11 +9,7 @@ pre-commit:
       run: pnpm typecheck
     test:
       run: pnpm test
-    # TODO: re-enable knip after Task ~10 when runtime deps start being imported.
-    # Until then, knip reports dozens of "unused dependencies" for all the
-    # not-yet-imported runtime deps from Task 2, which would block every commit.
-    # knip:
-    #   run: pnpm knip
-    #
+    knip:
+      run: pnpm knip
     design-tokens:
       run: ./scripts/check-design-tokens.sh

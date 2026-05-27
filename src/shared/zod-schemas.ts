@@ -24,29 +24,12 @@ import { z } from 'zod'
  * Discriminated union of valid note types.
  *
  * Why: mirrors the NoteType union in src/shared/types.ts and the CHECK
- * constraint in the notes SQLite table. Used as a sub-schema by NoteSchema
- * and input schemas so the enum is defined exactly once.
+ * constraint in the notes SQLite table. Used as a sub-schema by every
+ * input schema below so the enum is defined exactly once. Not exported —
+ * external callers go through the input-schema wrappers.
  * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 6
  */
-export const NoteTypeSchema = z.enum(['claim', 'question', 'source'])
-
-/**
- * Full shape of a persisted note as returned over IPC.
- *
- * Why: the main process serialises DB rows into plain objects and sends them
- * to the renderer via contextBridge. NoteSchema validates the wire format so
- * a corrupt DB row is caught before it reaches React state.
- * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 6
- */
-export const NoteSchema = z.object({
-  id: z.string().min(1),
-  slug: z.string().min(1),
-  body: z.string(),
-  type: NoteTypeSchema,
-  created_at: z.number().int().nonnegative(),
-  updated_at: z.number().int().nonnegative(),
-  deleted_at: z.number().int().nonnegative().nullable(),
-})
+const NoteTypeSchema = z.enum(['claim', 'question', 'source'])
 
 /**
  * Input schema for the `notes:list` IPC channel.

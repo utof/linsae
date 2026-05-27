@@ -7,5 +7,6 @@
     "tests/**/*.test.{ts,tsx}"
   ],
   "project": ["src/**/*.{ts,tsx}", "tests/**/*.{ts,tsx}"],
-  "ignore": ["v21-design-system/**", "dist/**", "out/**"]
+  "ignore": ["src/preload/index.d.ts", "src/renderer/src/env.d.ts"],
+  "ignoreDependencies": ["@vitejs/plugin-react"]
 }
