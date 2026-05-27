@@ -1,13 +1,7 @@
-import { cleanup, fireEvent, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import { renderWithProviders as render } from '../../../../tests/setup'
 import { Composer } from './Composer'
-
-// vitest.config.ts sets globals: false, so RTL's auto-cleanup (which is gated on
-// `globalThis.afterEach`) is inert — without an explicit cleanup, every test in
-// this file would leave its DOM in place and `screen.getByRole('textbox')` would
-// find every prior render's textarea, throwing "Found multiple elements".
-afterEach(cleanup)
 
 describe('Composer', () => {
   it('Enter submits with mode=claim by default', () => {

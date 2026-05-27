@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { type RenderOptions, type RenderResult, render } from '@testing-library/react'
+import { cleanup, type RenderOptions, type RenderResult, render } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, vi } from 'vitest'
 import type { Note, SearchHit } from '../src/shared/types'
@@ -87,9 +87,11 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
   return api
 }
 
-// Reset vi.fn() call histories between tests so previous-test state doesn't leak.
-// Why: installMockApi overwrites window.api in beforeEach but does not clear per-fn
-// call histories across describe blocks; clearAllMocks ensures fresh assertions.
+// Reset vi.fn() call histories AND unmount any DOM rendered via RTL between
+// tests so previous-test state never leaks. `cleanup()` is what RTL would
+// auto-register if vitest globals were on (vitest.config.ts sets
+// `globals: false` so the auto-cleanup is inert) — see issue #16.
 afterEach(() => {
+  cleanup()
   vi.clearAllMocks()
 })
