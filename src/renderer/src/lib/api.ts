@@ -70,7 +70,7 @@ export const api = {
     /**
      * FTS5 search with snippet highlighting. Why `limit = 50`: matches the
      * Command Palette's default visible-result budget (spec §Search).
-     * @see src/main/ipc/search.ts
+     * @see src/main/ipc/notes.ts
      */
     run: (query: string, limit = 50): Promise<SearchHit[]> =>
       window.api.search.run({ query, limit }),
@@ -78,7 +78,7 @@ export const api = {
   links: {
     /**
      * Notes whose body wikilinks back to the given note id.
-     * @see src/main/ipc/links.ts
+     * @see src/main/ipc/notes.ts
      */
     backlinks: (noteId: string): Promise<Note[]> => window.api.links.backlinks({ noteId }),
   },
