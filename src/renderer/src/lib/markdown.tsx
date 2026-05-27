@@ -68,7 +68,7 @@ export const Markdown = memo(function Markdown({ body, onWikilinkClick, resolveS
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: click delegated to nested <a class="wikilink"> anchors which are themselves keyboard-focusable; the div carries no semantic role.
     // biome-ignore lint/a11y/useKeyWithClickEvents: anchors handle keyboard activation (Enter dispatches click on focused <a>); no key handler needed on the delegating wrapper.
-    <div ref={containerRef} onClick={handleClick}>
+    <div ref={containerRef} className="markdown-root" onClick={handleClick}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath, remarkWikilinks]}
         rehypePlugins={[rehypeKatex]}

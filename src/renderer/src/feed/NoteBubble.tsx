@@ -307,8 +307,8 @@ export function NoteBubble({
         border: `1px solid ${border}`,
         borderLeft: focused ? '2px solid #0D99FF' : `1px solid ${border}`,
         borderRadius: 14,
-        padding: '10px 14px',
-        margin: '6px 0',
+        padding: '6px 12px',
+        margin: '3px 0',
         maxWidth: 560,
         fontFamily: isQuestion ? 'var(--font-serif)' : 'var(--font-sans)',
         fontStyle: isQuestion ? 'italic' : 'normal',
@@ -354,50 +354,18 @@ export function NoteBubble({
         />
       )}
 
-      {overCap && (
-        <button
-          type="button"
-          aria-label={expanded ? 'collapse note' : `expand note — ${wordCount} words`}
-          onClick={(e) => {
-            e.stopPropagation()
-            setExpanded((v) => !v)
-          }}
-          style={{
-            marginTop: 8,
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 4,
-            border: 0,
-            background: 'transparent',
-            color: 'var(--fg-2)',
-            fontFamily: 'var(--font-sans)',
-            fontSize: 12,
-            fontStyle: 'normal',
-            cursor: 'pointer',
-            padding: 0,
-          }}
-        >
-          <ChevronDown
-            size={12}
-            style={{
-              transform: expanded ? 'rotate(180deg)' : 'none',
-              transition: 'transform 120ms ease',
-            }}
-          />
-          {expanded ? 'collapse' : `expand (${wordCount.toLocaleString()} words)`}
-        </button>
-      )}
-
-      {/* Telegram-style metadata footer: edited pen icon (if updated_at >
-         created_at) + timestamp, both flush-right at small font in fg-3.
-         A future git/history icon will sit here too (see issue tracker). */}
+      {/* Bottom row: expand button (when overCap) on the left, edited indicator
+         + timestamp on the right. Single flex line so the two never stack —
+         the expand button used to sit above the time, wasting a row. If the
+         last line of body text is short, the bubble looks tight; if long,
+         this row wraps cleanly below without overlap. */}
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'flex-end',
-          gap: 4,
-          marginTop: 4,
+          justifyContent: 'space-between',
+          gap: 8,
+          marginTop: 2,
           color: 'var(--fg-3)',
           fontFamily: 'var(--font-sans)',
           fontSize: 11,
@@ -405,18 +373,53 @@ export function NoteBubble({
           lineHeight: 1,
         }}
       >
-        {note.updated_at > note.created_at && (
-          <span
-            role="img"
-            aria-label="edited"
-            title={`edited ${new Date(note.updated_at).toLocaleString()}`}
-            style={{ display: 'inline-flex' }}
+        {overCap ? (
+          <button
+            type="button"
+            aria-label={expanded ? 'collapse note' : `expand note — ${wordCount} words`}
+            onClick={(e) => {
+              e.stopPropagation()
+              setExpanded((v) => !v)
+            }}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              border: 0,
+              background: 'transparent',
+              color: 'var(--fg-2)',
+              fontFamily: 'inherit',
+              fontSize: 'inherit',
+              cursor: 'pointer',
+              padding: 0,
+            }}
           >
-            <Pen size={10} />
-          </span>
+            <ChevronDown
+              size={12}
+              style={{
+                transform: expanded ? 'rotate(180deg)' : 'none',
+                transition: 'transform 120ms ease',
+              }}
+            />
+            {expanded ? 'collapse' : `expand (${wordCount.toLocaleString()} words)`}
+          </button>
+        ) : (
+          <span />
         )}
-        <span title={new Date(note.created_at).toLocaleString()}>
-          {formatTimestamp(note.created_at)}
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          {note.updated_at > note.created_at && (
+            <span
+              role="img"
+              aria-label="edited"
+              title={`edited ${new Date(note.updated_at).toLocaleString()}`}
+              style={{ display: 'inline-flex' }}
+            >
+              <Pen size={10} />
+            </span>
+          )}
+          <span title={new Date(note.created_at).toLocaleString()}>
+            {formatTimestamp(note.created_at)}
+          </span>
         </span>
       </div>
 
