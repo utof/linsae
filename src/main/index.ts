@@ -125,7 +125,7 @@ app.whenReady().then(() => {
   const notesDir = join(userData, 'notes')
   const logsDir = join(userData, 'logs')
   const dbPath = join(userData, 'linsae.db')
-  if (!existsSync(notesDir)) mkdirSync(notesDir, { recursive: true })
+  // notesDir is created by NotesDir's constructor below; only logsDir needs explicit mkdir.
   if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true })
 
   const db = openDb(dbPath)
