@@ -50,7 +50,10 @@ export function App() {
   const queryClient = useQueryClient()
   const { data: notes = [] } = useQuery({
     queryKey: ['notes'],
-    queryFn: () => api.notes.list({ limit: 5000 }),
+    // limit: defaults to 100 via the Zod schema. The plan literal said 5000 but
+    // NotesListInputSchema caps limit at 500 (zod-schemas.ts:60), so 5000 throws.
+    // True infinite scroll / pagination is tracked in issue #20 for v0.1.1+.
+    queryFn: () => api.notes.list(),
   })
   const [focusedId, setFocusedId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
