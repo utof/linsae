@@ -325,7 +325,13 @@ export function NoteBubble({
         position: 'relative',
         background: bg,
         border: `1px solid ${border}`,
-        borderLeft: focused ? '2px solid #0D99FF' : `1px solid ${border}`,
+        // Focused rail is drawn as an inset box-shadow on the left edge
+        // instead of overriding border-left to 2px. Border-width change
+        // would shift the content right by 1px when a bubble gets focused
+        // — visible jiggle on click. Box-shadow does not affect layout,
+        // so width / padding / content position stay pixel-stable across
+        // the focus state transition.
+        boxShadow: focused ? 'inset 2px 0 0 #0D99FF' : 'none',
         borderRadius: 14,
         padding: '6px 12px',
         margin: '6px 0',

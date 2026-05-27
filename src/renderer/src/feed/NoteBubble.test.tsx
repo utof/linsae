@@ -62,9 +62,12 @@ describe('NoteBubble', () => {
       />,
     )
     const bubble = container.querySelector('[data-bubble]') as HTMLElement
-    // jsdom serializes borderLeftColor as either '#0d99ff' or 'rgb(13, 153, 255)'.
-    const blc = bubble.style.borderLeftColor.toLowerCase()
-    expect(blc.includes('0d99ff') || blc.includes('13, 153, 255')).toBe(true)
+    // Focused rail is an inset box-shadow (not border-left) so the focus
+    // state doesn't shift bubble content by 1px. jsdom serialises the
+    // accent in either hex or rgb form depending on engine version.
+    const bs = bubble.style.boxShadow.toLowerCase()
+    expect(bs.includes('0d99ff') || bs.includes('13, 153, 255')).toBe(true)
+    expect(bs).toContain('inset')
   })
 
   it('calls onFocus when the bubble is clicked', () => {
