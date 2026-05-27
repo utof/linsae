@@ -69,7 +69,11 @@ export function NoteBubble({
 
   const isQuestion = note.type === 'question'
   const bg = focused ? 'var(--bg-3)' : isQuestion ? '#FFFBF0' : '#FFFFFF'
-  const border = isQuestion ? '#FAEAC2' : 'var(--border-0)'
+  // border-1 (one step up from v21 feed.jsx:122's `--border-0` hairline) —
+  // bubble-to-bubble separation was too subtle at the lightest tier; the
+  // default tier reads as a clearer card boundary without becoming a heavy
+  // chrome line. Question bubbles keep their amber `#FAEAC2` for type-tint.
+  const border = isQuestion ? '#FAEAC2' : 'var(--border-1)'
 
   // Truncate display body at BODY_TRUNCATE_AT chars and surface an expand
   // affordance when the user hasn't expanded yet. Word count uses the FULL
