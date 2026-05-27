@@ -81,6 +81,16 @@ export const api = {
      * @see src/main/ipc/notes.ts
      */
     backlinks: (noteId: string): Promise<Note[]> => window.api.links.backlinks({ noteId }),
+    /**
+     * Alias-aware wikilink resolver — maps a raw `[[target]]` slug to its
+     * destination note (or `null` for dangling). Why server-side: the rule
+     * is slug → alias → most-recent-wins (spec §Resolution rule), which
+     * needs the DB. The renderer-side `slugSet` only covers step 1 for the
+     * dangling-class render pass; click navigation must use this resolver.
+     * @see docs/specs/v0.1-rolling-feed-and-search.md §Resolution rule
+     * @see src/main/ipc/notes.ts
+     */
+    resolve: (slug: string): Promise<Note | null> => window.api.links.resolve({ slug }),
   },
   system: {
     /**
