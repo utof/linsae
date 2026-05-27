@@ -1,5 +1,5 @@
 import { Link2, Pen, Trash2 } from 'lucide-react'
-import { type MouseEvent, useRef, useState } from 'react'
+import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { Markdown } from '../lib/markdown'
 
@@ -73,6 +73,15 @@ export function NoteBubble({
     armTimer.current = window.setTimeout(() => setDeleteArmed(false), 2000)
   }
 
+  // Clear the arm timer on unmount so a pending setTimeout doesn't fire
+  // setState on a virtualised-out bubble (Feed uses react-virtuoso).
+  useEffect(
+    () => () => {
+      if (armTimer.current !== null) clearTimeout(armTimer.current)
+    },
+    [],
+  )
+
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: bubble is a click target for focus selection; keyboard nav lives on Composer / palette per spec.
     // biome-ignore lint/a11y/useKeyWithClickEvents: focus selection is mouse-only at v0.1 (see spec §Keyboard — no E shortcut for bubble selection).
@@ -124,6 +133,7 @@ export function NoteBubble({
           <button
             type="button"
             title="edit"
+            aria-label="edit"
             onClick={onEdit}
             style={{ border: 0, background: 'transparent', cursor: 'pointer', padding: 4 }}
           >
@@ -132,6 +142,7 @@ export function NoteBubble({
           <button
             type="button"
             title="copy link"
+            aria-label="copy link"
             onClick={onCopyLink}
             style={{ border: 0, background: 'transparent', cursor: 'pointer', padding: 4 }}
           >
@@ -140,6 +151,7 @@ export function NoteBubble({
           <button
             type="button"
             title="delete"
+            aria-label={deleteArmed ? 'confirm delete' : 'delete'}
             onClick={handleTrashClick}
             style={{
               border: 0,
