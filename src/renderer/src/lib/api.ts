@@ -109,5 +109,16 @@ export const api = {
      * @see src/main/ipc/system.ts
      */
     getReconcileSkipped: (): Promise<number> => window.api.system.getReconcileSkipped(),
+    /**
+     * Window controls for the custom frameless title bar — used by
+     * `WindowFrame` to drive minimize / maximize-toggle / close.
+     * @see src/renderer/src/topbar/WindowFrame.tsx
+     * @see src/main/ipc/system.ts
+     */
+    window: {
+      minimize: (): Promise<{ ok: true }> => window.api.system.window.minimize(),
+      toggleMaximize: (): Promise<{ ok: true }> => window.api.system.window.toggleMaximize(),
+      close: (): Promise<{ ok: true }> => window.api.system.window.close(),
+    },
   },
 }

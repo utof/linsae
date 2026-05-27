@@ -26,6 +26,20 @@ body,
   display: none;
 }
 
+/* Electron window-drag region helpers. -webkit-app-region is a non-standard
+ * CSS property only Electron consumes; it can't be expressed in React's
+ * CSSProperties type without a cast. A pair of utility classes is the
+ * least-noisy way to opt regions in/out. The custom WindowFrame at the top
+ * of the app marks its row as draggable so the user can grab any empty area
+ * to move the window; clickable children (⌘K pill, reveal-notes button,
+ * min/max/close icons) opt back out so they remain mouse-targets. */
+.app-region-drag {
+  -webkit-app-region: drag;
+}
+.app-region-no-drag {
+  -webkit-app-region: no-drag;
+}
+
 /* Reset the first/last child margins of every markdown subtree (rendered
  * inside NoteBubble via lib/markdown.tsx). react-markdown emits <p>, <ul>,
  * <pre>, <h*>, etc. with browser-default top/bottom margins (~16px each) —

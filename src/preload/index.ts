@@ -59,6 +59,16 @@ const api = {
     revealNotesFolder: (): Promise<{ ok: true }> => ipcRenderer.invoke('system:revealNotesFolder'),
     openLogsFolder: (): Promise<{ ok: true }> => ipcRenderer.invoke('system:openLogsFolder'),
     getReconcileSkipped: (): Promise<number> => ipcRenderer.invoke('system:getReconcileSkipped'),
+    // Window controls for the frameless BrowserWindow — invoked from the
+    // custom WindowFrame's min/max/close buttons (see src/renderer/src/topbar/
+    // WindowFrame.tsx). Main resolves the target window via
+    // BrowserWindow.fromWebContents so no window-id payload is needed.
+    window: {
+      minimize: (): Promise<{ ok: true }> => ipcRenderer.invoke('system:windowMinimize'),
+      toggleMaximize: (): Promise<{ ok: true }> =>
+        ipcRenderer.invoke('system:windowToggleMaximize'),
+      close: (): Promise<{ ok: true }> => ipcRenderer.invoke('system:windowClose'),
+    },
   },
 }
 

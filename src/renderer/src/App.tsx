@@ -7,7 +7,7 @@ import { Composer } from './composer/Composer'
 import { Feed } from './feed/Feed'
 import { api } from './lib/api'
 import { CommandPalette } from './palette/CommandPalette'
-import { Topbar } from './topbar/Topbar'
+import { WindowFrame } from './topbar/WindowFrame'
 
 /**
  * Root shell for v0.1 — composes Topbar, Feed, Composer, BacklinksPane, and
@@ -185,7 +185,7 @@ export function App() {
           minHeight: 0,
         }}
       >
-        <Topbar onOpenPalette={() => setPaletteOpen(true)} />
+        <WindowFrame onOpenPalette={() => setPaletteOpen(true)} />
         {skipped > 0 && !skipBannerDismissed && (
           <div
             style={{

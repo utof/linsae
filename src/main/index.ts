@@ -104,7 +104,14 @@ function createWindow(): BrowserWindow {
     minWidth: 720,
     minHeight: 400,
     show: false,
-    autoHideMenuBar: false,
+    // frame: false removes the OS title bar entirely; the renderer provides a
+    // custom drag region + min/max/close cluster in WindowFrame.tsx. autoHide
+    // hides the application menu bar (File/Edit/View/Window) — Alt still
+    // surfaces it. Together these eliminate the two chrome strips above the
+    // feed without losing any keyboard-accessible action.
+    frame: false,
+    autoHideMenuBar: true,
+    title: '',
     webPreferences: secureWebPreferences(join(__dirname, '../preload/index.js')),
   })
   win.on('ready-to-show', () => win.show())
