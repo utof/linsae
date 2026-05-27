@@ -62,4 +62,23 @@ describe('BacklinksPane', () => {
     fireEvent.click(screen.getByLabelText(/close pane/i))
     expect(onClose).toHaveBeenCalledOnce()
   })
+
+  it('clicking a row calls onJump with the note id', async () => {
+    mockApi.links.backlinks.mockResolvedValueOnce([
+      {
+        id: 'src1',
+        slug: 'a',
+        body: 'preview text',
+        type: 'claim',
+        created_at: 1,
+        updated_at: 1,
+        deleted_at: null,
+      },
+    ])
+    const onJump = vi.fn()
+    renderWithProviders(<BacklinksPane focusedNoteId="tgt" onClose={() => {}} onJump={onJump} />)
+    await waitFor(() => expect(screen.getByText(/preview text/i)).toBeInTheDocument())
+    fireEvent.click(screen.getByText(/preview text/i))
+    expect(onJump).toHaveBeenCalledExactlyOnceWith('src1')
+  })
 })
