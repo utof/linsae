@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import type { Note } from '../../../shared/types'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
@@ -327,6 +327,86 @@ export function Feed({
     return () => ro.disconnect()
   }, [])
 
+  // Suppress the benign "ResizeObserver loop completed with undelivered
+  // notifications" error that surfaces when `skipAnimationFrameInResizeObserver`
+  // is on (the prop tightens the measure→paint loop, which is exactly why
+  // it sometimes trips this loop-detection warning). Browsers raise it as
+  // an `error` event on window but it's harmless — petyosi documents the
+  // suppression alongside the prop. @see
+  // https://github.com/petyosi/react-virtuoso/issues/1049
+  useEffect(() => {
+    const onError = (e: ErrorEvent) => {
+      if (e.message === 'ResizeObserver loop completed with undelivered notifications.') {
+        e.stopImmediatePropagation()
+        e.preventDefault()
+      }
+    }
+    window.addEventListener('error', onError)
+    return () => window.removeEventListener('error', onError)
+  }, [])
+
+  // Memoize all `<Virtuoso>` callback/object props.
+  //
+  // Why: React 19 tightened ref-callback identity semantics — a
+  // ref-callback prop whose identity differs from the previous render is
+  // treated as detach (cleanup) + reattach (setup). Inline callbacks here
+  // would change identity on every Feed re-render, which would re-run
+  // Virtuoso's internal `co()` useEffect (dist/index.mjs:2380-2385)
+  // cleanup + setup cycle. That cycle writes scroll state into Virtuoso's
+  // internal stream, which fan-outs through Virtuoso's many
+  // `useEmitterValue` (a `useSyncExternalStore` wrapper at
+  // dist/index.mjs:2323) subscribers — each one calling
+  // `forceStoreRerender` on a snapshot change. Combined with our own
+  // measurement-cache subscription, that fan-out blew past React's ~50
+  // nested-update depth limit and trip "Maximum update depth exceeded",
+  // which `ErrorBoundary` then caught and the user saw as a blank-flash +
+  // scroll-position teleport. Memoization stabilizes the identities so
+  // Virtuoso's internal effects only re-run on real semantic changes.
+  //
+  // Closest documented analog of this React 19 footgun is
+  // `radix-ui/primitives#3799`. @see ADR 0004.
+  //
+  // `initialTopMostItemIndex` is read only at mount, so we freeze it via
+  // useMemo with empty deps (notes.length captured on first render). The
+  // suppression below is intentional — re-evaluating would invalidate the
+  // mount-time anchor.
+  const handleScrollerRef = useCallback((el: HTMLElement | Window | null) => {
+    const node = (el && 'classList' in el ? el : null) as HTMLElement | null
+    scrollerRef.current = node
+    setScrollerEl(node)
+    // Hide Virtuoso's native scrollbar — the custom thumb owns visibility.
+    // .scroll-area-inner in globals.css covers ::-webkit-scrollbar; inline
+    // scrollbarWidth covers Firefox.
+    if (node) {
+      node.classList.add('scroll-area-inner')
+      node.style.scrollbarWidth = 'none'
+    }
+  }, [])
+
+  const computeItemKey = useCallback((_: number, note: Note) => note.id, [])
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Virtuoso reads this only at mount; freezing the initial anchor captures the correct "start at the last bubble" position
+  const initialTopMostItemIndex = useMemo(
+    () => ({ index: Math.max(0, notes.length - 1), align: 'end' as const }),
+    [],
+  )
+
+  const itemContent = useCallback(
+    (_: number, note: Note) => (
+      <MeasuredBubble
+        note={note}
+        focused={note.id === focusedId}
+        onFocus={() => onFocus(note.id)}
+        onWikilinkClick={onWikilinkClick}
+        {...(resolveSlug ? { resolveSlug } : {})}
+        onEdit={() => onEdit(note.id)}
+        onDelete={() => onDelete(note.id)}
+        onCopyLink={() => onCopyLink(note.id)}
+      />
+    ),
+    [focusedId, onFocus, onWikilinkClick, resolveSlug, onEdit, onDelete, onCopyLink],
+  )
+
   return (
     <div
       ref={containerRef}
@@ -339,46 +419,23 @@ export function Feed({
         <Virtuoso
           ref={virtuoso}
           data={notes}
-          computeItemKey={(_, note) => note.id}
-          initialTopMostItemIndex={{ index: Math.max(0, notes.length - 1), align: 'end' }}
+          computeItemKey={computeItemKey}
+          initialTopMostItemIndex={initialTopMostItemIndex}
           alignToBottom
-          // skipAnimationFrameInResizeObserver was tried in `da9fad7` as a
-          // thumb-wobble mitigation, then kept because it seemed to help
-          // scroll-position stability around add-note. We've since removed
-          // it: with the prop on, Virtuoso's RO callbacks fire synchronously
-          // (no rAF batch) and the dozens of internal `useEmitterValue`
-          // subscriptions all snapshot-check during the same commit. Add
-          // our measurement-cache subscription on top and React's depth
-          // limit trips ("Maximum update depth exceeded"), ErrorBoundary
-          // catches, and the user sees the screen blank-flash + teleport
-          // up the feed as React 19 attempts to recreate the tree. The
-          // measurement cache (commit 6c8de79) replaces the architectural
-          // need this prop was masking. @see
-          // node_modules/.../react-virtuoso/dist/index.d.ts:1906-1909
-          scrollerRef={(el) => {
-            const node = el as HTMLElement | null
-            scrollerRef.current = node
-            setScrollerEl(node)
-            // Hide Virtuoso's native scrollbar — the custom thumb above
-            // owns visibility. .scroll-area-inner globals.css rule covers
-            // ::-webkit-scrollbar; inline scrollbarWidth covers Firefox.
-            if (node) {
-              node.classList.add('scroll-area-inner')
-              node.style.scrollbarWidth = 'none'
-            }
-          }}
-          itemContent={(_, note) => (
-            <MeasuredBubble
-              note={note}
-              focused={note.id === focusedId}
-              onFocus={() => onFocus(note.id)}
-              onWikilinkClick={onWikilinkClick}
-              {...(resolveSlug ? { resolveSlug } : {})}
-              onEdit={() => onEdit(note.id)}
-              onDelete={() => onDelete(note.id)}
-              onCopyLink={() => onCopyLink(note.id)}
-            />
-          )}
+          // skipAnimationFrameInResizeObserver tightens Virtuoso's
+          // measure→paint loop (TSDoc at
+          // node_modules/.../react-virtuoso/dist/index.d.ts:1906-1909).
+          // We briefly removed it in `823d506` on a wrong hypothesis that
+          // it was driving a cascade; the real cascade trigger was inline
+          // ref-callback identity churn (now fixed via the memoizations
+          // above). Restoring the prop because (a) it reduces visible
+          // flicker during fast scroll by avoiding the rAF delay between
+          // item render and its measurement propagating, and (b) the
+          // benign "ResizeObserver loop completed" warning it sometimes
+          // produces is suppressed below.
+          skipAnimationFrameInResizeObserver
+          scrollerRef={handleScrollerRef}
+          itemContent={itemContent}
           style={{ height: '100%' }}
         />
         <ScrollThumb
