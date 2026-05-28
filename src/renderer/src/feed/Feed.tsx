@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import type { Note } from '../../../shared/types'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
@@ -97,6 +97,31 @@ export function Feed({
   // once on mount) can read the latest index without re-binding.
   const lastIndexRef = useRef(notes.length - 1)
 
+  // Per-item size estimates Virtuoso uses to build its initial size tree
+  // BEFORE measurement. Without these, unmeasured items use a wild
+  // placeholder estimate (a diagnostic log capture showed it allocating
+  // ~1812 px for one short bubble — see commit b35d293 message) that
+  // inflates total scrollHeight and makes the custom thumb start small +
+  // collapse to correct sizing only as items are scrolled into view.
+  //
+  // Estimates don't need to be exact — they're replaced by real
+  // measurements as soon as each item is rendered. The heuristic here:
+  //   - count newline-delimited lines explicitly (markdown paragraphs)
+  //   - also count wrapped lines for any single long line (~70 chars per
+  //     line at our 14px font + 560px max-width)
+  //   - add ~36 px of bubble chrome (padding + border + wrapper padding)
+  //     and ~22 px per line of body content
+  // For a typical short note this lands within ~10 px of actual, which
+  // keeps the thumb stable through the estimate→measurement handoff.
+  const heightEstimates = useMemo(
+    () =>
+      notes.map((n) => {
+        const lines = Math.max(1, n.body.split('\n').length, Math.ceil(n.body.length / 70))
+        return 36 + lines * 22
+      }),
+    [notes],
+  )
+
   // Re-pin to bottom when notes grow, but only if the user is near the
   // bottom. Direct `scrollTop = scrollHeight` (not Virtuoso's scrollToIndex)
   // bypasses the per-item size-cache undershoot — see the ResizeObserver
@@ -112,17 +137,7 @@ export function Feed({
       const scroller = scrollerRef.current
       if (scroller) {
         const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
-        const willPin = distance < 120
-        console.log('[pin]', {
-          newLength: notes.length,
-          prevLength: lastCount.current,
-          scrollTop: scroller.scrollTop,
-          scrollHeight: scroller.scrollHeight,
-          clientHeight: scroller.clientHeight,
-          distance,
-          willPin,
-        })
-        if (willPin) {
+        if (distance < 120) {
           requestAnimationFrame(() => {
             scroller.scrollTop = scroller.scrollHeight
             requestAnimationFrame(() => {
@@ -194,23 +209,7 @@ export function Feed({
           computeItemKey={(_, note) => note.id}
           initialTopMostItemIndex={{ index: Math.max(0, notes.length - 1), align: 'end' }}
           alignToBottom
-          // Anchor the per-item estimate Virtuoso uses for unmeasured items.
-          // Without this, Virtuoso's default estimate is wildly large (the
-          // logged trace showed it allocating ~1812 px for one new short note
-          // — see [recompute #164] vs eventual [recompute #232] settled to
-          // +44 px). That over-estimate inflates total scrollHeight while
-          // items below the viewport remain unmeasured, which makes the
-          // custom thumb start tiny + position too high until enough items
-          // are measured for the cache to collapse back. 60 px ≈ the actual
-          // single-line-plus-padding wrapper height; bigger lists average
-          // higher, but a small under-estimate produces a barely-visible
-          // grow-into-place rather than the alarming shrink-and-teleport.
-          defaultItemHeight={60}
-          // Eagerly render items beyond the viewport so they get measured up
-          // front — shrinks the estimate-vs-actual window where the thumb
-          // would visibly drift. 1500 ≈ two viewports' worth (~25 bubbles),
-          // cheap for a personal-feed scale.
-          overscan={1500}
+          heightEstimates={heightEstimates}
           scrollerRef={(el) => {
             const node = el as HTMLElement | null
             scrollerRef.current = node

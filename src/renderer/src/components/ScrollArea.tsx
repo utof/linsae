@@ -67,16 +67,6 @@ const SCROLL_KEYS = new Set<string>([
   ' ',
 ])
 
-// Temporary diagnostic logging for the "thumb teleports up + shrinks on
-// add-new-note-while-scrolled-up" bug. Toggle to false (or remove) after
-// the bug is root-caused. Logs are tagged `[thumb]` / `[ro]` / `[geom]`
-// so DevTools can filter cleanly.
-const DEBUG_THUMB = true
-let logSeq = 0
-const dlog = (tag: string, payload: Record<string, unknown>) => {
-  if (DEBUG_THUMB) console.log(`[${tag} #${++logSeq}]`, payload)
-}
-
 const SPRING_EASE = 'cubic-bezier(0.34, 1.56, 0.94, 1)'
 
 interface ThumbGeometry {
@@ -153,7 +143,6 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
     const maxThumbTop = clientHeight - thumbHeight
     const thumbTop = maxScroll > 0 ? (scrollTop / maxScroll) * maxThumbTop : 0
     thumbHeightRef.current = thumbHeight
-    dlog('geom', { scrollTop, scrollHeight, clientHeight, thumbTop, thumbHeight })
     setGeometry((g) => ({ ...g, thumbTop, thumbHeight }))
   }, [scrollEl])
 
@@ -165,7 +154,6 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
     // to land instantly, not animate from 0.
     const prev = lastScrollHeightRef.current
     const sizeChanged = prev > 0 && scrollHeight !== prev
-    dlog('recompute', { scrollHeight, prevScrollHeight: prev, sizeChanged })
     lastScrollHeightRef.current = scrollHeight
     if (sizeChanged) {
       if (resizeTimer.current !== null) clearTimeout(resizeTimer.current)
@@ -206,21 +194,7 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
       if (!e.isTrusted) return
       if (SCROLL_KEYS.has(e.key)) showAndQueueHide()
     }
-    const ro = new ResizeObserver((entries) => {
-      dlog('ro', {
-        fired: entries.map((e) => {
-          const el = e.target as HTMLElement
-          return {
-            tag: el.tagName,
-            cls: el.className?.toString().slice(0, 40),
-            w: Math.round(e.contentRect.width),
-            h: Math.round(e.contentRect.height),
-            scrollH: el.scrollHeight,
-          }
-        }),
-      })
-      recompute()
-    })
+    const ro = new ResizeObserver(recompute)
     scrollEl.addEventListener('scroll', onScroll, { passive: true })
     scrollEl.addEventListener('wheel', onWheel, { passive: true })
     scrollEl.addEventListener('keydown', onKeyDown)
