@@ -202,6 +202,24 @@ export function Feed({
     return () => ro.disconnect()
   }, [])
 
+  // Suppress the benign "ResizeObserver loop completed with undelivered
+  // notifications" error that surfaces when `skipAnimationFrameInResizeObserver`
+  // is on (the prop tightens the measure→paint loop, which is exactly why
+  // it sometimes trips this loop-detection warning). Browsers raise it as
+  // an `error` event on window but it's harmless — petyosi documents the
+  // suppression alongside the prop. @see
+  // https://github.com/petyosi/react-virtuoso/issues/1049
+  useEffect(() => {
+    const onError = (e: ErrorEvent) => {
+      if (e.message === 'ResizeObserver loop completed with undelivered notifications.') {
+        e.stopImmediatePropagation()
+        e.preventDefault()
+      }
+    }
+    window.addEventListener('error', onError)
+    return () => window.removeEventListener('error', onError)
+  }, [])
+
   return (
     <div
       ref={containerRef}
@@ -218,6 +236,18 @@ export function Feed({
           initialTopMostItemIndex={{ index: Math.max(0, notes.length - 1), align: 'end' }}
           alignToBottom
           heightEstimates={heightEstimates}
+          // Skip the rAF wrapper around Virtuoso's internal ResizeObserver
+          // callback. Undocumented prop added in v4.9.0 (see TSDoc at
+          // node_modules/.../react-virtuoso/dist/index.d.ts:1906-1909). The
+          // OSS Virtuoso fundamentally cannot deliver a stable scrollHeight
+          // for chat-style variable-content lists (maintainer confirmed at
+          // petyosi/react-virtuoso#1240, #131, #428, #1382); this flag is the
+          // closest in-OSS mitigation — it tightens the measure→paint loop,
+          // which the discussion thread #1083 confirms reduces (not
+          // eliminates) the estimate→measure scrollHeight flicker. Trade-off:
+          // can trigger a benign "ResizeObserver loop completed" warning;
+          // suppressed by the window-error listener above.
+          skipAnimationFrameInResizeObserver
           scrollerRef={(el) => {
             const node = el as HTMLElement | null
             scrollerRef.current = node
