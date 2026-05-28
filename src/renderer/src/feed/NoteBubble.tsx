@@ -370,7 +370,12 @@ export function NoteBubble({
         boxShadow: focused ? 'inset 2px 0 0 #0D99FF' : 'none',
         borderRadius: 14,
         padding: '6px 12px',
-        margin: '6px 0',
+        // Inter-bubble vertical gap lives on the Feed itemContent wrapper as
+        // padding — NOT margin here — so Virtuoso's per-item size cache
+        // (read from getBoundingClientRect → border-box) includes the gap.
+        // Margin would sit outside content-box and under-report scrollHeight
+        // by 6px per bubble, breaking scrollToIndex / followOutput / browser
+        // scrollTop clamps (causes the "teleport up" scroll bugs).
         maxWidth: 560,
         fontFamily: isQuestion ? 'var(--font-serif)' : 'var(--font-sans)',
         fontStyle: isQuestion ? 'italic' : 'normal',

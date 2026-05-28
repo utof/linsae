@@ -20,24 +20,24 @@ interface Props {
  * — using vanilla `Virtuoso` from `react-virtuoso` (MIT). The commercial
  * `VirtuosoMessageList` is explicitly avoided per spec §Stack.
  *
- * Why `followOutput="auto"` + `alignToBottom`: chat-style reverse-scroll. When
- * the user is already pinned to the bottom and a new note arrives, Virtuoso
- * scrolls down so the new bubble enters view; if the user has scrolled up to
- * read older notes, their scroll position is preserved (spec §Feed —
- * "scroll snaps down on send"; users browsing history are not yanked).
+ * Why `alignToBottom` only (no `followOutput`): we own scroll-on-grow
+ * imperatively in the notes.length useEffect below. `followOutput="auto"`
+ * would race with that, and historically called Virtuoso's `scrollToIndex`
+ * — fine now that bubble margin moved into the itemContent wrapper's
+ * padding (sizes are accurate), but two scroll-setters fighting on every
+ * send caused visible teleport-up flashes. `initialTopMostItemIndex`
+ * covers the mount-time "start at the last bubble" requirement so the
+ * first paint is already at the bottom.
  *
- * Why the `useEffect` watching `notes.length` (vs relying on `followOutput`
- * alone): `followOutput` calls Virtuoso's `scrollToIndex` internally, which
- * under-shoots due to the per-item size-cache margin issue documented on
- * the ResizeObserver effect below. The manual effect uses direct
- * `scrollTop = scrollHeight` to land on the true painted bottom. It's
- * guarded on a near-bottom distance check so a user scrolled up reading
- * history is NOT yanked when a new note arrives. The `>` (not `!==`)
- * comparison deliberately narrows to additions only: deletes shouldn't
- * yank the viewport, and edits that swap a note for another at the same
- * index aren't flagged here (same-length, identity change).
- * `initialTopMostItemIndex` covers the mount-time "start at the last
- * bubble" requirement so the first paint is already at the bottom.
+ * Why the `useEffect` watching `notes.length`: imperatively pins to the
+ * true bottom on send when the user is near-bottom. Direct `scrollTop =
+ * scrollHeight` is more robust than Virtuoso's scrollToIndex even with
+ * accurate sizes (no animation jitter, no cache-staleness window). Guarded
+ * on a near-bottom distance check so a user scrolled up reading history
+ * is NOT yanked when a new note arrives. The `>` (not `!==`) comparison
+ * deliberately narrows to additions only: deletes shouldn't yank the
+ * viewport, and edits that swap a note for another at the same index
+ * aren't flagged here (same-length, identity change).
  *
  * Why `computeItemKey={(_, note) => note.id}`: default vanilla-Virtuoso keys
  * by array index, which under delete/reorder would let downstream bubbles
@@ -159,21 +159,10 @@ export function Feed({
     const ro = new ResizeObserver(() => {
       const scroller = scrollerRef.current
       if (!scroller || !atBottomRef.current) return
-      // Bypass Virtuoso's `scrollToIndex({align:'end'})` — its per-item size
-      // cache is systematically UNDER-reported because:
-      //   - NoteBubble's root div has `margin: '6px 0'`
-      //   - the react-markdown subtree emits <p>/<ul>/<pre> with default
-      //     browser margins, untreated by globals.css
-      // and Virtuoso sizes items via ResizeObserver.contentRect, which
-      // EXCLUDES margins. The computed end position therefore lands short
-      // of the true bottom — the latest bubble stays clipped below the
-      // viewport regardless of how correct our at-bottom guard is.
-      //
-      // Direct `scrollTop = scrollHeight` uses the browser's native scroll
-      // extent (which DOES respect margins via actual painted bounds),
-      // hitting the true bottom every time.
-      // @see https://virtuoso.dev/react-virtuoso/troubleshooting
-      //      ("List does not scroll to the bottom / items jump around")
+      // Direct `scrollTop = scrollHeight` (not Virtuoso's scrollToIndex)
+      // because the latter animates and runs through its own size cache,
+      // both of which can race the rapid resize tick. The native scroll
+      // extent always lands on the true painted bottom.
       scroller.scrollTop = scroller.scrollHeight
     })
     ro.observe(el)
@@ -195,7 +184,6 @@ export function Feed({
           computeItemKey={(_, note) => note.id}
           initialTopMostItemIndex={{ index: Math.max(0, notes.length - 1), align: 'end' }}
           alignToBottom
-          followOutput="auto"
           scrollerRef={(el) => {
             const node = el as HTMLElement | null
             scrollerRef.current = node
@@ -209,16 +197,24 @@ export function Feed({
             }
           }}
           itemContent={(_, note) => (
-            <NoteBubble
-              note={note}
-              focused={note.id === focusedId}
-              onFocus={() => onFocus(note.id)}
-              onWikilinkClick={onWikilinkClick}
-              {...(resolveSlug ? { resolveSlug } : {})}
-              onEdit={() => onEdit(note.id)}
-              onDelete={() => onDelete(note.id)}
-              onCopyLink={() => onCopyLink(note.id)}
-            />
+            // Vertical gap lives here as padding (not on the bubble as margin)
+            // so Virtuoso's per-item size cache — read from this wrapper's
+            // border-box — accounts for it. Margin on the bubble would sit
+            // outside content-box and silently under-report scrollHeight by
+            // ~6px per bubble, breaking scrollToIndex / followOutput and
+            // letting the browser clamp scrollTop mid-scroll ("teleport up").
+            <div style={{ paddingTop: 6, paddingBottom: 6 }}>
+              <NoteBubble
+                note={note}
+                focused={note.id === focusedId}
+                onFocus={() => onFocus(note.id)}
+                onWikilinkClick={onWikilinkClick}
+                {...(resolveSlug ? { resolveSlug } : {})}
+                onEdit={() => onEdit(note.id)}
+                onDelete={() => onDelete(note.id)}
+                onCopyLink={() => onCopyLink(note.id)}
+              />
+            </div>
           )}
           style={{ height: '100%' }}
         />
