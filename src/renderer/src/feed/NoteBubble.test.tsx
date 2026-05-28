@@ -4,6 +4,9 @@ import { renderWithProviders as render } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
 import { NoteBubble } from './NoteBubble'
 
+// Shared no-op for the new required expand props.
+const noop = () => {}
+
 const baseNote: Note = {
   id: 'n1',
   slug: 'foo',
@@ -20,11 +23,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={baseNote}
         focused={false}
-        onFocus={() => {}}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
-        onDelete={() => {}}
-        onCopyLink={() => {}}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
       />,
     )
     expect(screen.getByText('hello')).toBeInTheDocument()
@@ -36,11 +41,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={q}
         focused={false}
-        onFocus={() => {}}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
-        onDelete={() => {}}
-        onCopyLink={() => {}}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
       />,
     )
     const bubble = container.querySelector('[data-bubble]') as HTMLElement
@@ -54,11 +61,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={baseNote}
         focused={true}
-        onFocus={() => {}}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
-        onDelete={() => {}}
-        onCopyLink={() => {}}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
       />,
     )
     const bubble = container.querySelector('[data-bubble]') as HTMLElement
@@ -76,11 +85,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={baseNote}
         focused={false}
+        expanded={false}
+        onToggleExpand={noop}
         onFocus={onFocus}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
-        onDelete={() => {}}
-        onCopyLink={() => {}}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
       />,
     )
     const bubble = container.querySelector('[data-bubble]')
@@ -94,11 +105,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={baseNote}
         focused={false}
-        onFocus={() => {}}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
-        onDelete={() => {}}
-        onCopyLink={() => {}}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
       />,
     )
     expect(screen.queryByRole('button', { name: /expand note/i })).not.toBeInTheDocument()
@@ -111,11 +124,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={{ ...baseNote, body: longBody }}
         focused={false}
-        onFocus={() => {}}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
-        onDelete={() => {}}
-        onCopyLink={() => {}}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
       />,
     )
     const btn = screen.getByRole('button', { name: /expand note — 1100 words/i })
@@ -123,27 +138,42 @@ describe('NoteBubble', () => {
     expect(btn).toHaveTextContent(/expand \(1,100 words\)/)
   })
 
-  it('expand toggle: clicking flips to collapse + reveals full body', () => {
+  it('expand toggle: expanded=false truncates body; expanded=true reveals full body', () => {
     // Suffix marker placed PAST the 4096-char cap so a "rendered" assertion
     // proves the truncation actually lifted.
     const longBody = `${'x '.repeat(2100)}TAIL_MARKER`
     expect(longBody.length).toBeGreaterThan(4096)
-    const { container } = render(
+    // Collapsed: TAIL_MARKER is past the cap, so it's not in the DOM.
+    const { container: cCollapsed } = render(
       <NoteBubble
         note={{ ...baseNote, body: longBody }}
         focused={false}
-        onFocus={() => {}}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
-        onDelete={() => {}}
-        onCopyLink={() => {}}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
       />,
     )
-    // Pre-expand: TAIL_MARKER is past the cap, so it's not in the DOM.
-    expect(container.textContent).not.toContain('TAIL_MARKER')
-    fireEvent.click(screen.getByRole('button', { name: /expand note/i }))
+    expect(cCollapsed.textContent).not.toContain('TAIL_MARKER')
+    // Expanded: full body is rendered.
+    const { container: cExpanded } = render(
+      <NoteBubble
+        note={{ ...baseNote, body: longBody }}
+        focused={false}
+        expanded={true}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
     expect(screen.getByRole('button', { name: /collapse note/i })).toBeInTheDocument()
-    expect(container.textContent).toContain('TAIL_MARKER')
+    expect(cExpanded.textContent).toContain('TAIL_MARKER')
   })
 
   it('expand button click does NOT trigger onFocus (stops propagation)', () => {
@@ -153,11 +183,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={{ ...baseNote, body: longBody }}
         focused={false}
+        expanded={false}
+        onToggleExpand={noop}
         onFocus={onFocus}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
-        onDelete={() => {}}
-        onCopyLink={() => {}}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: /expand note/i }))
@@ -170,11 +202,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={baseNote}
         focused={false}
-        onFocus={() => {}}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
         onDelete={onDelete}
-        onCopyLink={() => {}}
+        onCopyLink={noop}
       />,
     )
     const bubble = container.querySelector('[data-bubble]')
@@ -195,11 +229,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={baseNote}
         focused={false}
-        onFocus={() => {}}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
-        onDelete={() => {}}
-        onCopyLink={() => {}}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
       />,
     )
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
@@ -210,11 +246,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={baseNote}
         focused={false}
-        onFocus={() => {}}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
-        onDelete={() => {}}
-        onCopyLink={() => {}}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
       />,
     )
     const bubble = container.querySelector('[data-bubble]')
@@ -229,11 +267,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={baseNote}
         focused={false}
+        expanded={false}
+        onToggleExpand={noop}
         onFocus={onFocus}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
-        onDelete={() => {}}
-        onCopyLink={() => {}}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
       />,
     )
     const bubble = container.querySelector('[data-bubble]')
@@ -248,11 +288,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={baseNote}
         focused={false}
-        onFocus={() => {}}
-        onWikilinkClick={() => {}}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
         onEdit={onEdit}
-        onDelete={() => {}}
-        onCopyLink={() => {}}
+        onDelete={noop}
+        onCopyLink={noop}
       />,
     )
     const bubble = container.querySelector('[data-bubble]')
@@ -269,10 +311,12 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={baseNote}
         focused={false}
-        onFocus={() => {}}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
-        onDelete={() => {}}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
         onCopyLink={onCopyLink}
       />,
     )
@@ -290,11 +334,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={baseNote}
         focused={false}
-        onFocus={() => {}}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
         onDelete={onDelete}
-        onCopyLink={() => {}}
+        onCopyLink={noop}
       />,
     )
     const bubble = container.querySelector('[data-bubble]')
@@ -310,11 +356,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={baseNote}
         focused={false}
-        onFocus={() => {}}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
-        onDelete={() => {}}
-        onCopyLink={() => {}}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
       />,
     )
     const bubble = container.querySelector('[data-bubble]')
@@ -339,11 +387,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={{ ...baseNote, created_at: ms, updated_at: ms }}
         focused={false}
-        onFocus={() => {}}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
-        onDelete={() => {}}
-        onCopyLink={() => {}}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
       />,
     )
     // ":23" appears in both 12h ("2:23 PM") and 24h ("14:23") formats.
@@ -355,11 +405,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={{ ...baseNote, created_at: 1737000000000, updated_at: 1737000000000 }}
         focused={false}
-        onFocus={() => {}}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
-        onDelete={() => {}}
-        onCopyLink={() => {}}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
       />,
     )
     // The hover toolbar's edit button (aria-label="edit") is conditionally
@@ -373,11 +425,13 @@ describe('NoteBubble', () => {
       <NoteBubble
         note={{ ...baseNote, created_at: 1737000000000, updated_at: 1737000060000 }}
         focused={false}
-        onFocus={() => {}}
-        onWikilinkClick={() => {}}
-        onEdit={() => {}}
-        onDelete={() => {}}
-        onCopyLink={() => {}}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
       />,
     )
     expect(screen.getByLabelText('edited')).toBeInTheDocument()
@@ -389,11 +443,13 @@ describe('NoteBubble', () => {
         <NoteBubble
           note={baseNote}
           focused={false}
-          onFocus={() => {}}
-          onWikilinkClick={() => {}}
-          onEdit={() => {}}
-          onDelete={() => {}}
-          onCopyLink={() => {}}
+          expanded={false}
+          onToggleExpand={noop}
+          onFocus={noop}
+          onWikilinkClick={noop}
+          onEdit={noop}
+          onDelete={noop}
+          onCopyLink={noop}
         />
         <div data-testid="outside">outside</div>
       </div>,
@@ -404,5 +460,63 @@ describe('NoteBubble', () => {
     expect(screen.getByRole('menu')).toBeInTheDocument()
     fireEvent.mouseDown(screen.getByTestId('outside'))
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  // ── Prop-driven expand/collapse (Tasks 2+3) ───────────────────────────────
+
+  it('renders truncated body with an expand affordance when over cap and expanded=false', () => {
+    const longBody = 'x'.repeat(5000)
+    render(
+      <NoteBubble
+        note={{ ...baseNote, body: longBody }}
+        focused={false}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    expect(screen.getByRole('button', { name: /expand note/i })).toBeInTheDocument()
+  })
+
+  it('calls onToggleExpand with the note id when the expand control is clicked', () => {
+    const onToggleExpand = vi.fn()
+    const longBody = 'x'.repeat(5000)
+    render(
+      <NoteBubble
+        note={{ ...baseNote, body: longBody }}
+        focused={false}
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /expand note/i }))
+    expect(onToggleExpand).toHaveBeenCalledWith(baseNote.id)
+  })
+
+  it('shows the collapse affordance when expanded=true', () => {
+    const longBody = 'x'.repeat(5000)
+    render(
+      <NoteBubble
+        note={{ ...baseNote, body: longBody }}
+        focused={false}
+        expanded={true}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    expect(screen.getByRole('button', { name: /collapse note/i })).toBeInTheDocument()
   })
 })

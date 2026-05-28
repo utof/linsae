@@ -2,6 +2,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
+import { bottomAnchorScrollTop } from './expandCollapseMorph'
 import { NoteBubble } from './NoteBubble'
 
 interface Props {
@@ -13,6 +14,14 @@ interface Props {
   onEdit: (id: string) => void
   onDelete: (id: string) => void
   onCopyLink: (id: string) => void
+}
+
+/** Returns a new Set with `id` toggled — immutable so React sees a new ref. */
+function toggleSet(prev: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const next = new Set(prev)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  return next
 }
 
 /**
@@ -113,6 +122,16 @@ export function Feed({
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null)
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set())
+  const pendingToggleRef = useRef<{
+    id: string
+    index: number
+    start: number
+    startItemH: number
+    scrollTopStart: number
+    bottomScreenOffset: number
+    collapsing: boolean
+  } | null>(null)
 
   const virtualizer = useVirtualizer({
     count: notes.length,
@@ -174,6 +193,54 @@ export function Feed({
     ro.observe(el)
     return () => ro.disconnect()
   }, [virtualizer])
+
+  // Stable id-taking toggle (compiler-friendly; no per-item closure). Captures
+  // the morphing item's geometry BEFORE the content swaps so the post-commit
+  // layout effect can hold the bottom edge fixed on collapse. See ADR 0007.
+  const handleToggleExpand = useCallback(
+    (id: string) => {
+      const scroller = scrollerEl
+      if (!scroller) {
+        setExpandedIds((prev) => toggleSet(prev, id))
+        return
+      }
+      const index = notes.findIndex((n) => n.id === id)
+      const vItem = virtualizer.getVirtualItems().find((v) => v.index === index)
+      const itemEl = scroller.querySelector<HTMLElement>(`[data-index="${index}"]`)
+      const collapsing = expandedIds.has(id)
+      if (vItem && itemEl) {
+        const startItemH = itemEl.getBoundingClientRect().height
+        pendingToggleRef.current = {
+          id,
+          index,
+          start: vItem.start,
+          startItemH,
+          scrollTopStart: scroller.scrollTop,
+          bottomScreenOffset: vItem.start + startItemH - scroller.scrollTop,
+          collapsing,
+        }
+      }
+      setExpandedIds((prev) => toggleSet(prev, id))
+    },
+    [notes, virtualizer, scrollerEl, expandedIds],
+  )
+
+  // After the toggle re-renders and the bubble re-measures, hold the anchor.
+  // Collapse: pin the bottom edge (notes below stay put). Expand: top-anchored,
+  // so no scroll change. Instant path; a later task animates it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed intentionally on expandedIds; reads one-shot captured geometry from the ref.
+  useLayoutEffect(() => {
+    const pending = pendingToggleRef.current
+    const scroller = scrollerEl
+    if (!pending || !scroller) return
+    pendingToggleRef.current = null
+    if (!pending.collapsing) return
+    const itemEl = scroller.querySelector<HTMLElement>(`[data-index="${pending.index}"]`)
+    const endItemH = itemEl ? itemEl.getBoundingClientRect().height : pending.startItemH
+    const maxScroll = scroller.scrollHeight - scroller.clientHeight
+    const next = bottomAnchorScrollTop(pending.start, endItemH, pending.bottomScreenOffset)
+    scroller.scrollTop = Math.max(0, Math.min(maxScroll, next))
+  }, [expandedIds])
 
   // Memoized ref callback per ADR 0004 (React 19 ref-callback identity).
   // Captures only refs, a setState setter, and side-effect calls that
@@ -241,6 +308,8 @@ export function Feed({
                   <NoteBubble
                     note={note}
                     focused={note.id === focusedId}
+                    expanded={expandedIds.has(note.id)}
+                    onToggleExpand={handleToggleExpand}
                     // Pass the id-taking callbacks straight through — no
                     // per-item closures. NoteBubble binds them to its own
                     // note.id, which keeps its props referentially stable so

@@ -190,6 +190,12 @@ function formatTimestamp(ms: number): string {
 interface Props {
   note: Note
   focused: boolean
+  /** Whether this bubble's over-cap body is expanded. Source of truth lives in
+   * Feed so the expand/collapse height morph can be driven by the virtualizer.
+   * See adrs/0007-animate-virtual-item-resize.md. */
+  expanded: boolean
+  /** Toggle request — Feed runs the animated morph + scroll anchoring. */
+  onToggleExpand: (id: string) => void
   // Action callbacks take the note id rather than being pre-bound to a
   // closure by the parent. Why: `Feed` renders bubbles inside a `.map()`, and
   // a per-item `() => onFocus(note.id)` closure is recreated every render —
@@ -237,6 +243,8 @@ interface Props {
 export function NoteBubble({
   note,
   focused,
+  expanded,
+  onToggleExpand,
   onFocus,
   onWikilinkClick,
   resolveSlug,
@@ -246,17 +254,10 @@ export function NoteBubble({
 }: Props) {
   const [hover, setHover] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
-  const [expanded, setExpanded] = useState(false)
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null)
   // window.setTimeout returns number in renderer (DOM lib); Node's setTimeout
   // returns NodeJS.Timeout. Tests run in jsdom — the number variant is correct.
   const armTimer = useRef<number | null>(null)
-  // Wrapper around the rendered markdown body — Web Animations API target
-  // for the expand/collapse height transition. Animating height here (not
-  // on the outer bubble) keeps the absolute hover toolbar and context menu
-  // outside the clipped region, while still giving a "roll out" feel to
-  // the body content itself.
-  const markdownWrapRef = useRef<HTMLDivElement | null>(null)
 
   // Bind the id-taking action callbacks to this bubble's id. These are single
   // component-body closures (not per-`.map()`-iteration), so the React
@@ -313,36 +314,6 @@ export function NoteBubble({
   // for claim bubbles (14px) and question bubbles (16px italic).
   const TIME_RESERVATION = '\u00A0'.repeat(18)
   const displayBody = overCap ? rawDisplayBody : `${rawDisplayBody}${TIME_RESERVATION}`
-
-  const handleToggleExpand = (e: MouseEvent) => {
-    e.stopPropagation()
-    const wrap = markdownWrapRef.current
-    if (!wrap) {
-      setExpanded((v) => !v)
-      return
-    }
-    // FLIP-style: measure the wrap's height NOW (before content swaps),
-    // toggle expanded, then on the next animation frame measure the new
-    // height and animate from old → new via Web Animations API. WAAPI is
-    // used (not CSS transition on `height`) because the wrap's natural
-    // height is `auto` — there's no explicit start value to transition
-    // from, and setting an explicit height permanently would clip future
-    // markdown re-renders.
-    const startHeight = wrap.offsetHeight
-    setExpanded((v) => !v)
-    requestAnimationFrame(() => {
-      if (!markdownWrapRef.current) return
-      const endHeight = markdownWrapRef.current.offsetHeight
-      if (startHeight === endHeight) return
-      markdownWrapRef.current.animate(
-        [
-          { height: `${startHeight}px`, overflow: 'hidden' },
-          { height: `${endHeight}px`, overflow: 'hidden' },
-        ],
-        { duration: 240, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' },
-      )
-    })
-  }
 
   const handleTrashClick = (e: MouseEvent) => {
     e.stopPropagation()
@@ -406,11 +377,10 @@ export function NoteBubble({
         overflowWrap: 'anywhere',
       }}
     >
-      {/* Single wrapper around the markdown body — ref'd for the expand/
-         collapse height animation (Web Animations API in handleToggleExpand).
-         position: relative anchors the fade-out overlay when truncated.
-         pointer-events:none on the overlay so clicks pass through. */}
-      <div ref={markdownWrapRef} style={{ position: 'relative' }}>
+      {/* data-bubble-body: Feed's expand/collapse morph sets this element's
+         height (overflow:hidden) frame-by-frame to roll the body up/down.
+         See useExpandCollapseMorph. */}
+      <div data-bubble-body style={{ position: 'relative' }}>
         <Markdown
           body={displayBody}
           onWikilinkClick={onWikilinkClick}
@@ -454,7 +424,10 @@ export function NoteBubble({
           <button
             type="button"
             aria-label={expanded ? 'collapse note' : `expand note — ${wordCount} words`}
-            onClick={handleToggleExpand}
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggleExpand(note.id)
+            }}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
