@@ -53,10 +53,20 @@ final size + anchored scroll, no tween.
 - Imperatively-set `bodyEl.style.height/overflow` survive React re-renders because
   those properties are absent from the JSX style object (React only reconciles
   properties it sets).
-- **Known minor limitation:** toggling a *different* note within the ~240ms morph
-  cancels the in-flight rAF but does not reset the previous note's clipped
-  `bodyEl`, which can stay clipped until it re-renders or is virtualized out and
-  back (self-healing). Rare; acceptable for v0.1.3.
+- **Cross-note cancel is handled:** toggling a *different* note within the ~240ms
+  morph calls `cancel()`, which now resets the in-flight note's `bodyEl` clip and
+  the thumb-suppression flag (the hook tracks the active body in a ref). Without
+  this the first note would strand at its interpolated clipped height — it does
+  NOT self-heal on re-render, because the clip is imperative `style.height/
+  overflow` absent from JSX.
+- **Expand near the feed bottom is bottom-pinned, by design of the library.**
+  `applyFrame` only writes `scrollTop` on collapse, relying on
+  `shouldAdjustScrollPositionOnItemSizeChange` being off to keep expand
+  top-anchored. But virtual-core's `resizeItem` runs its own `wasAtEnd` scroll
+  adjustment (under `anchorTo:'end'` within `scrollEndThreshold`) independently of
+  that predicate, so expanding a note within ~120px of the bottom pins the bottom
+  instead of the top. This is the better chat behavior and invisible mid-feed, so
+  it is accepted rather than worked around.
 
 ## Sources
 - tanstack-virtual `resizeItem` / `shouldAdjustScrollPositionOnItemSizeChange` —

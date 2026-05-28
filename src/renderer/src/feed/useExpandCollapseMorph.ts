@@ -37,13 +37,30 @@ export function useExpandCollapseMorph(args: {
 }) {
   const { virtualizer, scrollerEl, setMorphingIndex, suppressThumbResizeRef } = args
   const rafRef = useRef<number | null>(null)
+  // The body element of the morph currently in flight, so `cancel` can undo its
+  // clip. Without this, toggling a DIFFERENT note mid-morph would strand the
+  // first note's body at its interpolated clipped height (it does not self-heal
+  // on re-render — the height/overflow are imperative, absent from JSX). ADR 0007.
+  const activeBodyRef = useRef<HTMLElement | null>(null)
+
+  // Undo a morph's imperative state. Safe to call mid-flight; idempotent.
+  const reset = useCallback(() => {
+    const body = activeBodyRef.current
+    if (body) {
+      body.style.removeProperty('height')
+      body.style.removeProperty('overflow')
+      activeBodyRef.current = null
+    }
+    suppressThumbResizeRef.current = false
+  }, [suppressThumbResizeRef])
 
   const cancel = useCallback(() => {
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current)
       rafRef.current = null
     }
-  }, [])
+    reset()
+  }, [reset])
 
   useEffect(() => cancel, [cancel])
 
@@ -56,6 +73,7 @@ export function useExpandCollapseMorph(args: {
     (pending: PendingMorph, bodyEl: HTMLElement, endItemH: number) => {
       const scroller = scrollerEl
       cancel()
+      activeBodyRef.current = bodyEl
       const { index, start, startItemH, bottomScreenOffset, collapsing } = pending
 
       // Non-body chrome (paddings/border + the expand-row) is constant across
@@ -74,9 +92,7 @@ export function useExpandCollapseMorph(args: {
         }
       }
       const finish = () => {
-        bodyEl.style.removeProperty('height')
-        bodyEl.style.removeProperty('overflow')
-        suppressThumbResizeRef.current = false
+        reset()
         rafRef.current = null
         setMorphingIndex(null) // re-attaches measureElement → final remeasure
       }
@@ -107,7 +123,7 @@ export function useExpandCollapseMorph(args: {
       }
       rafRef.current = requestAnimationFrame(tick)
     },
-    [virtualizer, scrollerEl, cancel, setMorphingIndex, suppressThumbResizeRef],
+    [virtualizer, scrollerEl, cancel, reset, setMorphingIndex, suppressThumbResizeRef],
   )
 
   return { run, cancel }
