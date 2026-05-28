@@ -1,8 +1,93 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import type { Note } from '../../../shared/types'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
+import {
+  clearMeasurement,
+  getCachedHeight,
+  getMeasurementTick,
+  recordMeasurement,
+  subscribeMeasurements,
+} from './measurementCache'
 import { NoteBubble } from './NoteBubble'
+
+interface MeasuredBubbleProps {
+  note: Note
+  focused: boolean
+  onFocus: () => void
+  onWikilinkClick: (slug: string) => void
+  resolveSlug?: (slug: string) => boolean
+  onEdit: () => void
+  onDelete: () => void
+  onCopyLink: () => void
+}
+
+/**
+ * Wraps `NoteBubble` with (1) the inter-bubble vertical gap as wrapper
+ * padding (so Virtuoso's internal size measurements account for it) and
+ * (2) a ResizeObserver that reports the wrapper's painted border-box
+ * height into the per-note measurement cache. Feed reads the cache (via
+ * useSyncExternalStore) to derive a `modelTotal` it passes to
+ * `useScrollThumb`, decoupling the custom thumb from Virtuoso's flaky
+ * estimate-then-measure scrollHeight.
+ *
+ * Why a wrapper component (not a hook inside NoteBubble): NoteBubble's
+ * own outer div is the styled white card whose height excludes the
+ * inter-bubble gap. Observing this wrapper instead captures the gap and
+ * yields the same number Virtuoso would compute for its size cache —
+ * keeping the thumb math grounded in the same units as the scroller.
+ *
+ * Cache cleanup on note deletion lives in the parent Feed (which owns
+ * the notes array); virtualization-driven unmount/remount does NOT clear
+ * the cache so measurements survive scroll-out-of-viewport.
+ */
+function MeasuredBubble({
+  note,
+  focused,
+  onFocus,
+  onWikilinkClick,
+  resolveSlug,
+  onEdit,
+  onDelete,
+  onCopyLink,
+}: MeasuredBubbleProps) {
+  const wrapperRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const el = wrapperRef.current
+    if (!el) return
+    const ro = new ResizeObserver(([entry]) => {
+      if (!entry) return
+      // Prefer borderBoxSize (the modern, spec-compliant box that includes
+      // padding+border, which is what painting + scrollHeight contribute
+      // to). contentRect would exclude our 12px wrapper padding and the
+      // bubble's own 12px+2px chrome — fall back to it only if the browser
+      // doesn't ship borderBoxSize (older WebKit), adding +12 to compensate
+      // for the wrapper padding (the bubble's own padding+border is inside
+      // contentRect.height already).
+      const h = entry.borderBoxSize?.[0]
+        ? entry.borderBoxSize[0].blockSize
+        : entry.contentRect.height + 12
+      recordMeasurement(note.id, h)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [note.id])
+
+  return (
+    <div ref={wrapperRef} style={{ paddingTop: 6, paddingBottom: 6 }}>
+      <NoteBubble
+        note={note}
+        focused={focused}
+        onFocus={onFocus}
+        onWikilinkClick={onWikilinkClick}
+        {...(resolveSlug ? { resolveSlug } : {})}
+        onEdit={onEdit}
+        onDelete={onDelete}
+        onCopyLink={onCopyLink}
+      />
+    </div>
+  )
+}
 
 interface Props {
   notes: Note[]
@@ -74,7 +159,6 @@ export function Feed({
   // its effect when Virtuoso captures its scroller on the second render
   // pass. Plain refs don't trigger re-renders; state does.
   const [scrollerEl, setScrollerEl] = useState<HTMLElement | null>(null)
-  const thumb = useScrollThumb(scrollerEl)
   // Whether the user is currently pinned to the bottom of the feed.
   //
   // We do NOT use Virtuoso's `atBottomStateChange` callback because of a
@@ -97,38 +181,66 @@ export function Feed({
   // once on mount) can read the latest index without re-binding.
   const lastIndexRef = useRef(notes.length - 1)
 
-  // Per-item size estimates Virtuoso uses to build its initial size tree
-  // BEFORE measurement. Without these, unmeasured items use a wild
-  // placeholder estimate (a diagnostic log capture showed it allocating
-  // ~1812 px for one short bubble — see commit b35d293 message) that
-  // inflates total scrollHeight and makes the custom thumb start small +
-  // collapse to correct sizing only as items are scrolled into view.
+  // Subscribe to the per-note measurement cache populated by `MeasuredBubble`
+  // below. `useSyncExternalStore`'s `getSnapshot` requires a stable scalar
+  // — the cache itself mutates in place, so we expose a monotonic tick.
+  // Every cache write bumps the tick → React re-derives `modelTotal`.
+  const measurementTick = useSyncExternalStore(subscribeMeasurements, getMeasurementTick)
+
+  // Total content height the thumb projects against, derived from the
+  // measurement cache rather than `scrollEl.scrollHeight`. Why: OSS
+  // react-virtuoso fundamentally swaps unmeasured-item placeholder
+  // estimates for real heights as items enter viewport, which jerks
+  // anything bound to scrollHeight (maintainer-confirmed at
+  // petyosi/react-virtuoso#1240). The cache holds only real measured
+  // heights and never swaps — every write is a real bubble reporting
+  // its painted size for the first time, so the thumb only moves once
+  // per new measurement (smooth-eased via the resizing flag) instead
+  // of jerking on every estimate→measure handoff.
   //
-  // The estimate must account for the BODY_TRUNCATE_AT=4096 cap in
-  // NoteBubble: a 10k-char note actually paints only its first 4096 chars
-  // + an expand-button row, so estimating from `body.length` directly
-  // over-counts for long notes by ~2x and causes the thumb to jump when
-  // the user scrolls one such bubble into view and Virtuoso re-measures
-  // it down to the true size. Cap the input length to mirror the bubble.
-  //
-  //   - 26 px = wrapper padding (12) + bubble border (2) + bubble padding (12)
-  //   - 22 px / line at our 14px font + 560 px max-width (~70 chars / line)
-  //   - +18 px for the bottom flex row (expand button + timestamp) when overCap
-  //
-  // Must stay in sync with `BODY_TRUNCATE_AT` in NoteBubble.tsx — repeated
-  // here rather than imported because exporting a UI-internal constant for
-  // one consumer wastes more API surface than this 6-character duplicate.
-  const heightEstimates = useMemo(() => {
-    const RENDER_CAP = 4096
-    return notes.map((n) => {
-      const overCap = n.body.length > RENDER_CAP
-      const renderedLen = overCap ? RENDER_CAP : n.body.length
-      const newlineLines = (n.body.match(/\n/g)?.length ?? 0) + 1
-      const wrapLines = Math.ceil(renderedLen / 70)
-      const lines = Math.max(1, Math.min(newlineLines, RENDER_CAP), wrapLines)
-      return 26 + lines * 22 + (overCap ? 18 : 0)
-    })
+  // Unmeasured items contribute the running average of measured ones
+  // (or 100 px fallback when the cache is cold), so the model converges
+  // toward the true total as the user scrolls. The thumb is briefly
+  // approximate on a fresh session — acceptable, the alternative was
+  // worse and the convergence completes within the first scroll pass.
+  // measurementTick controls the cache content getCachedHeight reads — it's
+  // in deps so the memo re-runs on cache mutations. Biome can't trace the
+  // dependency through a module-level import, hence the suppression.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: measurementTick is the subscription signal that gates cache validity
+  const modelTotal = useMemo(() => {
+    if (notes.length === 0) return 0
+    let knownSum = 0
+    let knownCount = 0
+    for (const n of notes) {
+      const h = getCachedHeight(n.id)
+      if (h !== undefined) {
+        knownSum += h
+        knownCount++
+      }
+    }
+    const avg = knownCount > 0 ? knownSum / knownCount : 100
+    const unknownCount = notes.length - knownCount
+    return knownSum + unknownCount * avg
+  }, [notes, measurementTick])
+
+  // Drop cache entries for notes removed from the data (note deletion).
+  // Virtuoso virtualization unmount must NOT clear (we want measurements
+  // to survive scroll-out-of-viewport) — that's why the cleanup lives here
+  // in the parent owner of the notes array, not in `MeasuredBubble`.
+  const prevIdsRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const currentIds = new Set(notes.map((n) => n.id))
+    for (const oldId of prevIdsRef.current) {
+      if (!currentIds.has(oldId)) clearMeasurement(oldId)
+    }
+    prevIdsRef.current = currentIds
   }, [notes])
+
+  // Custom thumb driver. Bound to modelTotal (the cache-derived sum)
+  // instead of the DOM scrollHeight so the thumb's size/position only
+  // changes on real per-note measurements, never on Virtuoso's internal
+  // estimate→measure swap.
+  const thumb = useScrollThumb(scrollerEl, modelTotal)
 
   // Re-pin to bottom when notes grow, but only if the user is near the
   // bottom. Direct `scrollTop = scrollHeight` (not Virtuoso's scrollToIndex)
@@ -235,18 +347,13 @@ export function Feed({
           computeItemKey={(_, note) => note.id}
           initialTopMostItemIndex={{ index: Math.max(0, notes.length - 1), align: 'end' }}
           alignToBottom
-          heightEstimates={heightEstimates}
-          // Skip the rAF wrapper around Virtuoso's internal ResizeObserver
-          // callback. Undocumented prop added in v4.9.0 (see TSDoc at
-          // node_modules/.../react-virtuoso/dist/index.d.ts:1906-1909). The
-          // OSS Virtuoso fundamentally cannot deliver a stable scrollHeight
-          // for chat-style variable-content lists (maintainer confirmed at
-          // petyosi/react-virtuoso#1240, #131, #428, #1382); this flag is the
-          // closest in-OSS mitigation — it tightens the measure→paint loop,
-          // which the discussion thread #1083 confirms reduces (not
-          // eliminates) the estimate→measure scrollHeight flicker. Trade-off:
-          // can trigger a benign "ResizeObserver loop completed" warning;
-          // suppressed by the window-error listener above.
+          // skipAnimationFrameInResizeObserver tightens Virtuoso's
+          // measure→paint loop (added v4.9.0, TSDoc at dist/index.d.ts:1906-
+          // 1909). With the measurement cache below feeding modelTotal we
+          // no longer rely on Virtuoso's scrollHeight for the thumb, but
+          // this flag still helps the IN-VIRTUOSO scroll-position stability
+          // around add-note (and is documented to pair with the benign
+          // ResizeObserver-loop-error suppressor above).
           skipAnimationFrameInResizeObserver
           scrollerRef={(el) => {
             const node = el as HTMLElement | null
@@ -261,24 +368,16 @@ export function Feed({
             }
           }}
           itemContent={(_, note) => (
-            // Vertical gap lives here as padding (not on the bubble as margin)
-            // so Virtuoso's per-item size cache — read from this wrapper's
-            // border-box — accounts for it. Margin on the bubble would sit
-            // outside content-box and silently under-report scrollHeight by
-            // ~6px per bubble, breaking scrollToIndex / followOutput and
-            // letting the browser clamp scrollTop mid-scroll ("teleport up").
-            <div style={{ paddingTop: 6, paddingBottom: 6 }}>
-              <NoteBubble
-                note={note}
-                focused={note.id === focusedId}
-                onFocus={() => onFocus(note.id)}
-                onWikilinkClick={onWikilinkClick}
-                {...(resolveSlug ? { resolveSlug } : {})}
-                onEdit={() => onEdit(note.id)}
-                onDelete={() => onDelete(note.id)}
-                onCopyLink={() => onCopyLink(note.id)}
-              />
-            </div>
+            <MeasuredBubble
+              note={note}
+              focused={note.id === focusedId}
+              onFocus={() => onFocus(note.id)}
+              onWikilinkClick={onWikilinkClick}
+              {...(resolveSlug ? { resolveSlug } : {})}
+              onEdit={() => onEdit(note.id)}
+              onDelete={() => onDelete(note.id)}
+              onCopyLink={() => onCopyLink(note.id)}
+            />
           )}
           style={{ height: '100%' }}
         />

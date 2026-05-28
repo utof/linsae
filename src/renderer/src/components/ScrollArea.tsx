@@ -94,7 +94,23 @@ interface ThumbGeometry {
  * CommandPalette) should use `<ScrollArea>` below instead — it does the
  * wiring for you.
  */
-export function useScrollThumb(scrollEl: HTMLElement | null): {
+/**
+ * @param scrollEl The DOM scroll container (Virtuoso's scrollerRef target,
+ *   or the inner div of `<ScrollArea>`).
+ * @param totalHeight Optional override for the total content height the
+ *   thumb projects against. When supplied, replaces `scrollEl.scrollHeight`
+ *   in all thumb-geometry math — used by `Feed` to bypass Virtuoso's
+ *   estimate-then-measure scrollHeight swap (maintainer-confirmed
+ *   limitation of OSS Virtuoso at petyosi/react-virtuoso#1240). The
+ *   actual `scrollTop` still comes from `scrollEl` since browser-truth is
+ *   the only valid signal for scroll position. Surfaces without a model
+ *   total (ScrollArea-wrapped BacklinksPane, CommandPalette) leave it
+ *   undefined and the DOM scrollHeight is read directly.
+ */
+export function useScrollThumb(
+  scrollEl: HTMLElement | null,
+  totalHeight?: number,
+): {
   geometry: ThumbGeometry
   thumbHovered: boolean
   areaHovered: boolean
@@ -144,29 +160,43 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
   const applyGeometry = useCallback(() => {
     if (!scrollEl) return
     const { scrollTop, scrollHeight, clientHeight } = scrollEl
-    if (scrollHeight <= clientHeight + 1) {
+    // Total against which the thumb projects: caller-supplied model when
+    // provided (Feed's per-note measurement-cache sum), DOM scrollHeight
+    // otherwise (ScrollArea-wrapped surfaces).
+    const total = totalHeight ?? scrollHeight
+    if (total <= clientHeight + 1) {
       thumbHeightRef.current = 0
       setGeometry((g) => (g.thumbHeight === 0 ? g : { ...g, thumbHeight: 0, thumbTop: 0 }))
       return
     }
-    const ratio = clientHeight / scrollHeight
+    const ratio = clientHeight / total
     const thumbHeight = Math.max(ratio * clientHeight, THUMB_MIN_HEIGHT)
-    const maxScroll = scrollHeight - clientHeight
+    const maxScroll = total - clientHeight
     const maxThumbTop = clientHeight - thumbHeight
+    // scrollTop comes from the DOM (browser-truth for the user's actual
+    // position), even when projecting against the model total. In steady
+    // state (all bubbles measured) the two agree; transient mismatch
+    // during initial load just means the thumb is slightly off until the
+    // cache fills in — acceptable trade-off for killing the estimate→measure
+    // jerk in the steady-state experience.
     const thumbTop = maxScroll > 0 ? (scrollTop / maxScroll) * maxThumbTop : 0
     thumbHeightRef.current = thumbHeight
     setGeometry((g) => ({ ...g, thumbTop, thumbHeight }))
-  }, [scrollEl])
+  }, [scrollEl, totalHeight])
 
   const recompute = useCallback(() => {
     if (!scrollEl) return
-    const { scrollHeight } = scrollEl
+    // Track the same value applyGeometry uses (model total when supplied)
+    // so sizeChanged fires on model mutations as well as DOM resize. Without
+    // this, a fresh cache entry from the Feed measurement RO would update
+    // the geometry value but bypass the resizing-flag transition.
+    const currentTotal = totalHeight ?? scrollEl.scrollHeight
     // Detect content-size changes vs scroll-position changes. First paint
     // (prev === 0) does NOT count as a change — we want the initial geometry
     // to land instantly, not animate from 0.
     const prev = lastScrollHeightRef.current
-    const sizeChanged = prev > 0 && scrollHeight !== prev
-    lastScrollHeightRef.current = scrollHeight
+    const sizeChanged = prev > 0 && currentTotal !== prev
+    lastScrollHeightRef.current = currentTotal
     if (sizeChanged) {
       if (resizeTimer.current !== null) clearTimeout(resizeTimer.current)
       setResizing(true)
@@ -193,7 +223,7 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
       return
     }
     applyGeometry()
-  }, [scrollEl, applyGeometry])
+  }, [scrollEl, applyGeometry, totalHeight])
 
   const showAndQueueHide = useCallback(() => {
     setGeometry((g) => (g.visible ? g : { ...g, visible: true }))
