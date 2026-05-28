@@ -16,17 +16,35 @@ interface Props {
 }
 
 /**
- * Starting per-bubble height in px. tanstack-virtual seeds its internal
- * size tree with this for not-yet-measured items, then replaces with the
- * real `measureElement`-reported value on first paint. The estimate only
- * needs to be order-of-magnitude correct — over- or under-shooting wastes
- * a few frames of layout work but doesn't compound into scroll instability
- * the way Virtuoso's estimates did, because tanstack's total size is the
- * exact sum of `sizes + estimates` and the inner container's CSS `height`
- * is that exact number. Browser-native scroll anchoring then keeps
- * visible content stable when off-screen items get measured.
+ * Content-aware per-bubble height estimate (px) for not-yet-measured items.
+ * tanstack-virtual seeds its size tree with this, then replaces each entry
+ * with the real `measureElement`-reported value once the bubble paints.
+ *
+ * Why content-aware and not a flat constant: the estimate is what positions
+ * UNMEASURED items, and during a fast scroll the user blows past a run of
+ * never-measured bubbles in a single frame. A flat 80 px under-counts every
+ * multi-line note, so the rendered window spans far fewer real pixels than
+ * the wheel just travelled — the virtualizer renders items for the wrong
+ * region and the viewport shows blank until measurement catches up. Sizing
+ * the estimate to the note body keeps the unmeasured size-tree close enough
+ * to reality that the rendered window lands where the user actually scrolled.
+ *
+ * The model mirrors `NoteBubble`'s layout: ~26 px chrome (padding + border +
+ * timestamp row), 22 px per rendered line (newline-driven OR ~70-char wrap,
+ * whichever is larger), plus 18 px for the expand control on over-cap notes.
+ * Order-of-magnitude correctness is enough — exact heights arrive via
+ * `measureElement` on first paint and the inner container's CSS height then
+ * equals the virtualizer's exact total, so scroll-anchoring stays stable.
  */
-const ESTIMATE_SIZE = 80
+function estimateBubbleHeight(body: string): number {
+  const RENDER_CAP = 4096
+  const overCap = body.length > RENDER_CAP
+  const renderedLen = overCap ? RENDER_CAP : body.length
+  const newlineLines = (body.match(/\n/g)?.length ?? 0) + 1
+  const wrapLines = Math.ceil(renderedLen / 70)
+  const lines = Math.max(1, Math.min(newlineLines, RENDER_CAP), wrapLines)
+  return 26 + lines * 22 + (overCap ? 18 : 0)
+}
 
 /**
  * Distance (px) below which the user counts as "at the end" for
@@ -99,7 +117,7 @@ export function Feed({
   const virtualizer = useVirtualizer({
     count: notes.length,
     getScrollElement: () => scrollerEl,
-    estimateSize: () => ESTIMATE_SIZE,
+    estimateSize: (index) => estimateBubbleHeight(notes[index]?.body ?? ''),
     // Stable key per note (uuidv7 id). Critical for prepend stability under
     // `anchorTo: 'end'`: tanstack captures the visible item by key before a
     // data change, finds the same keyed item after, and adjusts scrollTop
@@ -109,7 +127,17 @@ export function Feed({
     anchorTo: 'end',
     followOnAppend: true,
     scrollEndThreshold: SCROLL_END_THRESHOLD,
-    overscan: 5,
+    // Rows rendered beyond the viewport on each side. tanstack's docs name
+    // this the lever for "slow-rendering blank items at the top and bottom
+    // when scrolling": a scroll event must recompute the range, re-render,
+    // and paint — at least a frame of latency — and a fast wheel flick can
+    // travel past a small buffer within that frame, exposing blank space.
+    // A trackpad/thumb drag moves only a few px per frame so it never
+    // outruns the buffer, which is why the gap only showed on hard wheel
+    // flicks. 16 (up from 5) pre-mounts ~1k+ px of bubbles each side so the
+    // exposed region is already painted before the user reaches it.
+    // @see https://tanstack.com/virtual/latest/docs/api/virtualizer#overscan
+    overscan: 16,
   })
 
   // Initial scroll-to-bottom once the scroller is available. Layout
