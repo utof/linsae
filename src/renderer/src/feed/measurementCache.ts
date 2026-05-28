@@ -34,10 +34,38 @@
 const cache = new Map<string, number>()
 const listeners = new Set<() => void>()
 let tick = 0
+let bumpScheduled = false
 
+/**
+ * Microtask-coalesce the listener notification so a burst of synchronous
+ * `recordMeasurement` calls (e.g. many MeasuredBubble ResizeObservers firing
+ * their initial entries as the user scrolls a stream of new items into
+ * viewport) collapses to ONE `tick` increment and ONE re-render.
+ *
+ * Why: without batching, every cache mutation increments `tick` and
+ * synchronously notifies the `useSyncExternalStore` subscription in `Feed`.
+ * React reads the snapshot after each commit's passive effects; if the
+ * snapshot keeps changing on every commit (because newly-mounted bubbles
+ * keep firing RO microtasks that bump the tick), React schedules another
+ * render, more mounts run, more ROs fire, until the ~50-update depth limit
+ * trips with "Maximum update depth exceeded" and the renderer unmounts —
+ * blank GUI. Coalescing into a single microtask collapses the burst into
+ * one stable snapshot change per turn.
+ *
+ * Correctness: by the time the microtask runs, every `cache.set` from the
+ * burst is already committed (synchronous Map writes), so `modelTotal`'s
+ * recomputation in the resulting re-render sees the full updated state.
+ *
+ * @see https://github.com/utof/linsae diagnosis of v0.1.2-polish phase
+ */
 function bump(): void {
-  tick++
-  for (const l of listeners) l()
+  if (bumpScheduled) return
+  bumpScheduled = true
+  queueMicrotask(() => {
+    bumpScheduled = false
+    tick++
+    for (const l of listeners) l()
+  })
 }
 
 /**
