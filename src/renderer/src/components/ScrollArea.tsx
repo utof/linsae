@@ -174,12 +174,16 @@ export function useScrollThumb(
     const maxScroll = total - clientHeight
     const maxThumbTop = clientHeight - thumbHeight
     // scrollTop comes from the DOM (browser-truth for the user's actual
-    // position), even when projecting against the model total. In steady
-    // state (all bubbles measured) the two agree; transient mismatch
-    // during initial load just means the thumb is slightly off until the
-    // cache fills in — acceptable trade-off for killing the estimate→measure
-    // jerk in the steady-state experience.
-    const thumbTop = maxScroll > 0 ? (scrollTop / maxScroll) * maxThumbTop : 0
+    // position), even when projecting against the model total. Clamp the
+    // raw ratio's projection to [0, maxThumbTop] because when `total` is
+    // smaller than DOM scrollHeight (cold model cache while Virtuoso is
+    // still measuring), `scrollTop / maxScroll` can exceed 1 and put the
+    // thumb below the viewport — invisible to the user until the cache
+    // fills in. Clamping keeps the thumb pinned at the visual bottom in
+    // that transient, which is the right approximation of "user is at the
+    // bottom of the content".
+    const rawThumbTop = maxScroll > 0 ? (scrollTop / maxScroll) * maxThumbTop : 0
+    const thumbTop = Math.max(0, Math.min(maxThumbTop, rawThumbTop))
     thumbHeightRef.current = thumbHeight
     setGeometry((g) => ({ ...g, thumbTop, thumbHeight }))
   }, [scrollEl, totalHeight])

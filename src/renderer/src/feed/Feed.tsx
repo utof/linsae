@@ -11,6 +11,32 @@ import {
 } from './measurementCache'
 import { NoteBubble } from './NoteBubble'
 
+/**
+ * Cold-cache height estimate for a not-yet-measured note. Used only as a
+ * fallback inside `modelTotal` — replaced by the real ResizeObserver-
+ * reported height the moment the bubble mounts and paints.
+ *
+ * The bubble caps its rendered body at NoteBubble's BODY_TRUNCATE_AT=4096
+ * chars and surfaces an expand-button row past that. The heuristic mirrors:
+ *   - 26 px wrapper padding (12) + bubble border (2) + bubble padding (12)
+ *   - 22 px / wrapped line at our 14 px font + 560 px max-width (~70 chars)
+ *   - +18 px for the expand-button row when overCap
+ * Within ~10 px of real for typical short notes; converges via real
+ * measurement on first viewport entry. Must stay loosely in sync with
+ * NoteBubble's BODY_TRUNCATE_AT — repeated here as 4096 rather than
+ * imported because exporting one UI constant for one consumer is more
+ * API surface than the duplicate is worth.
+ */
+function estimateBubbleHeight(body: string): number {
+  const RENDER_CAP = 4096
+  const overCap = body.length > RENDER_CAP
+  const renderedLen = overCap ? RENDER_CAP : body.length
+  const newlineLines = (body.match(/\n/g)?.length ?? 0) + 1
+  const wrapLines = Math.ceil(renderedLen / 70)
+  const lines = Math.max(1, Math.min(newlineLines, RENDER_CAP), wrapLines)
+  return 26 + lines * 22 + (overCap ? 18 : 0)
+}
+
 interface MeasuredBubbleProps {
   note: Note
   focused: boolean
@@ -192,35 +218,22 @@ export function Feed({
   // react-virtuoso fundamentally swaps unmeasured-item placeholder
   // estimates for real heights as items enter viewport, which jerks
   // anything bound to scrollHeight (maintainer-confirmed at
-  // petyosi/react-virtuoso#1240). The cache holds only real measured
-  // heights and never swaps — every write is a real bubble reporting
-  // its painted size for the first time, so the thumb only moves once
-  // per new measurement (smooth-eased via the resizing flag) instead
-  // of jerking on every estimate→measure handoff.
+  // petyosi/react-virtuoso#1240). The cache holds real measured heights
+  // (no swap), and uncached notes fall back to a per-note text-length
+  // heuristic — close enough that the cache→real handoff is invisible
+  // under the 200 ms eased transition. Without the per-note heuristic
+  // fallback the cold-cache modelTotal grossly mismatches Virtuoso's
+  // scrollHeight, causing scrollTop / (modelTotal - clientHeight) to
+  // exceed 1 and the thumb to land below the viewport on app start.
   //
-  // Unmeasured items contribute the running average of measured ones
-  // (or 100 px fallback when the cache is cold), so the model converges
-  // toward the true total as the user scrolls. The thumb is briefly
-  // approximate on a fresh session — acceptable, the alternative was
-  // worse and the convergence completes within the first scroll pass.
-  // measurementTick controls the cache content getCachedHeight reads — it's
-  // in deps so the memo re-runs on cache mutations. Biome can't trace the
-  // dependency through a module-level import, hence the suppression.
   // biome-ignore lint/correctness/useExhaustiveDependencies: measurementTick is the subscription signal that gates cache validity
   const modelTotal = useMemo(() => {
     if (notes.length === 0) return 0
-    let knownSum = 0
-    let knownCount = 0
+    let total = 0
     for (const n of notes) {
-      const h = getCachedHeight(n.id)
-      if (h !== undefined) {
-        knownSum += h
-        knownCount++
-      }
+      total += getCachedHeight(n.id) ?? estimateBubbleHeight(n.body)
     }
-    const avg = knownCount > 0 ? knownSum / knownCount : 100
-    const unknownCount = notes.length - knownCount
-    return knownSum + unknownCount * avg
+    return total
   }, [notes, measurementTick])
 
   // Drop cache entries for notes removed from the data (note deletion).
