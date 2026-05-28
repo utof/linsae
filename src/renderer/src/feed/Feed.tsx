@@ -194,6 +194,23 @@ export function Feed({
           computeItemKey={(_, note) => note.id}
           initialTopMostItemIndex={{ index: Math.max(0, notes.length - 1), align: 'end' }}
           alignToBottom
+          // Anchor the per-item estimate Virtuoso uses for unmeasured items.
+          // Without this, Virtuoso's default estimate is wildly large (the
+          // logged trace showed it allocating ~1812 px for one new short note
+          // — see [recompute #164] vs eventual [recompute #232] settled to
+          // +44 px). That over-estimate inflates total scrollHeight while
+          // items below the viewport remain unmeasured, which makes the
+          // custom thumb start tiny + position too high until enough items
+          // are measured for the cache to collapse back. 60 px ≈ the actual
+          // single-line-plus-padding wrapper height; bigger lists average
+          // higher, but a small under-estimate produces a barely-visible
+          // grow-into-place rather than the alarming shrink-and-teleport.
+          defaultItemHeight={60}
+          // Eagerly render items beyond the viewport so they get measured up
+          // front — shrinks the estimate-vs-actual window where the thumb
+          // would visibly drift. 1500 ≈ two viewports' worth (~25 bubbles),
+          // cheap for a personal-feed scale.
+          overscan={1500}
           scrollerRef={(el) => {
             const node = el as HTMLElement | null
             scrollerRef.current = node
