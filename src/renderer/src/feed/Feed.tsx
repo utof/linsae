@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react'
-import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
+import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { NoteBubble } from './NoteBubble'
 
 interface Props {
@@ -15,40 +16,72 @@ interface Props {
 }
 
 /**
- * Renders the rolling feed of notes — oldest at the top, newest at the bottom
- * — using vanilla `Virtuoso` from `react-virtuoso` (MIT). The commercial
- * `VirtuosoMessageList` is explicitly avoided per spec §Stack.
+ * Starting per-bubble height in px. tanstack-virtual seeds its internal
+ * size tree with this for not-yet-measured items, then replaces with the
+ * real `measureElement`-reported value on first paint. The estimate only
+ * needs to be order-of-magnitude correct — over- or under-shooting wastes
+ * a few frames of layout work but doesn't compound into scroll instability
+ * the way Virtuoso's estimates did, because tanstack's total size is the
+ * exact sum of `sizes + estimates` and the inner container's CSS `height`
+ * is that exact number. Browser-native scroll anchoring then keeps
+ * visible content stable when off-screen items get measured.
+ */
+const ESTIMATE_SIZE = 80
+
+/**
+ * Distance (px) below which the user counts as "at the end" for
+ * `followOnAppend` and the container-resize re-pin. Matches the saga's
+ * 120 px threshold from the previous Virtuoso implementation: a user
+ * within ~one bubble of the bottom still wants new sends pulled into
+ * view; a user well past 120 px is browsing history and shouldn't be
+ * yanked.
+ */
+const SCROLL_END_THRESHOLD = 120
+
+/**
+ * Renders the rolling feed of notes — oldest at the top, newest at the
+ * bottom — using `@tanstack/react-virtual`'s headless virtualizer with
+ * its chat-shaped `anchorTo: 'end'` mode.
  *
- * Why `followOutput="auto"` + `alignToBottom`: chat-style reverse-scroll. When
- * the user is already pinned to the bottom and a new note arrives, Virtuoso
- * scrolls down so the new bubble enters view; if the user has scrolled up to
- * read older notes, their scroll position is preserved (spec §Feed —
- * "scroll snaps down on send"; users browsing history are not yanked).
+ * Why tanstack-virtual (vs. `react-virtuoso` MIT): the OSS Virtuoso
+ * `scrollHeight` swaps estimates for real measured sizes as items enter
+ * viewport, which jerks the custom scrollbar thumb AND races
+ * `alignToBottom`'s anchor reconciliation to produce visible scroll
+ * teleports. Maintainer-confirmed at petyosi/react-virtuoso#1240 as a
+ * limitation only addressed in the commercial `VirtuosoMessageList`.
+ * tanstack-virtual exposes a precise `getTotalSize()` that the inner
+ * container's CSS height equals exactly, so the browser's native scroll
+ * anchoring keeps visible content stable through off-screen
+ * measurements. See ADR 0005 for the full migration rationale.
  *
- * Why the `useEffect` watching `notes.length` (vs relying on `followOutput`
- * alone): `followOutput="auto"` only fires when the user is currently at the
- * bottom. When the list grows from outside (e.g. a reconciler tick adds an
- * externally-created note while the user is scrolled up reading), we still
- * want the new tail visible; the imperative `scrollToIndex` handles that.
- * The `>` (not `!==`) comparison deliberately narrows to additions only:
- * deletes shouldn't yank the viewport, and edits that swap a note for
- * another at the same index aren't flagged here (same-length, identity
- * change). `initialTopMostItemIndex` covers the mount-time "start at the
- * last bubble" requirement so the first paint is already at the bottom.
+ * Chat-specific behaviour comes from three virtualizer options:
+ * - `anchorTo: 'end'` keeps prepended history items visually stable
+ *   (older messages loaded above the viewport do NOT shift visible
+ *   content); also keeps streaming/growing tail-items pinned to the
+ *   bottom when the user was at the end before the growth.
+ * - `followOnAppend: true` auto-scrolls to the newly-appended item only
+ *   when the user is within `scrollEndThreshold` of the end. If they're
+ *   browsing history, appended items don't yank them away.
+ * - `scrollEndThreshold` defines how close to the end counts as
+ *   "pinned" (px from bottom).
  *
- * Why `computeItemKey={(_, note) => note.id}`: default vanilla-Virtuoso keys
- * by array index, which under delete/reorder would let downstream bubbles
- * reuse the wrong DOM node — leaking `NoteBubble`'s internal `useState`
- * (`hover`, `deleteArmed`) and `armTimer` ref across notes. uuidv7 ids are
- * stable per note, so keying by id makes React mount/unmount correctly.
+ * Initial scroll-to-bottom uses `virtualizer.scrollToEnd()` from a
+ * `useLayoutEffect` so the first paint already lands at the bottom — no
+ * cosmetic mid-mount jump.
  *
- * The `resolveSlug` prop is forwarded with a conditional spread to satisfy
- * `exactOptionalPropertyTypes` — passing `undefined` explicitly is a type
- * error against the optional `resolveSlug?: (slug: string) => boolean` prop
- * on `NoteBubble`. Mirrors the pattern at `NoteBubble.tsx:112`.
+ * Container-resize re-pin: when the composer auto-grows or the window
+ * resizes, the scroller's `clientHeight` shrinks. `followOnAppend`
+ * doesn't fire (no append), so we observe `containerRef` ourselves and
+ * call `scrollToEnd()` if the user was already at the end.
  *
+ * The scroller ref callback is `useCallback`-memoized per ADR 0004 —
+ * React 19's stricter ref-callback semantics treat identity changes as
+ * detach + reattach. That ADR was written for Virtuoso's internal
+ * cascade; the same React 19 footgun applies anywhere we attach a ref
+ * callback to a child that wires the element into effects.
+ *
+ * @see adrs/0005-tanstack-virtual.md
  * @see docs/specs/v0.1-rolling-feed-and-search.md §Feed
- * @see v21-design-system/project/ui_kits/v21-app/feed.jsx
  */
 export function Feed({
   notes,
@@ -60,127 +93,140 @@ export function Feed({
   onDelete,
   onCopyLink,
 }: Props) {
-  const virtuoso = useRef<VirtuosoHandle | null>(null)
-  const lastCount = useRef(notes.length)
   const containerRef = useRef<HTMLDivElement | null>(null)
-  // Inner scrollable element that Virtuoso renders. Captured via the
-  // scrollerRef callback below so we can attach a `scroll` listener for our
-  // own at-bottom tracking (see atBottomRef comment).
-  const scrollerRef = useRef<HTMLElement | null>(null)
-  // Whether the user is currently pinned to the bottom of the feed.
-  //
-  // We do NOT use Virtuoso's `atBottomStateChange` callback because of a
-  // race that breaks the composer-grow case: when the composer auto-grows,
-  // the feed container shrinks via flex; Virtuoso's internal ResizeObserver
-  // fires FIRST (child useEffects run before parent's, so its observer was
-  // registered earlier), recomputes at-bottom (now `false` because the
-  // bottom items just got hidden), and synchronously fires
-  // `atBottomStateChange(false)`. By the time our own ResizeObserver fires
-  // next, the ref is already `false` and the re-pin guard fails — the
-  // latest bubble stays clipped.
-  //
-  // Instead we maintain the ref ourselves from `scroll` events on the
-  // inner scroller. The browser does NOT fire a `scroll` event on resize
-  // (scrollTop stays put even if the user is visually no longer at the
-  // bottom), so the ref accurately reflects the user's PRE-resize position
-  // — exactly the signal the re-pin guard needs.
-  const atBottomRef = useRef(true)
-  // Mirror notes.length into a ref so the ResizeObserver callback (created
-  // once on mount) can read the latest index without re-binding.
-  const lastIndexRef = useRef(notes.length - 1)
+  const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null)
 
-  useEffect(() => {
-    if (notes.length > lastCount.current) {
-      virtuoso.current?.scrollToIndex({
-        index: notes.length - 1,
-        behavior: 'smooth',
-        align: 'end',
-      })
+  const virtualizer = useVirtualizer({
+    count: notes.length,
+    getScrollElement: () => scrollerEl,
+    estimateSize: () => ESTIMATE_SIZE,
+    // Stable key per note (uuidv7 id). Critical for prepend stability under
+    // `anchorTo: 'end'`: tanstack captures the visible item by key before a
+    // data change, finds the same keyed item after, and adjusts scrollTop
+    // so the message stays in place. Index-keyed items can't survive a
+    // prepend — every item's index shifts.
+    getItemKey: (index) => notes[index]?.id ?? index,
+    anchorTo: 'end',
+    followOnAppend: true,
+    scrollEndThreshold: SCROLL_END_THRESHOLD,
+    overscan: 5,
+  })
+
+  // Initial scroll-to-bottom once the scroller is available. Layout
+  // effect (not effect) so the bottom-pinned position is set BEFORE the
+  // browser paints — no first-frame flash at the top.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally one-shot; depends on `virtualizer` instance identity (stable across renders) and the boolean availability of `scrollerEl`
+  useLayoutEffect(() => {
+    if (scrollerEl && notes.length > 0) {
+      virtualizer.scrollToEnd()
     }
-    lastCount.current = notes.length
-    lastIndexRef.current = notes.length - 1
-  }, [notes.length])
+  }, [scrollerEl])
 
-  // User-driven at-bottom tracking. Fires only on actual scroll events
-  // (wheel / trackpad / drag / programmatic scrollToIndex), never on
-  // container resize — see atBottomRef comment for why this matters.
-  // Re-binds when scroller becomes available (Virtuoso may render the
-  // inner scroller on its second pass, so scrollerRef.current can be
-  // null on the first effect run).
-  useEffect(() => {
-    const scroller = scrollerRef.current
-    if (!scroller) return
-    const update = () => {
-      // 10px slack: rounding + virtualization gaps can leave a sub-pixel
-      // difference even when visually "at the bottom".
-      atBottomRef.current = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 10
-    }
-    update()
-    scroller.addEventListener('scroll', update, { passive: true })
-    return () => scroller.removeEventListener('scroll', update)
-  }, [])
-
-  // Re-pin the latest note to the bottom whenever the feed's container
-  // height changes (the composer just auto-grew via shift-Enter, the
-  // window was resized, the skip-banner appeared/dismissed). Virtuoso's
-  // default behaviour preserves the top-edge scroll offset on resize, so
-  // bottom items silently get pushed out of view — defeating the
-  // chat-style "latest is always visible when I'm at the bottom" contract.
-  // Guarded on atBottomRef so a user scrolled up reading history is NOT
-  // yanked back down.
+  // Re-pin to the bottom when the feed container resizes AND the user
+  // was already at the end. `followOnAppend` only fires on data change,
+  // not on container resize (composer auto-grew via shift-Enter, window
+  // resized, skip-banner appeared/dismissed), so we observe the outer
+  // container ourselves. `isAtEnd()` uses the same `scrollEndThreshold`
+  // configured above.
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      const scroller = scrollerRef.current
-      if (!scroller || !atBottomRef.current) return
-      // Bypass Virtuoso's `scrollToIndex({align:'end'})` — its per-item size
-      // cache is systematically UNDER-reported because:
-      //   - NoteBubble's root div has `margin: '6px 0'`
-      //   - the react-markdown subtree emits <p>/<ul>/<pre> with default
-      //     browser margins, untreated by globals.css
-      // and Virtuoso sizes items via ResizeObserver.contentRect, which
-      // EXCLUDES margins. The computed end position therefore lands short
-      // of the true bottom — the latest bubble stays clipped below the
-      // viewport regardless of how correct our at-bottom guard is.
-      //
-      // Direct `scrollTop = scrollHeight` uses the browser's native scroll
-      // extent (which DOES respect margins via actual painted bounds),
-      // hitting the true bottom every time.
-      // @see https://virtuoso.dev/react-virtuoso/troubleshooting
-      //      ("List does not scroll to the bottom / items jump around")
-      scroller.scrollTop = scroller.scrollHeight
+      if (virtualizer.isAtEnd()) {
+        virtualizer.scrollToEnd()
+      }
     })
     ro.observe(el)
     return () => ro.disconnect()
+  }, [virtualizer])
+
+  // Memoized ref callback per ADR 0004 (React 19 ref-callback identity).
+  // Captures only refs, a setState setter, and side-effect calls that
+  // touch the DOM directly — `[]` deps are correct.
+  const handleScrollerRef = useCallback((el: HTMLDivElement | null) => {
+    setScrollerEl(el)
+    if (el) {
+      // Hide native scrollbar — the custom thumb owns visibility.
+      // `.scroll-area-inner` in globals.css covers ::-webkit-scrollbar;
+      // inline scrollbarWidth covers Firefox.
+      el.classList.add('scroll-area-inner')
+      el.style.scrollbarWidth = 'none'
+    }
   }, [])
 
+  const thumb = useScrollThumb(scrollerEl)
+
   return (
-    <div ref={containerRef} style={{ flex: 1, minHeight: 0, padding: '0 32px' }}>
-      <div style={{ maxWidth: 720, margin: '0 auto', height: '100%' }}>
-        <Virtuoso
-          ref={virtuoso}
-          data={notes}
-          computeItemKey={(_, note) => note.id}
-          initialTopMostItemIndex={{ index: Math.max(0, notes.length - 1), align: 'end' }}
-          alignToBottom
-          followOutput="auto"
-          scrollerRef={(el) => {
-            scrollerRef.current = el as HTMLElement | null
-          }}
-          itemContent={(_, note) => (
-            <NoteBubble
-              note={note}
-              focused={note.id === focusedId}
-              onFocus={() => onFocus(note.id)}
-              onWikilinkClick={onWikilinkClick}
-              {...(resolveSlug ? { resolveSlug } : {})}
-              onEdit={() => onEdit(note.id)}
-              onDelete={() => onDelete(note.id)}
-              onCopyLink={() => onCopyLink(note.id)}
-            />
-          )}
-          style={{ height: '100%' }}
+    <div
+      ref={containerRef}
+      onPointerEnter={thumb.onAreaEnter}
+      onPointerLeave={thumb.onAreaLeave}
+      onPointerMove={thumb.onAreaPointerMove}
+      style={{ flex: 1, minHeight: 0, padding: '0 32px' }}
+    >
+      <div style={{ maxWidth: 720, margin: '0 auto', height: '100%', position: 'relative' }}>
+        <div
+          ref={handleScrollerRef}
+          style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}
+        >
+          {/* Inner spacer: tanstack-virtual sets this element's height to
+             the exact total content size (sum of measured sizes plus
+             estimates for unmeasured items). The browser's `scrollHeight`
+             on the outer scroller equals this inner height — that's what
+             makes the custom scrollbar thumb stable. */}
+          <div
+            style={{
+              height: virtualizer.getTotalSize(),
+              width: '100%',
+              position: 'relative',
+            }}
+          >
+            {virtualizer.getVirtualItems().map((vItem) => {
+              const note = notes[vItem.index]
+              if (!note) return null
+              return (
+                <div
+                  key={vItem.key}
+                  ref={virtualizer.measureElement}
+                  data-index={vItem.index}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${vItem.start}px)`,
+                    // Inter-bubble vertical gap as wrapper padding (not
+                    // margin) so tanstack's `measureElement` reads a
+                    // border-box height that already includes the gap.
+                    // Same rationale as `6564a3d` carried forward.
+                    paddingTop: 6,
+                    paddingBottom: 6,
+                  }}
+                >
+                  <NoteBubble
+                    note={note}
+                    focused={note.id === focusedId}
+                    onFocus={() => onFocus(note.id)}
+                    onWikilinkClick={onWikilinkClick}
+                    {...(resolveSlug ? { resolveSlug } : {})}
+                    onEdit={() => onEdit(note.id)}
+                    onDelete={() => onDelete(note.id)}
+                    onCopyLink={() => onCopyLink(note.id)}
+                  />
+                </div>
+              )
+            })}
+          </div>
+        </div>
+        <ScrollThumb
+          geometry={thumb.geometry}
+          thumbHovered={thumb.thumbHovered}
+          areaHovered={thumb.areaHovered}
+          pointerNear={thumb.pointerNear}
+          resizing={thumb.resizing}
+          dragging={thumb.dragging}
+          setThumbHovered={thumb.setThumbHovered}
+          onPointerDown={thumb.onThumbPointerDown}
         />
       </div>
     </div>

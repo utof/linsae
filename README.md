@@ -9,7 +9,7 @@ Personal note-taking app: a Telegram-style chronological feed of markdown notes 
 
 ## Stack
 
-Electron 39 (via electron-vite) · React 19 + TypeScript strict · better-sqlite3 + FTS5 · `react-virtuoso` · cmdk · `react-markdown` + KaTeX · TanStack Query · Vitest · Biome · lefthook.
+Electron 39 (via electron-vite) · React 19 + TypeScript strict · better-sqlite3 + FTS5 · `@tanstack/react-virtual` · cmdk · `react-markdown` + KaTeX · TanStack Query · Vitest · Biome · lefthook.
 
 ## Quickstart
 

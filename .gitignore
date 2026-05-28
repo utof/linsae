@@ -12,6 +12,7 @@ dist/
 *.log
 .vite/
 *.tsbuildinfo
+.claude/
 
 # Allow markdown in docs/ and adrs/ even though *.md is globally gitignored (CLAUDE.md rule)
 *.md

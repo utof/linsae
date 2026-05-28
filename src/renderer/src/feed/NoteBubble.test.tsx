@@ -62,9 +62,12 @@ describe('NoteBubble', () => {
       />,
     )
     const bubble = container.querySelector('[data-bubble]') as HTMLElement
-    // jsdom serializes borderLeftColor as either '#0d99ff' or 'rgb(13, 153, 255)'.
-    const blc = bubble.style.borderLeftColor.toLowerCase()
-    expect(blc.includes('0d99ff') || blc.includes('13, 153, 255')).toBe(true)
+    // Focused rail is an inset box-shadow (not border-left) so the focus
+    // state doesn't shift bubble content by 1px. jsdom serialises the
+    // accent in either hex or rgb form depending on engine version.
+    const bs = bubble.style.boxShadow.toLowerCase()
+    expect(bs.includes('0d99ff') || bs.includes('13, 153, 255')).toBe(true)
+    expect(bs).toContain('inset')
   })
 
   it('calls onFocus when the bubble is clicked', () => {
@@ -183,5 +186,223 @@ describe('NoteBubble', () => {
     expect(onDelete).not.toHaveBeenCalled()
     fireEvent.click(trash)
     expect(onDelete).toHaveBeenCalledOnce()
+  })
+
+  // ── Context menu tests ──────────────────────────────────────────────────────
+
+  it('context menu does NOT appear without a contextmenu event', () => {
+    render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('right-click on the bubble opens the context menu', () => {
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+  })
+
+  it('right-click does NOT call onFocus (avoids opening backlinks pane as a side-effect)', () => {
+    const onFocus = vi.fn()
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        onFocus={onFocus}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    expect(onFocus).not.toHaveBeenCalled()
+  })
+
+  it('context menu Edit item calls onEdit and closes menu', () => {
+    const onEdit = vi.fn()
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={onEdit}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    fireEvent.click(screen.getByRole('menuitem', { name: /edit/i }))
+    expect(onEdit).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('context menu Copy link item calls onCopyLink and closes menu', () => {
+    const onCopyLink = vi.fn()
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={onCopyLink}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    fireEvent.click(screen.getByRole('menuitem', { name: /copy link/i }))
+    expect(onCopyLink).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('context menu Delete item calls onDelete directly (no arm pattern) and closes menu', () => {
+    const onDelete = vi.fn()
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={onDelete}
+        onCopyLink={() => {}}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    fireEvent.click(screen.getByRole('menuitem', { name: /delete/i }))
+    expect(onDelete).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('Escape key closes the context menu', () => {
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  // ── Footer (time + edited indicator) ──────────────────────────────────────
+
+  it('renders a timestamp footer derived from created_at', () => {
+    // Pick a fixed ms value and assert the rendered string contains the
+    // formatted minute portion. Avoids locale brittleness on the hour
+    // (12h vs 24h, AM/PM) and the date portion (locale-dependent month
+    // abbreviation), both of which vary by the test runner's environment.
+    const d = new Date()
+    d.setHours(14, 23, 0, 0)
+    const ms = d.getTime()
+    render(
+      <NoteBubble
+        note={{ ...baseNote, created_at: ms, updated_at: ms }}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    // ":23" appears in both 12h ("2:23 PM") and 24h ("14:23") formats.
+    expect(screen.getByText(/:23/)).toBeInTheDocument()
+  })
+
+  it('does NOT show the edited indicator when updated_at == created_at', () => {
+    render(
+      <NoteBubble
+        note={{ ...baseNote, created_at: 1737000000000, updated_at: 1737000000000 }}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    // The hover toolbar's edit button (aria-label="edit") is conditionally
+    // mounted on hover, so without mouseEnter the only "edited" semantic node
+    // in the DOM should be absent. The edited pen icon uses aria-label="edited".
+    expect(screen.queryByLabelText('edited')).not.toBeInTheDocument()
+  })
+
+  it('shows the edited indicator when updated_at > created_at', () => {
+    render(
+      <NoteBubble
+        note={{ ...baseNote, created_at: 1737000000000, updated_at: 1737000060000 }}
+        focused={false}
+        onFocus={() => {}}
+        onWikilinkClick={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onCopyLink={() => {}}
+      />,
+    )
+    expect(screen.getByLabelText('edited')).toBeInTheDocument()
+  })
+
+  it('click outside closes the context menu', () => {
+    const { container } = render(
+      <div>
+        <NoteBubble
+          note={baseNote}
+          focused={false}
+          onFocus={() => {}}
+          onWikilinkClick={() => {}}
+          onEdit={() => {}}
+          onDelete={() => {}}
+          onCopyLink={() => {}}
+        />
+        <div data-testid="outside">outside</div>
+      </div>,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    fireEvent.mouseDown(screen.getByTestId('outside'))
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
 })

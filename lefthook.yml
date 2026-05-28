@@ -7,6 +7,11 @@ pre-commit:
       run: pnpm lint:check
     typecheck:
       run: pnpm typecheck
+    # `pnpm dev` leaves better-sqlite3 in Electron ABI; vitest runs under Node.
+    # Rebuilding unconditionally is a ~5s no-op when already aligned and
+    # eliminates the manual rebuild dance between dev and commit. See #24.
+    rebuild:
+      run: pnpm rebuild:node
     test:
       run: pnpm test
     knip:

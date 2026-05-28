@@ -33,6 +33,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Command } from 'cmdk'
 import { useEffect, useState } from 'react'
+import { ScrollArea } from '../components/ScrollArea'
 import { api } from '../lib/api'
 
 interface Props {
@@ -92,40 +93,47 @@ export function CommandPalette({ open, onClose, onJump }: Props) {
           borderBottom: '1px solid var(--border-0)',
         }}
       />
-      <Command.List style={{ maxHeight: 400, overflowY: 'auto', padding: 4 }}>
-        {query.length === 0 && (
-          <Command.Empty style={{ padding: 12, color: 'var(--fg-3)', fontSize: 12 }}>
-            type to search your notes.
-          </Command.Empty>
-        )}
-        {query.length > 0 && results.length === 0 && (
-          <Command.Empty style={{ padding: 12, color: 'var(--fg-3)', fontSize: 12 }}>
-            no matches.
-          </Command.Empty>
-        )}
-        {results.map((hit) => (
-          <Command.Item
-            key={hit.note.id}
-            value={hit.note.id}
-            onSelect={() => {
-              onJump(hit.note.id)
-              onClose()
-            }}
-            style={{
-              padding: '8px 12px',
-              borderRadius: 6,
-              fontSize: 13,
-              color: 'var(--fg-1)',
-              cursor: 'pointer',
-            }}
-          >
-            <span
-              // biome-ignore lint/security/noDangerouslySetInnerHtml: snippet() returns pre-tagged <mark> HTML from FTS5; CSP + sandbox mitigate (see TSDoc threat model).
-              dangerouslySetInnerHTML={{ __html: hit.snippet }}
-            />
-          </Command.Item>
-        ))}
-      </Command.List>
+      {/* ScrollArea wraps the results list with our custom thumb overlay.
+         maxHeight on the outer ScrollArea bounds the dialog height;
+         scrollStyle.padding adds the inner padding the previous
+         Command.List inline style used. cmdk's Command.List still
+         renders inside but doesn't own scrolling now. */}
+      <ScrollArea style={{ maxHeight: 400 }} scrollStyle={{ padding: 4 }}>
+        <Command.List>
+          {query.length === 0 && (
+            <Command.Empty style={{ padding: 12, color: 'var(--fg-3)', fontSize: 12 }}>
+              type to search your notes.
+            </Command.Empty>
+          )}
+          {query.length > 0 && results.length === 0 && (
+            <Command.Empty style={{ padding: 12, color: 'var(--fg-3)', fontSize: 12 }}>
+              no matches.
+            </Command.Empty>
+          )}
+          {results.map((hit) => (
+            <Command.Item
+              key={hit.note.id}
+              value={hit.note.id}
+              onSelect={() => {
+                onJump(hit.note.id)
+                onClose()
+              }}
+              style={{
+                padding: '8px 12px',
+                borderRadius: 6,
+                fontSize: 13,
+                color: 'var(--fg-1)',
+                cursor: 'pointer',
+              }}
+            >
+              <span
+                // biome-ignore lint/security/noDangerouslySetInnerHtml: snippet() returns pre-tagged <mark> HTML from FTS5; CSP + sandbox mitigate (see TSDoc threat model).
+                dangerouslySetInnerHTML={{ __html: hit.snippet }}
+              />
+            </Command.Item>
+          ))}
+        </Command.List>
+      </ScrollArea>
     </Command.Dialog>
   )
 }

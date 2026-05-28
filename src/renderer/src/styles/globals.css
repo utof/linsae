@@ -26,25 +26,41 @@ body,
   display: none;
 }
 
-/* Default scrollbar styling for every internal scrollable surface (feed,
- * command palette results, backlinks pane). Half the OS-default width
- * (~12-15px → 6px) and no arrow buttons — quieter chrome that doesn't
- * compete with the bubble content for attention. Composer textarea is
- * excluded above (.composer-textarea hides its scrollbar entirely). */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+/* Electron window-drag region helpers. -webkit-app-region is a non-standard
+ * CSS property only Electron consumes; it can't be expressed in React's
+ * CSSProperties type without a cast. A pair of utility classes is the
+ * least-noisy way to opt regions in/out. The custom WindowFrame at the top
+ * of the app marks its row as draggable so the user can grab any empty area
+ * to move the window; clickable children (⌘K pill, reveal-notes button,
+ * min/max/close icons) opt back out so they remain mouse-targets. */
+.app-region-drag {
+  -webkit-app-region: drag;
 }
-::-webkit-scrollbar-button {
+.app-region-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Reset the first/last child margins of every markdown subtree (rendered
+ * inside NoteBubble via lib/markdown.tsx). react-markdown emits <p>, <ul>,
+ * <pre>, <h*>, etc. with browser-default top/bottom margins (~16px each) —
+ * inside our compact chat bubbles those margins waste a full line above
+ * and below the body and under-report the bubble's measured size by ~32px
+ * (issue #26). Resetting only first/last preserves intra-bubble paragraph
+ * rhythm; the bubble's own padding controls the gap to the bubble edge. */
+.markdown-root > *:first-child {
+  margin-top: 0;
+}
+.markdown-root > *:last-child {
+  margin-bottom: 0;
+}
+
+/* Hide native scrollbars on every surface wrapped by `<ScrollArea>` (or
+ * via the `useScrollThumb` hook directly — Feed). The custom
+ * thumb overlay in src/renderer/src/components/ScrollArea.tsx renders
+ * its own `<div>` and owns visibility / hover / drag — see ADR 0003 for
+ * why we don't use the native scrollbar (Chromium doesn't animate
+ * `::-webkit-scrollbar` pseudo-element transitions). `.composer-textarea`
+ * has its own hide rule above for the same reason. */
+.scroll-area-inner::-webkit-scrollbar {
   display: none;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: var(--border-2);
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: var(--fg-3);
 }

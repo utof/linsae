@@ -52,37 +52,6 @@ app.on('second-instance', () => {
 })
 
 /**
- * Installs the application menu with the v0.1 File submenu (reveal notes,
- * open logs, quit) plus the standard edit/view/window roles.
- *
- * Why a menu (not just the in-app `≡` button): macOS users expect a native
- * menu bar; on Linux/Windows the menu is the fallback if the renderer fails
- * to mount. Both entry points eventually call `shell.openPath`, so the user
- * always has a way to find their on-disk notes.
- *
- * @param notesDir - Absolute path of the notes directory.
- * @param logsDir - Absolute path of the logs directory.
- * @see docs/specs/v0.1-rolling-feed-and-search.md §Reveal notes folder
- */
-function buildMenu(notesDir: string, logsDir: string): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: 'File',
-      submenu: [
-        { label: 'Reveal notes folder', click: () => shell.openPath(notesDir) },
-        { label: 'Open logs folder', click: () => shell.openPath(logsDir) },
-        { type: 'separator' },
-        { role: 'quit' },
-      ],
-    },
-    { role: 'editMenu' },
-    { role: 'viewMenu' },
-    { role: 'windowMenu' },
-  ]
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
-}
-
-/**
  * Creates the renderer `BrowserWindow` with the hardened web preferences
  * from {@link secureWebPreferences} and loads either the dev server URL or
  * the bundled `index.html`.
@@ -104,7 +73,15 @@ function createWindow(): BrowserWindow {
     minWidth: 720,
     minHeight: 400,
     show: false,
-    autoHideMenuBar: false,
+    // frame: false removes the OS title bar entirely; the renderer provides a
+    // custom drag region + min/max/close cluster in WindowFrame.tsx. With a
+    // frameless window there is no menu bar slot for Electron to render, so
+    // we set only the role-only Menu (editMenu/viewMenu/windowMenu) below so
+    // standard keyboard accelerators (Cmd+R, Cmd+Alt+I, Cmd+C/V/X, etc.)
+    // still fire — Alt does NOT surface a menu with frame:false, so
+    // autoHideMenuBar would be a no-op and is omitted.
+    frame: false,
+    title: '',
     webPreferences: secureWebPreferences(join(__dirname, '../preload/index.js')),
   })
   win.on('ready-to-show', () => win.show())
@@ -137,7 +114,16 @@ app.whenReady().then(() => {
   console.log(`reconciled: ${JSON.stringify(report)}`)
 
   registerAllIpc(db, nd, notesDir, logsDir, report.skipped)
-  buildMenu(notesDir, logsDir)
+  // Role-only menu: no visible bar (frame:false has no menu slot), but the
+  // editMenu / viewMenu / windowMenu roles register the standard keyboard
+  // accelerators (cut/copy/paste, reload, devtools, minimize/zoom). The
+  // earlier File submenu (reveal notes, open logs, quit) was removed —
+  // reveal-notes is in WindowFrame, quit is the close button / OS shortcut,
+  // open-logs is reachable via the reconcile-skip banner today and can move
+  // to the command palette later if it needs a dedicated entry.
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([{ role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' }]),
+  )
   mainWindow = createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow()

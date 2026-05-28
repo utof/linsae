@@ -51,6 +51,11 @@ export interface MockApi {
     revealNotesFolder: ReturnType<typeof vi.fn>
     openLogsFolder: ReturnType<typeof vi.fn>
     getReconcileSkipped: ReturnType<typeof vi.fn>
+    window: {
+      minimize: ReturnType<typeof vi.fn>
+      toggleMaximize: ReturnType<typeof vi.fn>
+      close: ReturnType<typeof vi.fn>
+    }
   }
 }
 
@@ -79,6 +84,11 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
       revealNotesFolder: vi.fn(async () => ({ ok: true })),
       openLogsFolder: vi.fn(async () => ({ ok: true })),
       getReconcileSkipped: vi.fn(async () => 0),
+      window: {
+        minimize: vi.fn(async () => ({ ok: true })),
+        toggleMaximize: vi.fn(async () => ({ ok: true })),
+        close: vi.fn(async () => ({ ok: true })),
+      },
     },
     ...overrides,
   }

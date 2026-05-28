@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
+import { ScrollArea } from '../components/ScrollArea'
 import { api } from '../lib/api'
 
 interface Props {
@@ -11,6 +12,13 @@ interface Props {
 /**
  * Right-side aside listing incoming wikilinks for the focused note,
  * recency-sorted (newest-first) per the spec.
+ *
+ * Positioned as an absolute overlay (parent must be `position: relative` —
+ * App.tsx wraps the body row accordingly). The pane covers the right edge
+ * of the feed area without pushing the feed left when it opens, per user
+ * feedback ("the shift is annoying and too much for such a small action").
+ * The WindowFrame above stays visible because the overlay is scoped to the
+ * body row only.
  *
  * Reads `api.links.backlinks(focusedNoteId)` via TanStack Query keyed on the
  * note id — switching focus invalidates nothing but starts a fresh fetch, so
@@ -47,13 +55,17 @@ export function BacklinksPane({ focusedNoteId, onClose, onJump }: Props) {
   return (
     <aside
       style={{
+        position: 'absolute',
+        top: 0,
+        right: 0,
+        bottom: 0,
         width: 320,
-        flex: '0 0 auto',
         borderLeft: '1px solid var(--border-0)',
         background: 'var(--bg-1)',
         display: 'flex',
         flexDirection: 'column',
-        height: '100%',
+        boxShadow: '-4px 0 12px rgba(0, 0, 0, 0.04)',
+        zIndex: 10,
       }}
     >
       <div
@@ -88,7 +100,7 @@ export function BacklinksPane({ focusedNoteId, onClose, onJump }: Props) {
           <X size={14} />
         </button>
       </div>
-      <div style={{ overflowY: 'auto', flex: 1, padding: 12 }}>
+      <ScrollArea style={{ flex: 1, minHeight: 0 }} scrollStyle={{ padding: 12 }}>
         {notes.length === 0 && (
           <div style={{ padding: '12px 4px', color: 'var(--fg-3)', fontSize: 12 }}>
             nothing links here yet.
@@ -115,7 +127,7 @@ export function BacklinksPane({ focusedNoteId, onClose, onJump }: Props) {
             {(n.body.split('\n')[0] ?? '').slice(0, 100)}
           </div>
         ))}
-      </div>
+      </ScrollArea>
     </aside>
   )
 }

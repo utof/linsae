@@ -9,7 +9,7 @@
  */
 
 import { existsSync, mkdirSync } from 'node:fs'
-import { ipcMain, shell } from 'electron'
+import { BrowserWindow, ipcMain, shell } from 'electron'
 
 /**
  * Registers `system:revealNotesFolder`, `system:openLogsFolder`, and
@@ -47,4 +47,24 @@ export function registerSystemIpc(
     return { ok: true }
   })
   ipcMain.handle('system:getReconcileSkipped', async () => reconcileSkipped)
+
+  // Window controls for the frameless BrowserWindow (frame: false in
+  // src/main/index.ts). Resolved per-call via BrowserWindow.fromWebContents
+  // so the registrar doesn't have to receive a window handle. Returning
+  // {ok:true} keeps the invoke() shape uniform with the other system:* calls.
+  ipcMain.handle('system:windowMinimize', async (e) => {
+    BrowserWindow.fromWebContents(e.sender)?.minimize()
+    return { ok: true }
+  })
+  ipcMain.handle('system:windowToggleMaximize', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (!win) return { ok: true }
+    if (win.isMaximized()) win.unmaximize()
+    else win.maximize()
+    return { ok: true }
+  })
+  ipcMain.handle('system:windowClose', async (e) => {
+    BrowserWindow.fromWebContents(e.sender)?.close()
+    return { ok: true }
+  })
 }
