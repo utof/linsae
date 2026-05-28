@@ -37,10 +37,26 @@ import {
 // interaction. User-tunable — 1500ms keeps the thumb visible during
 // continuous scroll sessions but doesn't linger when the user pauses
 // for a second or two even with the cursor still over the scroll area.
-const FADE_HOLD_MS = 1500
+const FADE_HOLD_MS = 1100
 const THUMB_MIN_HEIGHT = 24
 const THUMB_BASE_WIDTH = 4
 const THUMB_HOVER_WIDTH = 8
+// Distance (px) from the scroll area's right edge at which the thumb starts
+// expanding — the 4px base width is too thin to hit precisely, so we widen
+// it as the cursor approaches rather than only when it's exactly on the
+// thumb. Includes the thumb's own footprint (rightOffset 2 + base 4 = 6px)
+// plus ~18px of anticipation room.
+const APPROACH_THRESHOLD_PX = 24
+// Duration (ms) the size-change transition lasts. Both `height` and `top`
+// must transition together — otherwise the thumb's bottom edge would
+// detach from the scroller's bottom during the animation (top jumps
+// instantly while height eases, overflowing the viewport).
+const RESIZE_TRANSITION_MS = 200
+// Snappy ease-out (easeOutQuint-ish) for the height/top transition. We
+// avoid SPRING_EASE's overshoot on position transitions because `top`
+// overshoot can land outside the viewport — this curve gives a fast
+// snap-into-place feel without the spring bounce.
+const RESIZE_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)'
 const SCROLL_KEYS = new Set<string>([
   'ArrowUp',
   'ArrowDown',
@@ -51,7 +67,7 @@ const SCROLL_KEYS = new Set<string>([
   ' ',
 ])
 
-const SPRING_EASE = 'cubic-bezier(0.34, 1.56, 0.64, 1)'
+const SPRING_EASE = 'cubic-bezier(0.34, 1.56, 0.94, 1)'
 
 interface ThumbGeometry {
   thumbTop: number
@@ -73,9 +89,13 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
   geometry: ThumbGeometry
   thumbHovered: boolean
   areaHovered: boolean
+  pointerNear: boolean
+  resizing: boolean
+  dragging: boolean
   setThumbHovered: (v: boolean) => void
   onAreaEnter: () => void
   onAreaLeave: () => void
+  onAreaPointerMove: (e: ReactPointerEvent) => void
   onThumbPointerDown: (e: ReactPointerEvent) => void
 } {
   const [geometry, setGeometry] = useState<ThumbGeometry>({
@@ -85,10 +105,31 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
   })
   const [thumbHovered, setThumbHovered] = useState(false)
   const [areaHovered, setAreaHovered] = useState(false)
+  const [pointerNear, setPointerNear] = useState(false)
+  // True briefly after a content-size change (e.g. a bubble's expand button
+  // grows its body). Drives a transient CSS transition on `height` + `top`
+  // so the thumb smoothly resizes instead of snapping. Held only as long as
+  // the change is propagating — see RESIZE_TRANSITION_MS / the recompute
+  // sizeChanged branch.
+  const [resizing, setResizing] = useState(false)
+  // True while the user is mid-drag on the thumb (pointer down → pointer up).
+  // Keeps the thumb expanded even if the cursor drifts off the thumb element
+  // horizontally during the drag — without this, hovering off the thumb mid-
+  // drag would snap the width back to the 4px base, which feels broken.
+  const [dragging, setDragging] = useState(false)
+  // Ref mirror of pointerNear so the pointermove handler can dedup edge
+  // crossings without re-rendering on every pixel of cursor motion.
+  const pointerNearRef = useRef(false)
+  // Last scrollHeight observed by recompute. We transition only when this
+  // changes between calls — pure scroll-position updates (onScroll) leave
+  // scrollHeight constant and must NOT trigger the height/top transition,
+  // otherwise the thumb visibly lags the cursor on every wheel tick.
+  const lastScrollHeightRef = useRef(0)
   const hideTimer = useRef<number | null>(null)
+  const resizeTimer = useRef<number | null>(null)
   const thumbHeightRef = useRef(0)
 
-  const recompute = useCallback(() => {
+  const applyGeometry = useCallback(() => {
     if (!scrollEl) return
     const { scrollTop, scrollHeight, clientHeight } = scrollEl
     if (scrollHeight <= clientHeight + 1) {
@@ -104,6 +145,34 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
     thumbHeightRef.current = thumbHeight
     setGeometry((g) => ({ ...g, thumbTop, thumbHeight }))
   }, [scrollEl])
+
+  const recompute = useCallback(() => {
+    if (!scrollEl) return
+    const { scrollHeight } = scrollEl
+    // Detect content-size changes vs scroll-position changes. First paint
+    // (prev === 0) does NOT count as a change — we want the initial geometry
+    // to land instantly, not animate from 0.
+    const prev = lastScrollHeightRef.current
+    const sizeChanged = prev > 0 && scrollHeight !== prev
+    lastScrollHeightRef.current = scrollHeight
+    if (sizeChanged) {
+      if (resizeTimer.current !== null) clearTimeout(resizeTimer.current)
+      setResizing(true)
+      resizeTimer.current = window.setTimeout(() => {
+        setResizing(false)
+        resizeTimer.current = null
+      }, RESIZE_TRANSITION_MS + 32)
+      // Defer the geometry update one rAF so React commits the `resizing=true`
+      // render (which adds `top` + `height` to the transition rule) BEFORE
+      // the property values change. Without this, Chromium may apply the new
+      // top/height in the same paint as the rule and skip the transition,
+      // causing the thumb to jump while only `height` animates. Letting the
+      // rule land first guarantees both properties transition together.
+      requestAnimationFrame(() => applyGeometry())
+      return
+    }
+    applyGeometry()
+  }, [scrollEl, applyGeometry])
 
   const showAndQueueHide = useCallback(() => {
     setGeometry((g) => (g.visible ? g : { ...g, visible: true }))
@@ -145,6 +214,10 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
         clearTimeout(hideTimer.current)
         hideTimer.current = null
       }
+      if (resizeTimer.current !== null) {
+        clearTimeout(resizeTimer.current)
+        resizeTimer.current = null
+      }
     }
   }, [scrollEl, recompute, showAndQueueHide])
 
@@ -153,6 +226,7 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
       if (!scrollEl) return
       e.preventDefault()
       e.stopPropagation()
+      setDragging(true)
       const startY = e.clientY
       const startScrollTop = scrollEl.scrollTop
       const { scrollHeight, clientHeight } = scrollEl
@@ -165,6 +239,7 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
         showAndQueueHide()
       }
       const onUp = () => {
+        setDragging(false)
         window.removeEventListener('pointermove', onMove)
         window.removeEventListener('pointerup', onUp)
       }
@@ -185,15 +260,44 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
   }, [showAndQueueHide])
   const onAreaLeave = useCallback(() => {
     setAreaHovered(false)
+    if (pointerNearRef.current) {
+      pointerNearRef.current = false
+      setPointerNear(false)
+    }
   }, [])
+
+  // Pointer-proximity detection: the thumb's 4px base width is too thin to
+  // hit precisely, so we expand it once the cursor crosses within
+  // APPROACH_THRESHOLD_PX of the area's right edge. Only fires showAndQueueHide
+  // on the cross-in transition (using the ref guard) so pointermove inside
+  // the near zone doesn't reset the fade timer every frame — the user can
+  // still idle and watch the bar fade out per the same rule as elsewhere.
+  const onAreaPointerMove = useCallback(
+    (e: ReactPointerEvent) => {
+      if (!scrollEl) return
+      const rect = scrollEl.getBoundingClientRect()
+      const distFromRight = rect.right - e.clientX
+      const near = distFromRight >= 0 && distFromRight <= APPROACH_THRESHOLD_PX
+      if (near !== pointerNearRef.current) {
+        pointerNearRef.current = near
+        setPointerNear(near)
+        if (near) showAndQueueHide()
+      }
+    },
+    [scrollEl, showAndQueueHide],
+  )
 
   return {
     geometry,
     thumbHovered,
     areaHovered,
+    pointerNear,
+    resizing,
+    dragging,
     setThumbHovered,
     onAreaEnter,
     onAreaLeave,
+    onAreaPointerMove,
     onThumbPointerDown,
   }
 }
@@ -202,6 +306,9 @@ interface ThumbProps {
   geometry: ThumbGeometry
   thumbHovered: boolean
   areaHovered: boolean
+  pointerNear: boolean
+  resizing: boolean
+  dragging: boolean
   setThumbHovered: (v: boolean) => void
   onPointerDown: (e: ReactPointerEvent) => void
   /** Override the right offset (in px) — useful when the scroller has
@@ -219,6 +326,9 @@ export function ScrollThumb({
   geometry,
   thumbHovered,
   areaHovered,
+  pointerNear,
+  resizing,
+  dragging,
   setThumbHovered,
   onPointerDown,
   rightOffset = 2,
@@ -226,10 +336,23 @@ export function ScrollThumb({
   if (geometry.thumbHeight === 0) return null
   // areaHovered is NOT in `show` — hovering the area without scrolling
   // should NOT keep the thumb visible indefinitely (the timer must be
-  // allowed to expire). Direct thumbHovered is still an override because
-  // cursor-over-thumb is an explicit "about to drag" intent.
-  const show = geometry.visible || thumbHovered
-  const width = thumbHovered ? THUMB_HOVER_WIDTH : THUMB_BASE_WIDTH
+  // allowed to expire). Direct thumbHovered + dragging are overrides:
+  // cursor-over-thumb is an explicit "about to drag" intent, and an active
+  // drag must keep the thumb visible until pointer-up regardless of where
+  // the cursor has wandered.
+  const show = geometry.visible || thumbHovered || dragging
+  // Proximity-driven expansion: pointerNear (cursor within
+  // APPROACH_THRESHOLD_PX of the right edge) bouncy-widens the thumb so
+  // the 4px target is easier to land on. thumbHovered + dragging are
+  // overrides for the actual-on-thumb and mid-drag cases.
+  const expanded = thumbHovered || pointerNear || dragging
+  const width = expanded ? THUMB_HOVER_WIDTH : THUMB_BASE_WIDTH
+  // Conditional size transition: only when `resizing` is true (the hook just
+  // detected a content-size change, e.g. bubble expand). Pure scroll updates
+  // leave it false so `top` snaps to the cursor without lag.
+  const sizeTransition = resizing
+    ? `, height ${RESIZE_TRANSITION_MS}ms ${RESIZE_EASE}, top ${RESIZE_TRANSITION_MS}ms ${RESIZE_EASE}`
+    : ''
   return (
     <div
       aria-hidden
@@ -242,13 +365,13 @@ export function ScrollThumb({
         right: rightOffset,
         width,
         height: geometry.thumbHeight,
-        background: thumbHovered ? 'var(--fg-3)' : 'var(--border-2)',
+        background: expanded ? 'var(--fg-3)' : 'var(--border-2)',
         borderRadius: 4,
         opacity: show ? 1 : 0,
         // Bouncy width transition via spring-overshoot cubic-bezier; opacity
         // fade-in is faster (120ms) when the area is hovered for snappy
         // feedback, normal (280ms) for the show-on-scroll case.
-        transition: `width 240ms ${SPRING_EASE}, opacity ${areaHovered || thumbHovered ? 120 : 280}ms ease, background 120ms ease`,
+        transition: `width 240ms ${SPRING_EASE}, opacity ${areaHovered || thumbHovered ? 220 : 280}ms ease, background 120ms ease${sizeTransition}`,
         cursor: 'pointer',
         touchAction: 'none',
         pointerEvents: show ? 'auto' : 'none',
@@ -284,6 +407,7 @@ export function ScrollArea({ children, style, className, scrollStyle }: ScrollAr
       className={className}
       onPointerEnter={driver.onAreaEnter}
       onPointerLeave={driver.onAreaLeave}
+      onPointerMove={driver.onAreaPointerMove}
       style={{ position: 'relative', ...style }}
     >
       <div
@@ -304,6 +428,9 @@ export function ScrollArea({ children, style, className, scrollStyle }: ScrollAr
         geometry={driver.geometry}
         thumbHovered={driver.thumbHovered}
         areaHovered={driver.areaHovered}
+        pointerNear={driver.pointerNear}
+        resizing={driver.resizing}
+        dragging={driver.dragging}
         setThumbHovered={driver.setThumbHovered}
         onPointerDown={driver.onThumbPointerDown}
       />

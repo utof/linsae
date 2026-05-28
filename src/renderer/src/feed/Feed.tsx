@@ -166,6 +166,7 @@ export function Feed({
       ref={containerRef}
       onPointerEnter={thumb.onAreaEnter}
       onPointerLeave={thumb.onAreaLeave}
+      onPointerMove={thumb.onAreaPointerMove}
       style={{ flex: 1, minHeight: 0, padding: '0 32px' }}
     >
       <div style={{ maxWidth: 720, margin: '0 auto', height: '100%', position: 'relative' }}>
@@ -206,6 +207,9 @@ export function Feed({
           geometry={thumb.geometry}
           thumbHovered={thumb.thumbHovered}
           areaHovered={thumb.areaHovered}
+          pointerNear={thumb.pointerNear}
+          resizing={thumb.resizing}
+          dragging={thumb.dragging}
           setThumbHovered={thumb.setThumbHovered}
           onPointerDown={thumb.onThumbPointerDown}
         />

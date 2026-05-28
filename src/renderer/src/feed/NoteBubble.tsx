@@ -242,6 +242,12 @@ export function NoteBubble({
   // window.setTimeout returns number in renderer (DOM lib); Node's setTimeout
   // returns NodeJS.Timeout. Tests run in jsdom — the number variant is correct.
   const armTimer = useRef<number | null>(null)
+  // Wrapper around the rendered markdown body — Web Animations API target
+  // for the expand/collapse height transition. Animating height here (not
+  // on the outer bubble) keeps the absolute hover toolbar and context menu
+  // outside the clipped region, while still giving a "roll out" feel to
+  // the body content itself.
+  const markdownWrapRef = useRef<HTMLDivElement | null>(null)
 
   const handleContextMenu = (e: MouseEvent) => {
     e.preventDefault()
@@ -290,6 +296,36 @@ export function NoteBubble({
   // for claim bubbles (14px) and question bubbles (16px italic).
   const TIME_RESERVATION = '\u00A0'.repeat(18)
   const displayBody = overCap ? rawDisplayBody : `${rawDisplayBody}${TIME_RESERVATION}`
+
+  const handleToggleExpand = (e: MouseEvent) => {
+    e.stopPropagation()
+    const wrap = markdownWrapRef.current
+    if (!wrap) {
+      setExpanded((v) => !v)
+      return
+    }
+    // FLIP-style: measure the wrap's height NOW (before content swaps),
+    // toggle expanded, then on the next animation frame measure the new
+    // height and animate from old → new via Web Animations API. WAAPI is
+    // used (not CSS transition on `height`) because the wrap's natural
+    // height is `auto` — there's no explicit start value to transition
+    // from, and setting an explicit height permanently would clip future
+    // markdown re-renders.
+    const startHeight = wrap.offsetHeight
+    setExpanded((v) => !v)
+    requestAnimationFrame(() => {
+      if (!markdownWrapRef.current) return
+      const endHeight = markdownWrapRef.current.offsetHeight
+      if (startHeight === endHeight) return
+      markdownWrapRef.current.animate(
+        [
+          { height: `${startHeight}px`, overflow: 'hidden' },
+          { height: `${endHeight}px`, overflow: 'hidden' },
+        ],
+        { duration: 240, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' },
+      )
+    })
+  }
 
   const handleTrashClick = (e: MouseEvent) => {
     e.stopPropagation()
@@ -349,16 +385,17 @@ export function NoteBubble({
         overflowWrap: 'anywhere',
       }}
     >
-      {overCap && !expanded ? (
-        // Wrapper is positioned so the fade-out overlay can absolutely-
-        // position over the bottom of the truncated markdown. pointer-events
-        // none on the overlay so clicks pass through to the bubble below.
-        <div style={{ position: 'relative' }}>
-          <Markdown
-            body={displayBody}
-            onWikilinkClick={onWikilinkClick}
-            {...(resolveSlug ? { resolveSlug } : {})}
-          />
+      {/* Single wrapper around the markdown body — ref'd for the expand/
+         collapse height animation (Web Animations API in handleToggleExpand).
+         position: relative anchors the fade-out overlay when truncated.
+         pointer-events:none on the overlay so clicks pass through. */}
+      <div ref={markdownWrapRef} style={{ position: 'relative' }}>
+        <Markdown
+          body={displayBody}
+          onWikilinkClick={onWikilinkClick}
+          {...(resolveSlug ? { resolveSlug } : {})}
+        />
+        {overCap && !expanded && (
           <div
             aria-hidden
             style={{
@@ -371,14 +408,8 @@ export function NoteBubble({
               pointerEvents: 'none',
             }}
           />
-        </div>
-      ) : (
-        <Markdown
-          body={displayBody}
-          onWikilinkClick={onWikilinkClick}
-          {...(resolveSlug ? { resolveSlug } : {})}
-        />
-      )}
+        )}
+      </div>
 
       {/* Bottom row when overCap: expand button on the left, time on the right.
          The flex row anchors the expand button to the same baseline as the
@@ -402,10 +433,7 @@ export function NoteBubble({
           <button
             type="button"
             aria-label={expanded ? 'collapse note' : `expand note — ${wordCount} words`}
-            onClick={(e) => {
-              e.stopPropagation()
-              setExpanded((v) => !v)
-            }}
+            onClick={handleToggleExpand}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
