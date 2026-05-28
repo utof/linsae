@@ -44,7 +44,7 @@ body,
  * inside NoteBubble via lib/markdown.tsx). react-markdown emits <p>, <ul>,
  * <pre>, <h*>, etc. with browser-default top/bottom margins (~16px each) —
  * inside our compact chat bubbles those margins waste a full line above
- * and below the body and silently break Virtuoso's per-item size cache
+ * and below the body and under-report the bubble's measured size by ~32px
  * (issue #26). Resetting only first/last preserves intra-bubble paragraph
  * rhythm; the bubble's own padding controls the gap to the bubble edge. */
 .markdown-root > *:first-child {
@@ -55,7 +55,7 @@ body,
 }
 
 /* Hide native scrollbars on every surface wrapped by `<ScrollArea>` (or
- * via the `useScrollThumb` hook directly — Feed/Virtuoso). The custom
+ * via the `useScrollThumb` hook directly — Feed). The custom
  * thumb overlay in src/renderer/src/components/ScrollArea.tsx renders
  * its own `<div>` and owns visibility / hover / drag — see ADR 0003 for
  * why we don't use the native scrollbar (Chromium doesn't animate

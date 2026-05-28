@@ -10,19 +10,20 @@ import {
 
 /**
  * Custom scrollbar overlay — replaces native Chromium scrollbars on every
- * internal scroll surface (Feed/Virtuoso, CommandPalette results,
- * BacklinksPane).
+ * internal scroll surface (Feed, CommandPalette results, BacklinksPane).
  *
  * Why custom (not a library): every native-scrollbar library evaluated
  * (overlayscrollbars-react, @radix-ui/react-scroll-area, simplebar-react,
  * react-custom-scrollbars-2, react-scrollbars-custom, react-perfect-scrollbar)
- * listens to the raw DOM `scroll` event for show/hide. Virtuoso's
- * programmatic `scrollTop = value` (followOutput, scrollToIndex, resize-
- * driven re-pins) fires `scroll` without the user touching anything — every
- * library would flash the scrollbar constantly on a chat feed. The clean
- * filter is `wheel` events with `event.isTrusted === true`: trusted only
- * for genuine pointer/trackpad input, and Virtuoso's scrollTop assignment
- * fires `scroll` but NOT `wheel`. See ADR 0003 for the full library survey.
+ * listens to the raw DOM `scroll` event for show/hide. Any virtualization
+ * library's programmatic `scrollTop = value` (including
+ * @tanstack/react-virtual's `scrollToEnd` / `scrollToIndex` /
+ * `followOnAppend`, plus our own resize-driven re-pin) fires `scroll`
+ * without the user touching anything — every library would flash the
+ * scrollbar constantly on a chat feed. The clean filter is `wheel` events
+ * with `event.isTrusted === true`: trusted only for genuine pointer /
+ * trackpad input, and programmatic scrollTop assignments fire `scroll`
+ * but NOT `wheel`. See ADR 0003 for the full library survey.
  *
  * Why bouncy easing works here (and not on native scrollbars): the thumb is
  * a real `<div>`, not a `::-webkit-scrollbar-thumb` pseudo-element. CSS
@@ -52,9 +53,11 @@ const APPROACH_THRESHOLD_PX = 24
 // detach from the scroller's bottom during the animation (top jumps
 // instantly while height eases, overflowing the viewport).
 const RESIZE_TRANSITION_MS = 200
-// Coalesce window (ms) for bursts of size-driven updates. Virtuoso fires
-// many ResizeObserver events in rapid succession as items get measured
-// (estimate → real-height handoffs); without coalescing each one re-targets
+// Coalesce window (ms) for bursts of size-driven updates. The virtualizer
+// fires many ResizeObserver events in rapid succession as items get
+// measured (first paint of each previously-unseen bubble), and one-off
+// content growth events (expand-button toggling a long body) also bunch;
+// without coalescing each one re-targets
 // the running 200ms transition mid-flight, producing a visible chase/wobble
 // instead of a single smooth ease into the settled position. 100ms catches
 // a typical burst (~3-6 frames at 60Hz) while keeping perceived latency
@@ -86,7 +89,7 @@ interface ThumbGeometry {
 
 /**
  * Attaches a custom-scrollbar driver to an external scrollable element
- * (typically Virtuoso's `scrollerRef` callback target). Returns the
+ * (typically the feed's tanstack-virtual scroll wrapper). Returns the
  * computed thumb geometry + hover/drag callbacks the caller can wire to
  * a `<div>` thumb placed in their own layout.
  *
@@ -232,7 +235,7 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
     scrollEl.addEventListener('wheel', onWheel, { passive: true })
     scrollEl.addEventListener('keydown', onKeyDown)
     ro.observe(scrollEl)
-    // Observe the immediate children too — Virtuoso adds/removes virtualized
+    // Observe the immediate children too — virtualization adds/removes
     // item nodes which change scrollHeight without the scroller itself
     // resizing. Observing the scroller alone misses those updates.
     for (const child of Array.from(scrollEl.children)) {
@@ -356,8 +359,8 @@ interface ThumbProps {
 /**
  * Renders just the thumb overlay — absolute-positioned, sibling of the
  * scroller, parent must be `position: relative`. Surfaces using
- * `useScrollThumb` directly (Feed/Virtuoso) compose this themselves;
- * `<ScrollArea>` below uses it internally.
+ * `useScrollThumb` directly (Feed) compose this themselves; `<ScrollArea>`
+ * below uses it internally.
  */
 export function ScrollThumb({
   geometry,
@@ -432,8 +435,9 @@ interface ScrollAreaProps {
  * positioning anchor; the inner div owns the scrolling; the absolute
  * thumb is rendered as a sibling of the scroll content.
  *
- * For Virtuoso, use `useScrollThumb` + `<ScrollThumb>` directly — the
- * Virtuoso scroller is captured via its `scrollerRef` callback.
+ * For the feed (tanstack-virtual), use `useScrollThumb` + `<ScrollThumb>`
+ * directly — the scroll element is captured via a memoized ref callback
+ * on the outer scroller div. See `Feed.tsx` for the pattern.
  */
 export function ScrollArea({ children, style, className, scrollStyle }: ScrollAreaProps) {
   const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null)

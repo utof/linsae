@@ -340,7 +340,7 @@ export function NoteBubble({
   }
 
   // Clear the arm timer on unmount so a pending setTimeout doesn't fire
-  // setState on a virtualised-out bubble (Feed uses react-virtuoso).
+  // setState on a virtualised-out bubble (Feed uses @tanstack/react-virtual).
   useEffect(
     () => () => {
       if (armTimer.current !== null) clearTimeout(armTimer.current)
@@ -370,12 +370,11 @@ export function NoteBubble({
         boxShadow: focused ? 'inset 2px 0 0 #0D99FF' : 'none',
         borderRadius: 14,
         padding: '6px 12px',
-        // Inter-bubble vertical gap lives on the Feed itemContent wrapper as
-        // padding — NOT margin here — so Virtuoso's per-item size cache
+        // Inter-bubble vertical gap lives on the Feed item wrapper as
+        // padding — NOT margin here — so tanstack-virtual's `measureElement`
         // (read from getBoundingClientRect → border-box) includes the gap.
-        // Margin would sit outside content-box and under-report scrollHeight
-        // by 6px per bubble, breaking scrollToIndex / followOutput / browser
-        // scrollTop clamps (causes the "teleport up" scroll bugs).
+        // Margin would sit outside content-box and under-report measured
+        // size by 6px per bubble, throwing off the virtualizer's totalSize.
         maxWidth: 560,
         fontFamily: isQuestion ? 'var(--font-serif)' : 'var(--font-sans)',
         fontStyle: isQuestion ? 'italic' : 'normal',
