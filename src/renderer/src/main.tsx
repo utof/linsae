@@ -5,6 +5,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import ReactDOM from 'react-dom/client'
 import { App } from './App'
+import { DevFpsMeter } from './components/DevFpsMeter'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { queryClient } from './lib/query-client'
 
@@ -27,5 +28,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         <App />
       </ErrorBoundary>
     </QueryClientProvider>
+    {/* Dev-only FPS overlay for benchmarking scroll perf. `import.meta.env.DEV`
+       is a literal `false` in production builds, so Vite tree-shakes both the
+       branch and the import out of the shipped bundle. */}
+    {import.meta.env.DEV && <DevFpsMeter />}
   </StrictMode>,
 )

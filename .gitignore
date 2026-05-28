@@ -13,6 +13,11 @@ dist/
 .vite/
 *.tsbuildinfo
 .claude/
+# DevTools performance traces dropped into docs/ for analysis — NOT source.
+# Narrow on purpose: a bare `docs/` would shadow the `!/docs/**/*.md` rule
+# below (git can't re-include files under an excluded dir), un-tracking the
+# in-repo specs/plans/ADRs that CLAUDE.md requires.
+docs/Trace-*.json
 
 # Allow markdown in docs/ and adrs/ even though *.md is globally gitignored (CLAUDE.md rule)
 *.md
