@@ -27,15 +27,17 @@ interface Props {
  * "scroll snaps down on send"; users browsing history are not yanked).
  *
  * Why the `useEffect` watching `notes.length` (vs relying on `followOutput`
- * alone): `followOutput="auto"` only fires when the user is currently at the
- * bottom. When the list grows from outside (e.g. a reconciler tick adds an
- * externally-created note while the user is scrolled up reading), we still
- * want the new tail visible; the imperative `scrollToIndex` handles that.
- * The `>` (not `!==`) comparison deliberately narrows to additions only:
- * deletes shouldn't yank the viewport, and edits that swap a note for
- * another at the same index aren't flagged here (same-length, identity
- * change). `initialTopMostItemIndex` covers the mount-time "start at the
- * last bubble" requirement so the first paint is already at the bottom.
+ * alone): `followOutput` calls Virtuoso's `scrollToIndex` internally, which
+ * under-shoots due to the per-item size-cache margin issue documented on
+ * the ResizeObserver effect below. The manual effect uses direct
+ * `scrollTop = scrollHeight` to land on the true painted bottom. It's
+ * guarded on a near-bottom distance check so a user scrolled up reading
+ * history is NOT yanked when a new note arrives. The `>` (not `!==`)
+ * comparison deliberately narrows to additions only: deletes shouldn't
+ * yank the viewport, and edits that swap a note for another at the same
+ * index aren't flagged here (same-length, identity change).
+ * `initialTopMostItemIndex` covers the mount-time "start at the last
+ * bubble" requirement so the first paint is already at the bottom.
  *
  * Why `computeItemKey={(_, note) => note.id}`: default vanilla-Virtuoso keys
  * by array index, which under delete/reorder would let downstream bubbles
@@ -95,13 +97,30 @@ export function Feed({
   // once on mount) can read the latest index without re-binding.
   const lastIndexRef = useRef(notes.length - 1)
 
+  // Re-pin to bottom when notes grow, but only if the user is near the
+  // bottom. Direct `scrollTop = scrollHeight` (not Virtuoso's scrollToIndex)
+  // bypasses the per-item size-cache undershoot — see the ResizeObserver
+  // effect below for the full rationale. The 120px near-bottom threshold is
+  // generous on purpose: a user who's drifted ~one bubble height up while
+  // skimming the latest still wants the new send pulled into view, while a
+  // user genuinely browsing older notes (well past 120px) is left alone.
+  // Double rAF: Virtuoso hasn't materialized the new item yet at the
+  // useEffect tick — the first rAF lets it commit DOM, the second catches
+  // its size-cache update so scrollHeight reflects the truly-new bottom.
   useEffect(() => {
     if (notes.length > lastCount.current) {
-      virtuoso.current?.scrollToIndex({
-        index: notes.length - 1,
-        behavior: 'smooth',
-        align: 'end',
-      })
+      const scroller = scrollerRef.current
+      if (scroller) {
+        const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+        if (distance < 120) {
+          requestAnimationFrame(() => {
+            scroller.scrollTop = scroller.scrollHeight
+            requestAnimationFrame(() => {
+              scroller.scrollTop = scroller.scrollHeight
+            })
+          })
+        }
+      }
     }
     lastCount.current = notes.length
     lastIndexRef.current = notes.length - 1
