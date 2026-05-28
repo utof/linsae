@@ -180,6 +180,15 @@ export function Feed({
   // Prevent the virtualizer's own scroll-position correction from fighting
   // the manual bottom-anchor during an active morph. ADR 0007.
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => morphingIndexRef.current === null
+  // shouldAdjust above does NOT gate virtual-core's `anchorTo:'end'` "wasAtEnd"
+  // path: in resizeItem the `if (wasAtEnd) applyScrollAdjustment(...)` branch is
+  // unconditional (dist/esm/index.js). When collapsing a note near the bottom,
+  // that branch rides the scroll up by the size delta AT THE SAME TIME as our
+  // manual bottom-anchor — double-applying, so the viewport overshoots above all
+  // content and the feed blanks for the morph. Drop anchorTo to 'start' for the
+  // morph window so OUR bottom-anchor is the only thing moving scroll; restore
+  // 'end' after. (anchorTo is read live as this.options.anchorTo.) ADR 0007.
+  virtualizer.options.anchorTo = morphingIndexRef.current === null ? 'end' : 'start'
 
   // Initial scroll-to-bottom once the scroller is available. Layout
   // effect (not effect) so the bottom-pinned position is set BEFORE the

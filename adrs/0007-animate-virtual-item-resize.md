@@ -18,8 +18,14 @@ top-anchored (no scroll change). For the morph window:
 - the animating item detaches `measureElement` (tanstack forbids mixing
   `resizeItem` + `measureElement` on one item — "unpredictable behaviour"), via a
   conditional ref keyed on `morphingIndex`;
-- `shouldAdjustScrollPositionOnItemSizeChange` is forced to return `false` so the
-  virtualizer's own scroll correction doesn't fight the manual anchor. **Note:**
+- `shouldAdjustScrollPositionOnItemSizeChange` is forced to return `false` AND
+  `options.anchorTo` is dropped to `'start'` for the morph window. Both are
+  needed: `resizeItem`'s `anchorTo:'end'` "wasAtEnd" branch applies a scroll
+  adjustment *unconditionally* (not gated by `shouldAdjust`), so on a
+  collapse-near-bottom it would double-apply with our manual bottom-anchor and
+  overshoot the viewport above all content (feed blanks for the morph). With
+  `anchorTo:'start'` + `shouldAdjust:false`, the library does zero resize-driven
+  scroll adjustment and our anchor is the sole driver. **Note:**
   in virtual-core 3.16 this is an *instance property* read as
   `this.shouldAdjustScrollPositionOnItemSizeChange` (`dist/esm/index.js`), NOT a
   `VirtualizerOptions` field — so it is set by direct assignment to the
