@@ -327,24 +327,6 @@ export function Feed({
     return () => ro.disconnect()
   }, [])
 
-  // Suppress the benign "ResizeObserver loop completed with undelivered
-  // notifications" error that surfaces when `skipAnimationFrameInResizeObserver`
-  // is on (the prop tightens the measure→paint loop, which is exactly why
-  // it sometimes trips this loop-detection warning). Browsers raise it as
-  // an `error` event on window but it's harmless — petyosi documents the
-  // suppression alongside the prop. @see
-  // https://github.com/petyosi/react-virtuoso/issues/1049
-  useEffect(() => {
-    const onError = (e: ErrorEvent) => {
-      if (e.message === 'ResizeObserver loop completed with undelivered notifications.') {
-        e.stopImmediatePropagation()
-        e.preventDefault()
-      }
-    }
-    window.addEventListener('error', onError)
-    return () => window.removeEventListener('error', onError)
-  }, [])
-
   return (
     <div
       ref={containerRef}
@@ -360,14 +342,19 @@ export function Feed({
           computeItemKey={(_, note) => note.id}
           initialTopMostItemIndex={{ index: Math.max(0, notes.length - 1), align: 'end' }}
           alignToBottom
-          // skipAnimationFrameInResizeObserver tightens Virtuoso's
-          // measure→paint loop (added v4.9.0, TSDoc at dist/index.d.ts:1906-
-          // 1909). With the measurement cache below feeding modelTotal we
-          // no longer rely on Virtuoso's scrollHeight for the thumb, but
-          // this flag still helps the IN-VIRTUOSO scroll-position stability
-          // around add-note (and is documented to pair with the benign
-          // ResizeObserver-loop-error suppressor above).
-          skipAnimationFrameInResizeObserver
+          // skipAnimationFrameInResizeObserver was tried in `da9fad7` as a
+          // thumb-wobble mitigation, then kept because it seemed to help
+          // scroll-position stability around add-note. We've since removed
+          // it: with the prop on, Virtuoso's RO callbacks fire synchronously
+          // (no rAF batch) and the dozens of internal `useEmitterValue`
+          // subscriptions all snapshot-check during the same commit. Add
+          // our measurement-cache subscription on top and React's depth
+          // limit trips ("Maximum update depth exceeded"), ErrorBoundary
+          // catches, and the user sees the screen blank-flash + teleport
+          // up the feed as React 19 attempts to recreate the tree. The
+          // measurement cache (commit 6c8de79) replaces the architectural
+          // need this prop was masking. @see
+          // node_modules/.../react-virtuoso/dist/index.d.ts:1906-1909
           scrollerRef={(el) => {
             const node = el as HTMLElement | null
             scrollerRef.current = node
