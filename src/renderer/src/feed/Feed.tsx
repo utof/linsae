@@ -112,7 +112,17 @@ export function Feed({
       const scroller = scrollerRef.current
       if (scroller) {
         const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
-        if (distance < 120) {
+        const willPin = distance < 120
+        console.log('[pin]', {
+          newLength: notes.length,
+          prevLength: lastCount.current,
+          scrollTop: scroller.scrollTop,
+          scrollHeight: scroller.scrollHeight,
+          clientHeight: scroller.clientHeight,
+          distance,
+          willPin,
+        })
+        if (willPin) {
           requestAnimationFrame(() => {
             scroller.scrollTop = scroller.scrollHeight
             requestAnimationFrame(() => {
