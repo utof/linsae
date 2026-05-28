@@ -104,23 +104,31 @@ export function Feed({
   // inflates total scrollHeight and makes the custom thumb start small +
   // collapse to correct sizing only as items are scrolled into view.
   //
-  // Estimates don't need to be exact — they're replaced by real
-  // measurements as soon as each item is rendered. The heuristic here:
-  //   - count newline-delimited lines explicitly (markdown paragraphs)
-  //   - also count wrapped lines for any single long line (~70 chars per
-  //     line at our 14px font + 560px max-width)
-  //   - add ~36 px of bubble chrome (padding + border + wrapper padding)
-  //     and ~22 px per line of body content
-  // For a typical short note this lands within ~10 px of actual, which
-  // keeps the thumb stable through the estimate→measurement handoff.
-  const heightEstimates = useMemo(
-    () =>
-      notes.map((n) => {
-        const lines = Math.max(1, n.body.split('\n').length, Math.ceil(n.body.length / 70))
-        return 36 + lines * 22
-      }),
-    [notes],
-  )
+  // The estimate must account for the BODY_TRUNCATE_AT=4096 cap in
+  // NoteBubble: a 10k-char note actually paints only its first 4096 chars
+  // + an expand-button row, so estimating from `body.length` directly
+  // over-counts for long notes by ~2x and causes the thumb to jump when
+  // the user scrolls one such bubble into view and Virtuoso re-measures
+  // it down to the true size. Cap the input length to mirror the bubble.
+  //
+  //   - 26 px = wrapper padding (12) + bubble border (2) + bubble padding (12)
+  //   - 22 px / line at our 14px font + 560 px max-width (~70 chars / line)
+  //   - +18 px for the bottom flex row (expand button + timestamp) when overCap
+  //
+  // Must stay in sync with `BODY_TRUNCATE_AT` in NoteBubble.tsx — repeated
+  // here rather than imported because exporting a UI-internal constant for
+  // one consumer wastes more API surface than this 6-character duplicate.
+  const heightEstimates = useMemo(() => {
+    const RENDER_CAP = 4096
+    return notes.map((n) => {
+      const overCap = n.body.length > RENDER_CAP
+      const renderedLen = overCap ? RENDER_CAP : n.body.length
+      const newlineLines = (n.body.match(/\n/g)?.length ?? 0) + 1
+      const wrapLines = Math.ceil(renderedLen / 70)
+      const lines = Math.max(1, Math.min(newlineLines, RENDER_CAP), wrapLines)
+      return 26 + lines * 22 + (overCap ? 18 : 0)
+    })
+  }, [notes])
 
   // Re-pin to bottom when notes grow, but only if the user is near the
   // bottom. Direct `scrollTop = scrollHeight` (not Virtuoso's scrollToIndex)

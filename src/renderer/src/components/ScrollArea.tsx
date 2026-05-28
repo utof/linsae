@@ -52,6 +52,15 @@ const APPROACH_THRESHOLD_PX = 24
 // detach from the scroller's bottom during the animation (top jumps
 // instantly while height eases, overflowing the viewport).
 const RESIZE_TRANSITION_MS = 200
+// Coalesce window (ms) for bursts of size-driven updates. Virtuoso fires
+// many ResizeObserver events in rapid succession as items get measured
+// (estimate → real-height handoffs); without coalescing each one re-targets
+// the running 200ms transition mid-flight, producing a visible chase/wobble
+// instead of a single smooth ease into the settled position. 100ms catches
+// a typical burst (~3-6 frames at 60Hz) while keeping perceived latency
+// after a deliberate one-shot resize (composer grow, bubble expand) well
+// under the ~150ms threshold for "feels instant".
+const SIZE_COALESCE_MS = 100
 // Snappy ease-out (easeOutQuint-ish) for the height/top transition. We
 // avoid SPRING_EASE's overshoot on position transitions because `top`
 // overshoot can land outside the viewport — this curve gives a fast
@@ -127,6 +136,9 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
   const lastScrollHeightRef = useRef(0)
   const hideTimer = useRef<number | null>(null)
   const resizeTimer = useRef<number | null>(null)
+  // Coalesce timer for bursts of size-driven recomputes — see
+  // SIZE_COALESCE_MS comment and the recompute sizeChanged branch.
+  const sizeCoalesceTimer = useRef<number | null>(null)
   const thumbHeightRef = useRef(0)
 
   const applyGeometry = useCallback(() => {
@@ -158,17 +170,26 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
     if (sizeChanged) {
       if (resizeTimer.current !== null) clearTimeout(resizeTimer.current)
       setResizing(true)
-      resizeTimer.current = window.setTimeout(() => {
-        setResizing(false)
-        resizeTimer.current = null
-      }, RESIZE_TRANSITION_MS + 32)
-      // Defer the geometry update one rAF so React commits the `resizing=true`
-      // render (which adds `top` + `height` to the transition rule) BEFORE
-      // the property values change. Without this, Chromium may apply the new
-      // top/height in the same paint as the rule and skip the transition,
-      // causing the thumb to jump while only `height` animates. Letting the
-      // rule land first guarantees both properties transition together.
-      requestAnimationFrame(() => applyGeometry())
+      // resizing flag must cover the coalesce window PLUS the transition
+      // that runs afterward, so the CSS rule is still in place when the
+      // delayed applyGeometry triggers the eased transition.
+      resizeTimer.current = window.setTimeout(
+        () => {
+          setResizing(false)
+          resizeTimer.current = null
+        },
+        SIZE_COALESCE_MS + RESIZE_TRANSITION_MS + 32,
+      )
+      // Coalesce: collapse a burst of size changes (Virtuoso measuring
+      // several items as they enter viewport, or estimate→measurement
+      // handoffs on add-note) into one transition to the final settled
+      // position. Without this, each tick re-targets the running
+      // transition and the thumb visibly chases/wobbles.
+      if (sizeCoalesceTimer.current !== null) clearTimeout(sizeCoalesceTimer.current)
+      sizeCoalesceTimer.current = window.setTimeout(() => {
+        sizeCoalesceTimer.current = null
+        applyGeometry()
+      }, SIZE_COALESCE_MS)
       return
     }
     applyGeometry()
@@ -213,6 +234,10 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
       if (hideTimer.current !== null) {
         clearTimeout(hideTimer.current)
         hideTimer.current = null
+      }
+      if (sizeCoalesceTimer.current !== null) {
+        clearTimeout(sizeCoalesceTimer.current)
+        sizeCoalesceTimer.current = null
       }
       if (resizeTimer.current !== null) {
         clearTimeout(resizeTimer.current)
