@@ -135,9 +135,16 @@ export function Feed({
     // A trackpad/thumb drag moves only a few px per frame so it never
     // outruns the buffer, which is why the gap only showed on hard wheel
     // flicks. 16 (up from 5) pre-mounts ~1k+ px of bubbles each side so the
-    // exposed region is already painted before the user reaches it.
+    // Rows rendered beyond the viewport on each side. This is a tradeoff:
+    // too low and a fast wheel flick outruns the buffer (blank space); too
+    // high and the per-frame reconcile cost of all those off-screen bubbles
+    // makes a sustained scroll itself janky — worst through dense runs of
+    // SMALL notes, where one viewport already holds many bubbles. Note the
+    // unit is ITEMS, not pixels, so the same count buffers far less height
+    // through small notes than big ones. 12 splits the 8-felt-too-small /
+    // 16-felt-laggy range; re-tune against the dev FPS meter, not by feel.
     // @see https://tanstack.com/virtual/latest/docs/api/virtualizer#overscan
-    overscan: 16,
+    overscan: 12,
   })
 
   // Initial scroll-to-bottom once the scroller is available. Layout
@@ -234,12 +241,17 @@ export function Feed({
                   <NoteBubble
                     note={note}
                     focused={note.id === focusedId}
-                    onFocus={() => onFocus(note.id)}
+                    // Pass the id-taking callbacks straight through — no
+                    // per-item closures. NoteBubble binds them to its own
+                    // note.id, which keeps its props referentially stable so
+                    // the React Compiler's auto-memo lets it skip reconcile
+                    // while it stays in the virtual window. See ADR 0006.
+                    onFocus={onFocus}
                     onWikilinkClick={onWikilinkClick}
                     {...(resolveSlug ? { resolveSlug } : {})}
-                    onEdit={() => onEdit(note.id)}
-                    onDelete={() => onDelete(note.id)}
-                    onCopyLink={() => onCopyLink(note.id)}
+                    onEdit={onEdit}
+                    onDelete={onDelete}
+                    onCopyLink={onCopyLink}
                   />
                 </div>
               )

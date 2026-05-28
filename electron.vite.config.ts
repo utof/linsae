@@ -25,6 +25,17 @@ export default defineConfig({
         '@shared': resolve(__dirname, 'src/shared'),
       },
     },
-    plugins: [react()],
+    plugins: [
+      // React Compiler (babel-plugin-react-compiler 1.0) auto-memoizes
+      // components and stabilizes callbacks at build time, so the rolling
+      // feed reconciles only the bubbles that actually changed during a
+      // scroll instead of every visible one each frame. This is the classic-
+      // Babel form valid for @vitejs/plugin-react v5; v6 (Vite 8, oxc) would
+      // instead need @rolldown/plugin-babel. No `target` or runtime package
+      // is needed on React 19 — `react/compiler-runtime` ships with React.
+      // @see adrs/0006-react-compiler.md
+      // @see https://react.dev/learn/react-compiler/installation
+      react({ babel: { plugins: ['babel-plugin-react-compiler'] } }),
+    ],
   },
 })

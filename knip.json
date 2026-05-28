@@ -12,5 +12,5 @@
     "src/renderer/src/env.d.ts",
     "src/renderer/src/topbar/Topbar.tsx"
   ],
-  "ignoreDependencies": ["@vitejs/plugin-react"]
+  "ignoreDependencies": ["@vitejs/plugin-react", "babel-plugin-react-compiler"]
 }

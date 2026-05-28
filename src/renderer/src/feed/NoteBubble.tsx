@@ -190,12 +190,21 @@ function formatTimestamp(ms: number): string {
 interface Props {
   note: Note
   focused: boolean
-  onFocus: () => void
+  // Action callbacks take the note id rather than being pre-bound to a
+  // closure by the parent. Why: `Feed` renders bubbles inside a `.map()`, and
+  // a per-item `() => onFocus(note.id)` closure is recreated every render —
+  // which the React Compiler cannot stabilize across renders (no per-loop-
+  // iteration memo slot), so the compiler's auto-memo of NoteBubble would
+  // bust on every scroll frame. Passing the stable id-callback straight down
+  // and binding to `note.id` here (a single component-body value the compiler
+  // *can* memoize) lets NoteBubble skip reconcile while it stays in the
+  // virtual window. See adrs/0006-react-compiler.md.
+  onFocus: (id: string) => void
   onWikilinkClick: (slug: string) => void
   resolveSlug?: (slug: string) => boolean
-  onEdit: () => void
-  onDelete: () => void
-  onCopyLink: () => void
+  onEdit: (id: string) => void
+  onDelete: (id: string) => void
+  onCopyLink: (id: string) => void
 }
 
 /**
@@ -248,6 +257,14 @@ export function NoteBubble({
   // outside the clipped region, while still giving a "roll out" feel to
   // the body content itself.
   const markdownWrapRef = useRef<HTMLDivElement | null>(null)
+
+  // Bind the id-taking action callbacks to this bubble's id. These are single
+  // component-body closures (not per-`.map()`-iteration), so the React
+  // Compiler memoizes them — stable identity across re-renders.
+  const handleFocus = () => onFocus(note.id)
+  const handleEdit = () => onEdit(note.id)
+  const handleDelete = () => onDelete(note.id)
+  const handleCopyLink = () => onCopyLink(note.id)
 
   const handleContextMenu = (e: MouseEvent) => {
     e.preventDefault()
@@ -332,7 +349,7 @@ export function NoteBubble({
     if (deleteArmed) {
       if (armTimer.current !== null) clearTimeout(armTimer.current)
       setDeleteArmed(false)
-      onDelete()
+      onDelete(note.id)
       return
     }
     setDeleteArmed(true)
@@ -353,7 +370,7 @@ export function NoteBubble({
     // biome-ignore lint/a11y/useKeyWithClickEvents: focus selection is mouse-only at v0.1 (see spec §Keyboard — no E shortcut for bubble selection).
     <div
       data-bubble
-      onClick={onFocus}
+      onClick={handleFocus}
       onContextMenu={handleContextMenu}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
@@ -538,7 +555,7 @@ export function NoteBubble({
             type="button"
             title="edit"
             aria-label="edit"
-            onClick={onEdit}
+            onClick={handleEdit}
             style={{ border: 0, background: 'transparent', cursor: 'pointer', padding: 4 }}
           >
             <Pen size={14} />
@@ -547,7 +564,7 @@ export function NoteBubble({
             type="button"
             title="copy link"
             aria-label="copy link"
-            onClick={onCopyLink}
+            onClick={handleCopyLink}
             style={{ border: 0, background: 'transparent', cursor: 'pointer', padding: 4 }}
           >
             <Link2 size={14} />
@@ -573,9 +590,9 @@ export function NoteBubble({
       {contextMenu && (
         <BubbleContextMenu
           pos={contextMenu}
-          onEdit={onEdit}
-          onCopyLink={onCopyLink}
-          onDelete={onDelete}
+          onEdit={handleEdit}
+          onCopyLink={handleCopyLink}
+          onDelete={handleDelete}
           onClose={() => setContextMenu(null)}
         />
       )}
