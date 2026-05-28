@@ -2,8 +2,8 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
-import { bottomAnchorScrollTop } from './expandCollapseMorph'
 import { NoteBubble } from './NoteBubble'
+import { useExpandCollapseMorph } from './useExpandCollapseMorph'
 
 interface Props {
   notes: Note[]
@@ -166,6 +166,21 @@ export function Feed({
     overscan: 12,
   })
 
+  const [morphingIndex, setMorphingIndex] = useState<number | null>(null)
+  const morphingIndexRef = useRef<number | null>(null)
+  morphingIndexRef.current = morphingIndex
+  const suppressThumbResizeRef = useRef<boolean>(false)
+  const { run: runMorph, cancel: cancelMorph } = useExpandCollapseMorph({
+    virtualizer,
+    scrollerEl,
+    setMorphingIndex,
+    suppressThumbResizeRef,
+  })
+
+  // Prevent the virtualizer's own scroll-position correction from fighting
+  // the manual bottom-anchor during an active morph. ADR 0007.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => morphingIndexRef.current === null
+
   // Initial scroll-to-bottom once the scroller is available. Layout
   // effect (not effect) so the bottom-pinned position is set BEFORE the
   // browser paints — no first-frame flash at the top.
@@ -199,6 +214,7 @@ export function Feed({
   // layout effect can hold the bottom edge fixed on collapse. See ADR 0007.
   const handleToggleExpand = useCallback(
     (id: string) => {
+      cancelMorph()
       const scroller = scrollerEl
       if (!scroller) {
         setExpandedIds((prev) => toggleSet(prev, id))
@@ -219,27 +235,29 @@ export function Feed({
           bottomScreenOffset: vItem.start + startItemH - scroller.scrollTop,
           collapsing,
         }
+        setMorphingIndex(index)
       }
       setExpandedIds((prev) => toggleSet(prev, id))
     },
-    [notes, virtualizer, scrollerEl, expandedIds],
+    [notes, virtualizer, scrollerEl, expandedIds, cancelMorph],
   )
 
-  // After the toggle re-renders and the bubble re-measures, hold the anchor.
-  // Collapse: pin the bottom edge (notes below stay put). Expand: top-anchored,
-  // so no scroll change. Instant path; a later task animates it.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed intentionally on expandedIds; reads one-shot captured geometry from the ref.
+  // After the toggle re-renders, kick off the synchronized rAF morph that
+  // animates body height, virtualizer item size, and scrollTop in lockstep.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on expandedIds; one-shot captured geometry from the ref.
   useLayoutEffect(() => {
     const pending = pendingToggleRef.current
     const scroller = scrollerEl
     if (!pending || !scroller) return
     pendingToggleRef.current = null
-    if (!pending.collapsing) return
     const itemEl = scroller.querySelector<HTMLElement>(`[data-index="${pending.index}"]`)
-    const endItemH = itemEl ? itemEl.getBoundingClientRect().height : pending.startItemH
-    const maxScroll = scroller.scrollHeight - scroller.clientHeight
-    const next = bottomAnchorScrollTop(pending.start, endItemH, pending.bottomScreenOffset)
-    scroller.scrollTop = Math.max(0, Math.min(maxScroll, next))
+    const bodyEl = itemEl?.querySelector<HTMLElement>('[data-bubble-body]') ?? null
+    if (!itemEl || !bodyEl) {
+      setMorphingIndex(null)
+      return
+    }
+    const endItemH = itemEl.getBoundingClientRect().height
+    runMorph(pending, bodyEl, endItemH)
   }, [expandedIds])
 
   // Memoized ref callback per ADR 0004 (React 19 ref-callback identity).
@@ -256,7 +274,7 @@ export function Feed({
     }
   }, [])
 
-  const thumb = useScrollThumb(scrollerEl)
+  const thumb = useScrollThumb(scrollerEl, suppressThumbResizeRef)
 
   return (
     <div
@@ -289,7 +307,10 @@ export function Feed({
               return (
                 <div
                   key={vItem.key}
-                  ref={virtualizer.measureElement}
+                  // Detach measureElement while this item is morphing — the
+                  // morph drives its size via resizeItem instead (ADR 0007;
+                  // tanstack: don't use both on one item).
+                  ref={vItem.index === morphingIndex ? undefined : virtualizer.measureElement}
                   data-index={vItem.index}
                   style={{
                     position: 'absolute',
