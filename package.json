@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.100.14",
+    "@tanstack/react-virtual": "^3.13.26",
     "better-sqlite3": "^12.10.0",
     "cmdk": "^1.1.1",
     "js-yaml": "^4.1.1",
@@ -28,7 +29,6 @@
     "lucide-react": "^1.16.0",
     "react-hotkeys-hook": "^5.3.2",
     "react-markdown": "^10.1.0",
-    "react-virtuoso": "^4.18.7",
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",

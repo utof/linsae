@@ -95,22 +95,17 @@ interface ThumbGeometry {
  * wiring for you.
  */
 /**
- * @param scrollEl The DOM scroll container (Virtuoso's scrollerRef target,
- *   or the inner div of `<ScrollArea>`).
- * @param totalHeight Optional override for the total content height the
- *   thumb projects against. When supplied, replaces `scrollEl.scrollHeight`
- *   in all thumb-geometry math — used by `Feed` to bypass Virtuoso's
- *   estimate-then-measure scrollHeight swap (maintainer-confirmed
- *   limitation of OSS Virtuoso at petyosi/react-virtuoso#1240). The
- *   actual `scrollTop` still comes from `scrollEl` since browser-truth is
- *   the only valid signal for scroll position. Surfaces without a model
- *   total (ScrollArea-wrapped BacklinksPane, CommandPalette) leave it
- *   undefined and the DOM scrollHeight is read directly.
+ * @param scrollEl The DOM scroll container — `Feed`'s tanstack-virtual
+ *   scroll wrapper, or the inner div of `<ScrollArea>`. The thumb math
+ *   projects against `scrollEl.scrollHeight`, which is now precise for
+ *   the feed (tanstack-virtual's inner-spacer CSS height equals the
+ *   virtualizer's exact total) and trivially precise for ScrollArea-
+ *   wrapped surfaces (BacklinksPane, CommandPalette). The earlier
+ *   `totalHeight` override that worked around OSS Virtuoso's
+ *   estimate-then-measure scrollHeight swap (saga commit 6c8de79) was
+ *   removed when we migrated off Virtuoso — see ADR 0005.
  */
-export function useScrollThumb(
-  scrollEl: HTMLElement | null,
-  totalHeight?: number,
-): {
+export function useScrollThumb(scrollEl: HTMLElement | null): {
   geometry: ThumbGeometry
   thumbHovered: boolean
   areaHovered: boolean
@@ -160,41 +155,24 @@ export function useScrollThumb(
   const applyGeometry = useCallback(() => {
     if (!scrollEl) return
     const { scrollTop, scrollHeight, clientHeight } = scrollEl
-    // Total against which the thumb projects: caller-supplied model when
-    // provided (Feed's per-note measurement-cache sum), DOM scrollHeight
-    // otherwise (ScrollArea-wrapped surfaces).
-    const total = totalHeight ?? scrollHeight
-    if (total <= clientHeight + 1) {
+    if (scrollHeight <= clientHeight + 1) {
       thumbHeightRef.current = 0
       setGeometry((g) => (g.thumbHeight === 0 ? g : { ...g, thumbHeight: 0, thumbTop: 0 }))
       return
     }
-    const ratio = clientHeight / total
+    const ratio = clientHeight / scrollHeight
     const thumbHeight = Math.max(ratio * clientHeight, THUMB_MIN_HEIGHT)
-    const maxScroll = total - clientHeight
+    const maxScroll = scrollHeight - clientHeight
     const maxThumbTop = clientHeight - thumbHeight
-    // scrollTop comes from the DOM (browser-truth for the user's actual
-    // position), even when projecting against the model total. Clamp the
-    // raw ratio's projection to [0, maxThumbTop] because when `total` is
-    // smaller than DOM scrollHeight (cold model cache while Virtuoso is
-    // still measuring), `scrollTop / maxScroll` can exceed 1 and put the
-    // thumb below the viewport — invisible to the user until the cache
-    // fills in. Clamping keeps the thumb pinned at the visual bottom in
-    // that transient, which is the right approximation of "user is at the
-    // bottom of the content".
     const rawThumbTop = maxScroll > 0 ? (scrollTop / maxScroll) * maxThumbTop : 0
     const thumbTop = Math.max(0, Math.min(maxThumbTop, rawThumbTop))
     thumbHeightRef.current = thumbHeight
     setGeometry((g) => ({ ...g, thumbTop, thumbHeight }))
-  }, [scrollEl, totalHeight])
+  }, [scrollEl])
 
   const recompute = useCallback(() => {
     if (!scrollEl) return
-    // Track the same value applyGeometry uses (model total when supplied)
-    // so sizeChanged fires on model mutations as well as DOM resize. Without
-    // this, a fresh cache entry from the Feed measurement RO would update
-    // the geometry value but bypass the resizing-flag transition.
-    const currentTotal = totalHeight ?? scrollEl.scrollHeight
+    const currentTotal = scrollEl.scrollHeight
     // Detect content-size changes vs scroll-position changes. First paint
     // (prev === 0) does NOT count as a change — we want the initial geometry
     // to land instantly, not animate from 0.
@@ -214,11 +192,11 @@ export function useScrollThumb(
         },
         SIZE_COALESCE_MS + RESIZE_TRANSITION_MS + 32,
       )
-      // Coalesce: collapse a burst of size changes (Virtuoso measuring
-      // several items as they enter viewport, or estimate→measurement
-      // handoffs on add-note) into one transition to the final settled
-      // position. Without this, each tick re-targets the running
-      // transition and the thumb visibly chases/wobbles.
+      // Coalesce: collapse a burst of size changes (multiple bubbles
+      // getting measured for the first time, expand-button toggling a
+      // note's body) into one transition to the final settled position.
+      // Without this, each tick re-targets the running transition and
+      // the thumb visibly chases/wobbles.
       if (sizeCoalesceTimer.current !== null) clearTimeout(sizeCoalesceTimer.current)
       sizeCoalesceTimer.current = window.setTimeout(() => {
         sizeCoalesceTimer.current = null
@@ -227,7 +205,7 @@ export function useScrollThumb(
       return
     }
     applyGeometry()
-  }, [scrollEl, applyGeometry, totalHeight])
+  }, [scrollEl, applyGeometry])
 
   const showAndQueueHide = useCallback(() => {
     setGeometry((g) => (g.visible ? g : { ...g, visible: true }))
