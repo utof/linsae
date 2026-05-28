@@ -37,6 +37,46 @@ function estimateBubbleHeight(body: string): number {
   return 26 + lines * 22 + (overCap ? 18 : 0)
 }
 
+/**
+ * Cheap skeleton bubble rendered in place of a real `MeasuredBubble` while
+ * the user is fast-scrolling. Virtuoso swaps to this via
+ * `scrollSeekConfiguration`'s velocity-threshold and swaps back when scroll
+ * slows — see Feed's `scrollSeekConfiguration` useMemo and the prop's
+ * official TSDoc at
+ * `node_modules/.../react-virtuoso/dist/index.d.ts:880-911`.
+ *
+ * Why this matters: real `NoteBubble` renders react-markdown + KaTeX + the
+ * wikilink resolver and then `ResizeObserver`-measures itself. Doing that
+ * for every item that flashes through the viewport during a fast scroll
+ * (a) burns frames and (b) keeps the measurement cache churning, which the
+ * v0.1.2 saga has shown can knock-on into visible scroll-position
+ * instability. The placeholder has a known fixed shape, no measurement, no
+ * markdown parse, so fast scroll stays smooth and the cache only fills in
+ * once items settle in view.
+ *
+ * `height` is the size Virtuoso allocated for the item (real measured
+ * height if cached, or the estimate-tree value if not) — we render at
+ * exactly that height so the layout doesn't shift when scrollSeek exits.
+ * Subtract 12 px to leave room for the wrapper padding that real
+ * `MeasuredBubble` uses (paddingTop:6 + paddingBottom:6) so the inner
+ * skeleton card visually matches a real bubble's box.
+ */
+function ScrollSeekPlaceholder({ height }: { height: number }) {
+  return (
+    <div style={{ paddingTop: 6, paddingBottom: 6 }}>
+      <div
+        style={{
+          height: Math.max(0, height - 12),
+          background: 'var(--bg-2, #f3f4f6)',
+          border: '1px solid var(--border-1, #e5e7eb)',
+          borderRadius: 14,
+          opacity: 0.55,
+        }}
+      />
+    </div>
+  )
+}
+
 interface MeasuredBubbleProps {
   note: Note
   focused: boolean
@@ -407,6 +447,30 @@ export function Feed({
     [focusedId, onFocus, onWikilinkClick, resolveSlug, onEdit, onDelete, onCopyLink],
   )
 
+  // Render cheap placeholders while the user is fast-scrolling so the
+  // expensive markdown/KaTeX/measurement work doesn't run on items that
+  // flash through the viewport for a few frames. Enter at >800 px/s
+  // (roughly the threshold above which the user is "seeking" rather than
+  // "reading"); exit below 30 px/s so the swap-back happens after the
+  // scroll has truly settled, not while it's still decelerating.
+  // Velocities are in px/s per react-virtuoso's TSDoc example at
+  // `node_modules/.../react-virtuoso/dist/index.d.ts:885-889`.
+  //
+  // Empty deps because the thresholds are constants — see ADR 0004 for
+  // why every Virtuoso prop must be memoized.
+  const scrollSeekConfiguration = useMemo(
+    () => ({
+      enter: (velocity: number) => Math.abs(velocity) > 800,
+      exit: (velocity: number) => Math.abs(velocity) < 30,
+    }),
+    [],
+  )
+
+  // `components` prop wraps the ScrollSeekPlaceholder slot. The component
+  // itself is defined at module scope, so this useMemo is just for prop-
+  // identity stability across Feed re-renders.
+  const virtuosoComponents = useMemo(() => ({ ScrollSeekPlaceholder }), [])
+
   return (
     <div
       ref={containerRef}
@@ -436,6 +500,8 @@ export function Feed({
           skipAnimationFrameInResizeObserver
           scrollerRef={handleScrollerRef}
           itemContent={itemContent}
+          components={virtuosoComponents}
+          scrollSeekConfiguration={scrollSeekConfiguration}
           style={{ height: '100%' }}
         />
         <ScrollThumb
