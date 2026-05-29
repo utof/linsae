@@ -42,6 +42,9 @@ describe('Feed expand/collapse state', () => {
     fireEvent.click(screen.getByRole('button', { name: /expand note/i }))
     expect(screen.getByRole('button', { name: /collapse note/i })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /collapse note/i }))
-    expect(screen.getByRole('button', { name: /expand note/i })).toBeInTheDocument()
+    // Collapse keeps the full content mounted through the morph and only swaps
+    // to truncated at the end (rAF `finish` → `onCommit`), so the expand
+    // affordance returns asynchronously once the morph commits.
+    expect(await screen.findByRole('button', { name: /expand note/i })).toBeInTheDocument()
   })
 })

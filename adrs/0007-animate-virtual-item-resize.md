@@ -38,6 +38,18 @@ Expand state lifts from `NoteBubble` to `Feed` (where the virtualizer lives);
 props). `prefers-reduced-motion` (or a missing scroller) takes an instant path:
 final size + anchored scroll, no tween.
 
+**Collapse keeps the full content mounted through the morph.** The naive
+approach (swap to truncated content at click, then shrink the clip) leaves the
+clip box taller than its now-short content — an empty white band that reads as
+"the note vanished" (confirmed visually via the Playwright-Electron harness,
+`scripts/morph-harness.mjs`). Instead, `Feed` measures the collapsed target size
+up front via a no-paint `flushSync` content swap (in the click handler, so the
+intermediate render is never painted), keeps the full content for the roll-up,
+and commits the truncation only at the morph's `finish` (`onCommit`, applied
+with `flushSync` before the clip is released so the body's natural height
+already matches — no end-of-morph flash). Expand is naturally filled (it reveals
+full content as it grows), so it swaps content up front as before.
+
 ## Alternatives
 - **Instant relayout + scroll compensation (no animation):** robust and
   orientation-preserving, but drops the requested animation. Retained as the

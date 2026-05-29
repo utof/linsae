@@ -1,5 +1,6 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import type { Note } from '../../../shared/types'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { NoteBubble } from './NoteBubble'
@@ -21,6 +22,22 @@ function toggleSet(prev: ReadonlySet<string>, id: string): ReadonlySet<string> {
   const next = new Set(prev)
   if (next.has(id)) next.delete(id)
   else next.add(id)
+  return next
+}
+
+/** Immutable add — returns the same ref if already present (no needless render). */
+function addId(prev: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  if (prev.has(id)) return prev
+  const next = new Set(prev)
+  next.add(id)
+  return next
+}
+
+/** Immutable remove — returns the same ref if absent. */
+function removeId(prev: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  if (!prev.has(id)) return prev
+  const next = new Set(prev)
+  next.delete(id)
   return next
 }
 
@@ -123,15 +140,6 @@ export function Feed({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null)
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set())
-  const pendingToggleRef = useRef<{
-    id: string
-    index: number
-    start: number
-    startItemH: number
-    scrollTopStart: number
-    bottomScreenOffset: number
-    collapsing: boolean
-  } | null>(null)
 
   const virtualizer = useVirtualizer({
     count: notes.length,
@@ -218,56 +226,63 @@ export function Feed({
     return () => ro.disconnect()
   }, [virtualizer])
 
-  // Stable id-taking toggle (compiler-friendly; no per-item closure). Captures
-  // the morphing item's geometry BEFORE the content swaps so the post-commit
-  // layout effect can hold the bottom edge fixed on collapse. See ADR 0007.
+  // Stable id-taking toggle (compiler-friendly; no per-item closure).
+  //
+  // The hard part of collapse is that swapping to truncated content first (the
+  // naive approach) leaves the shrinking clip box taller than its now-short
+  // content → an empty white band reads as "the note vanished". So we measure
+  // the collapsed target up front via a no-paint `flushSync` swap, then keep the
+  // FULL content mounted for the roll-up and only commit the truncation at the
+  // morph's end (`onCommit`). The flushSyncs are in an event handler, so the
+  // browser only paints after the handler returns — the intermediate renders
+  // are never shown. See ADR 0007.
   const handleToggleExpand = useCallback(
     (id: string) => {
       cancelMorph()
       const scroller = scrollerEl
-      if (!scroller) {
+      const index = notes.findIndex((n) => n.id === id)
+      const vItem = virtualizer.getVirtualItems().find((v) => v.index === index)
+      const itemEl = scroller?.querySelector<HTMLElement>(`[data-index="${index}"]`) ?? null
+      const bodyEl = itemEl?.querySelector<HTMLElement>('[data-bubble-body]') ?? null
+      const collapsing = expandedIds.has(id)
+      // Fallback: no scroller / element not currently rendered → just toggle.
+      if (!scroller || !vItem || !itemEl || !bodyEl) {
         setExpandedIds((prev) => toggleSet(prev, id))
         return
       }
-      const index = notes.findIndex((n) => n.id === id)
-      const vItem = virtualizer.getVirtualItems().find((v) => v.index === index)
-      const itemEl = scroller.querySelector<HTMLElement>(`[data-index="${index}"]`)
-      const collapsing = expandedIds.has(id)
-      if (vItem && itemEl) {
-        const startItemH = itemEl.getBoundingClientRect().height
-        pendingToggleRef.current = {
-          id,
-          index,
-          start: vItem.start,
-          startItemH,
-          scrollTopStart: scroller.scrollTop,
-          bottomScreenOffset: vItem.start + startItemH - scroller.scrollTop,
-          collapsing,
-        }
-        setMorphingIndex(index)
-      }
-      setExpandedIds((prev) => toggleSet(prev, id))
-    },
-    [notes, virtualizer, scrollerEl, expandedIds, cancelMorph],
-  )
+      const start = vItem.start
+      const scrollTopStart = scroller.scrollTop
 
-  // After the toggle re-renders, kick off the synchronized rAF morph that
-  // animates body height, virtualizer item size, and scrollTop in lockstep.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on expandedIds; one-shot captured geometry from the ref.
-  useLayoutEffect(() => {
-    const pending = pendingToggleRef.current
-    const scroller = scrollerEl
-    if (!pending || !scroller) return
-    pendingToggleRef.current = null
-    const itemEl = scroller.querySelector<HTMLElement>(`[data-index="${pending.index}"]`)
-    const bodyEl = itemEl?.querySelector<HTMLElement>('[data-bubble-body]') ?? null
-    if (!itemEl || !bodyEl) {
-      setMorphingIndex(null)
-      return
-    }
-    const endItemH = itemEl.getBoundingClientRect().height
-    runMorph(pending, bodyEl, endItemH)
-  }, [expandedIds])
+      // Detach measureElement + switch anchorTo to 'start' (render-body overrides
+      // keyed on morphingIndex) BEFORE the measurement swaps, so they don't
+      // trigger the virtualizer's own resize/scroll reactions.
+      flushSync(() => setMorphingIndex(index))
+      const startItemH = itemEl.getBoundingClientRect().height
+
+      // Commit the END content to measure its true size + chrome.
+      flushSync(() => setExpandedIds((prev) => (collapsing ? removeId(prev, id) : addId(prev, id))))
+      const endItemH = itemEl.getBoundingClientRect().height
+      const nonBodyH = endItemH - bodyEl.getBoundingClientRect().height
+      // Collapse: restore FULL content so the roll-up animates over real text;
+      // finish() re-commits the collapse. Expand: leave it expanded (end state).
+      if (collapsing) flushSync(() => setExpandedIds((prev) => addId(prev, id)))
+
+      runMorph(
+        {
+          index,
+          start,
+          startItemH,
+          endItemH,
+          nonBodyH,
+          bottomScreenOffset: start + startItemH - scrollTopStart,
+          collapsing,
+        },
+        bodyEl,
+        collapsing ? () => setExpandedIds((prev) => removeId(prev, id)) : undefined,
+      )
+    },
+    [notes, virtualizer, scrollerEl, expandedIds, cancelMorph, runMorph],
+  )
 
   // Memoized ref callback per ADR 0004 (React 19 ref-callback identity).
   // Captures only refs, a setState setter, and side-effect calls that
