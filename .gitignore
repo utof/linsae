@@ -18,6 +18,8 @@ dist/
 # below (git can't re-include files under an excluded dir), un-tracking the
 # in-repo specs/plans/ADRs that CLAUDE.md requires.
 docs/Trace-*.json
+# Playwright-Electron harness screenshot output (regenerated each run).
+scripts/.morph-shots/
 
 # Allow markdown in docs/ and adrs/ even though *.md is globally gitignored (CLAUDE.md rule)
 *.md
