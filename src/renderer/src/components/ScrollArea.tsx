@@ -108,7 +108,10 @@ interface ThumbGeometry {
  *   estimate-then-measure scrollHeight swap (saga commit 6c8de79) was
  *   removed when we migrated off Virtuoso — see ADR 0005.
  */
-export function useScrollThumb(scrollEl: HTMLElement | null): {
+export function useScrollThumb(
+  scrollEl: HTMLElement | null,
+  suppressResizeRef?: { current: boolean },
+): {
   geometry: ThumbGeometry
   thumbHovered: boolean
   areaHovered: boolean
@@ -180,7 +183,10 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
     // (prev === 0) does NOT count as a change — we want the initial geometry
     // to land instantly, not animate from 0.
     const prev = lastScrollHeightRef.current
-    const sizeChanged = prev > 0 && currentTotal !== prev
+    // During an expand/collapse morph the total changes every frame but we want
+    // the thumb to track scrollTop smoothly (no resize transition), so the
+    // caller suppresses the size-change branch for the morph window.
+    const sizeChanged = prev > 0 && currentTotal !== prev && !(suppressResizeRef?.current ?? false)
     lastScrollHeightRef.current = currentTotal
     if (sizeChanged) {
       if (resizeTimer.current !== null) clearTimeout(resizeTimer.current)
@@ -208,7 +214,7 @@ export function useScrollThumb(scrollEl: HTMLElement | null): {
       return
     }
     applyGeometry()
-  }, [scrollEl, applyGeometry])
+  }, [scrollEl, applyGeometry, suppressResizeRef])
 
   const showAndQueueHide = useCallback(() => {
     setGeometry((g) => (g.visible ? g : { ...g, visible: true }))

@@ -1,8 +1,10 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import type { Note } from '../../../shared/types'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { NoteBubble } from './NoteBubble'
+import { useExpandCollapseMorph } from './useExpandCollapseMorph'
 
 interface Props {
   notes: Note[]
@@ -15,18 +17,60 @@ interface Props {
   onCopyLink: (id: string) => void
 }
 
+/** Returns a new Set with `id` toggled — immutable so React sees a new ref. */
+function toggleSet(prev: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const next = new Set(prev)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  return next
+}
+
+/** Immutable add — returns the same ref if already present (no needless render). */
+function addId(prev: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  if (prev.has(id)) return prev
+  const next = new Set(prev)
+  next.add(id)
+  return next
+}
+
+/** Immutable remove — returns the same ref if absent. */
+function removeId(prev: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  if (!prev.has(id)) return prev
+  const next = new Set(prev)
+  next.delete(id)
+  return next
+}
+
 /**
- * Starting per-bubble height in px. tanstack-virtual seeds its internal
- * size tree with this for not-yet-measured items, then replaces with the
- * real `measureElement`-reported value on first paint. The estimate only
- * needs to be order-of-magnitude correct — over- or under-shooting wastes
- * a few frames of layout work but doesn't compound into scroll instability
- * the way Virtuoso's estimates did, because tanstack's total size is the
- * exact sum of `sizes + estimates` and the inner container's CSS `height`
- * is that exact number. Browser-native scroll anchoring then keeps
- * visible content stable when off-screen items get measured.
+ * Content-aware per-bubble height estimate (px) for not-yet-measured items.
+ * tanstack-virtual seeds its size tree with this, then replaces each entry
+ * with the real `measureElement`-reported value once the bubble paints.
+ *
+ * Why content-aware and not a flat constant: the estimate is what positions
+ * UNMEASURED items, and during a fast scroll the user blows past a run of
+ * never-measured bubbles in a single frame. A flat 80 px under-counts every
+ * multi-line note, so the rendered window spans far fewer real pixels than
+ * the wheel just travelled — the virtualizer renders items for the wrong
+ * region and the viewport shows blank until measurement catches up. Sizing
+ * the estimate to the note body keeps the unmeasured size-tree close enough
+ * to reality that the rendered window lands where the user actually scrolled.
+ *
+ * The model mirrors `NoteBubble`'s layout: ~26 px chrome (padding + border +
+ * timestamp row), 22 px per rendered line (newline-driven OR ~70-char wrap,
+ * whichever is larger), plus 18 px for the expand control on over-cap notes.
+ * Order-of-magnitude correctness is enough — exact heights arrive via
+ * `measureElement` on first paint and the inner container's CSS height then
+ * equals the virtualizer's exact total, so scroll-anchoring stays stable.
  */
-const ESTIMATE_SIZE = 80
+function estimateBubbleHeight(body: string): number {
+  const RENDER_CAP = 4096
+  const overCap = body.length > RENDER_CAP
+  const renderedLen = overCap ? RENDER_CAP : body.length
+  const newlineLines = (body.match(/\n/g)?.length ?? 0) + 1
+  const wrapLines = Math.ceil(renderedLen / 70)
+  const lines = Math.max(1, Math.min(newlineLines, RENDER_CAP), wrapLines)
+  return 26 + lines * 22 + (overCap ? 18 : 0)
+}
 
 /**
  * Distance (px) below which the user counts as "at the end" for
@@ -95,11 +139,12 @@ export function Feed({
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null)
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set())
 
   const virtualizer = useVirtualizer({
     count: notes.length,
     getScrollElement: () => scrollerEl,
-    estimateSize: () => ESTIMATE_SIZE,
+    estimateSize: (index) => estimateBubbleHeight(notes[index]?.body ?? ''),
     // Stable key per note (uuidv7 id). Critical for prepend stability under
     // `anchorTo: 'end'`: tanstack captures the visible item by key before a
     // data change, finds the same keyed item after, and adjusts scrollTop
@@ -109,8 +154,41 @@ export function Feed({
     anchorTo: 'end',
     followOnAppend: true,
     scrollEndThreshold: SCROLL_END_THRESHOLD,
-    overscan: 5,
+    // Rows rendered beyond the viewport on each side — tanstack's documented
+    // lever for "slow-rendering blank items when scrolling": a scroll event
+    // costs a recompute + re-render + paint, and a hard wheel flick can outrun
+    // a thin buffer within that frame, exposing blank space. It's a tradeoff —
+    // too low blanks on flicks, too high pays per-frame reconcile cost for the
+    // off-screen bubbles. Pre-React-Compiler that ceiling forced ~12–16; with
+    // the compiler skipping reconcile of unchanged bubbles (ADR 0006), 8 holds
+    // 60fps even in dev with no blanking. Re-tune against `DevFpsMeter`, not by
+    // feel. @see https://tanstack.com/virtual/latest/docs/api/virtualizer#overscan
+    overscan: 8,
   })
+
+  const [morphingIndex, setMorphingIndex] = useState<number | null>(null)
+  const morphingIndexRef = useRef<number | null>(null)
+  morphingIndexRef.current = morphingIndex
+  const suppressThumbResizeRef = useRef<boolean>(false)
+  const { run: runMorph, cancel: cancelMorph } = useExpandCollapseMorph({
+    virtualizer,
+    scrollerEl,
+    setMorphingIndex,
+    suppressThumbResizeRef,
+  })
+
+  // Prevent the virtualizer's own scroll-position correction from fighting
+  // the manual bottom-anchor during an active morph. ADR 0007.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => morphingIndexRef.current === null
+  // shouldAdjust above does NOT gate virtual-core's `anchorTo:'end'` "wasAtEnd"
+  // path: in resizeItem the `if (wasAtEnd) applyScrollAdjustment(...)` branch is
+  // unconditional (dist/esm/index.js). When collapsing a note near the bottom,
+  // that branch rides the scroll up by the size delta AT THE SAME TIME as our
+  // manual bottom-anchor — double-applying, so the viewport overshoots above all
+  // content and the feed blanks for the morph. Drop anchorTo to 'start' for the
+  // morph window so OUR bottom-anchor is the only thing moving scroll; restore
+  // 'end' after. (anchorTo is read live as this.options.anchorTo.) ADR 0007.
+  virtualizer.options.anchorTo = morphingIndexRef.current === null ? 'end' : 'start'
 
   // Initial scroll-to-bottom once the scroller is available. Layout
   // effect (not effect) so the bottom-pinned position is set BEFORE the
@@ -140,6 +218,64 @@ export function Feed({
     return () => ro.disconnect()
   }, [virtualizer])
 
+  // Stable id-taking toggle (compiler-friendly; no per-item closure).
+  //
+  // The hard part of collapse is that swapping to truncated content first (the
+  // naive approach) leaves the shrinking clip box taller than its now-short
+  // content → an empty white band reads as "the note vanished". So we measure
+  // the collapsed target up front via a no-paint `flushSync` swap, then keep the
+  // FULL content mounted for the roll-up and only commit the truncation at the
+  // morph's end (`onCommit`). The flushSyncs are in an event handler, so the
+  // browser only paints after the handler returns — the intermediate renders
+  // are never shown. See ADR 0007.
+  const handleToggleExpand = useCallback(
+    (id: string) => {
+      cancelMorph()
+      const scroller = scrollerEl
+      const index = notes.findIndex((n) => n.id === id)
+      const vItem = virtualizer.getVirtualItems().find((v) => v.index === index)
+      const itemEl = scroller?.querySelector<HTMLElement>(`[data-index="${index}"]`) ?? null
+      const bodyEl = itemEl?.querySelector<HTMLElement>('[data-bubble-body]') ?? null
+      const collapsing = expandedIds.has(id)
+      // Fallback: no scroller / element not currently rendered → just toggle.
+      if (!scroller || !vItem || !itemEl || !bodyEl) {
+        setExpandedIds((prev) => toggleSet(prev, id))
+        return
+      }
+      const start = vItem.start
+      const scrollTopStart = scroller.scrollTop
+
+      // Detach measureElement + switch anchorTo to 'start' (render-body overrides
+      // keyed on morphingIndex) BEFORE the measurement swaps, so they don't
+      // trigger the virtualizer's own resize/scroll reactions.
+      flushSync(() => setMorphingIndex(index))
+      const startItemH = itemEl.getBoundingClientRect().height
+
+      // Commit the END content to measure its true size + chrome.
+      flushSync(() => setExpandedIds((prev) => (collapsing ? removeId(prev, id) : addId(prev, id))))
+      const endItemH = itemEl.getBoundingClientRect().height
+      const nonBodyH = endItemH - bodyEl.getBoundingClientRect().height
+      // Collapse: restore FULL content so the roll-up animates over real text;
+      // finish() re-commits the collapse. Expand: leave it expanded (end state).
+      if (collapsing) flushSync(() => setExpandedIds((prev) => addId(prev, id)))
+
+      runMorph(
+        {
+          index,
+          start,
+          startItemH,
+          endItemH,
+          nonBodyH,
+          bottomScreenOffset: start + startItemH - scrollTopStart,
+          collapsing,
+        },
+        bodyEl,
+        collapsing ? () => setExpandedIds((prev) => removeId(prev, id)) : undefined,
+      )
+    },
+    [notes, virtualizer, scrollerEl, expandedIds, cancelMorph, runMorph],
+  )
+
   // Memoized ref callback per ADR 0004 (React 19 ref-callback identity).
   // Captures only refs, a setState setter, and side-effect calls that
   // touch the DOM directly — `[]` deps are correct.
@@ -154,7 +290,7 @@ export function Feed({
     }
   }, [])
 
-  const thumb = useScrollThumb(scrollerEl)
+  const thumb = useScrollThumb(scrollerEl, suppressThumbResizeRef)
 
   return (
     <div
@@ -187,7 +323,10 @@ export function Feed({
               return (
                 <div
                   key={vItem.key}
-                  ref={virtualizer.measureElement}
+                  // Detach measureElement while this item is morphing — the
+                  // morph drives its size via resizeItem instead (ADR 0007;
+                  // tanstack: don't use both on one item).
+                  ref={vItem.index === morphingIndex ? undefined : virtualizer.measureElement}
                   data-index={vItem.index}
                   style={{
                     position: 'absolute',
@@ -206,12 +345,19 @@ export function Feed({
                   <NoteBubble
                     note={note}
                     focused={note.id === focusedId}
-                    onFocus={() => onFocus(note.id)}
+                    expanded={expandedIds.has(note.id)}
+                    onToggleExpand={handleToggleExpand}
+                    // Pass the id-taking callbacks straight through — no
+                    // per-item closures. NoteBubble binds them to its own
+                    // note.id, which keeps its props referentially stable so
+                    // the React Compiler's auto-memo lets it skip reconcile
+                    // while it stays in the virtual window. See ADR 0006.
+                    onFocus={onFocus}
                     onWikilinkClick={onWikilinkClick}
                     {...(resolveSlug ? { resolveSlug } : {})}
-                    onEdit={() => onEdit(note.id)}
-                    onDelete={() => onDelete(note.id)}
-                    onCopyLink={() => onCopyLink(note.id)}
+                    onEdit={onEdit}
+                    onDelete={onDelete}
+                    onCopyLink={onCopyLink}
                   />
                 </div>
               )

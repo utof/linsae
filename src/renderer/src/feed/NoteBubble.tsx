@@ -190,12 +190,27 @@ function formatTimestamp(ms: number): string {
 interface Props {
   note: Note
   focused: boolean
-  onFocus: () => void
+  /** Whether this bubble's over-cap body is expanded. Source of truth lives in
+   * Feed so the expand/collapse height morph can be driven by the virtualizer.
+   * See adrs/0007-animate-virtual-item-resize.md. */
+  expanded: boolean
+  /** Toggle request — Feed runs the animated morph + scroll anchoring. */
+  onToggleExpand: (id: string) => void
+  // Action callbacks take the note id rather than being pre-bound to a
+  // closure by the parent. Why: `Feed` renders bubbles inside a `.map()`, and
+  // a per-item `() => onFocus(note.id)` closure is recreated every render —
+  // which the React Compiler cannot stabilize across renders (no per-loop-
+  // iteration memo slot), so the compiler's auto-memo of NoteBubble would
+  // bust on every scroll frame. Passing the stable id-callback straight down
+  // and binding to `note.id` here (a single component-body value the compiler
+  // *can* memoize) lets NoteBubble skip reconcile while it stays in the
+  // virtual window. See adrs/0006-react-compiler.md.
+  onFocus: (id: string) => void
   onWikilinkClick: (slug: string) => void
   resolveSlug?: (slug: string) => boolean
-  onEdit: () => void
-  onDelete: () => void
-  onCopyLink: () => void
+  onEdit: (id: string) => void
+  onDelete: (id: string) => void
+  onCopyLink: (id: string) => void
 }
 
 /**
@@ -228,6 +243,8 @@ interface Props {
 export function NoteBubble({
   note,
   focused,
+  expanded,
+  onToggleExpand,
   onFocus,
   onWikilinkClick,
   resolveSlug,
@@ -237,17 +254,18 @@ export function NoteBubble({
 }: Props) {
   const [hover, setHover] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
-  const [expanded, setExpanded] = useState(false)
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null)
   // window.setTimeout returns number in renderer (DOM lib); Node's setTimeout
   // returns NodeJS.Timeout. Tests run in jsdom — the number variant is correct.
   const armTimer = useRef<number | null>(null)
-  // Wrapper around the rendered markdown body — Web Animations API target
-  // for the expand/collapse height transition. Animating height here (not
-  // on the outer bubble) keeps the absolute hover toolbar and context menu
-  // outside the clipped region, while still giving a "roll out" feel to
-  // the body content itself.
-  const markdownWrapRef = useRef<HTMLDivElement | null>(null)
+
+  // Bind the id-taking action callbacks to this bubble's id. These are single
+  // component-body closures (not per-`.map()`-iteration), so the React
+  // Compiler memoizes them — stable identity across re-renders.
+  const handleFocus = () => onFocus(note.id)
+  const handleEdit = () => onEdit(note.id)
+  const handleDelete = () => onDelete(note.id)
+  const handleCopyLink = () => onCopyLink(note.id)
 
   const handleContextMenu = (e: MouseEvent) => {
     e.preventDefault()
@@ -297,42 +315,12 @@ export function NoteBubble({
   const TIME_RESERVATION = '\u00A0'.repeat(18)
   const displayBody = overCap ? rawDisplayBody : `${rawDisplayBody}${TIME_RESERVATION}`
 
-  const handleToggleExpand = (e: MouseEvent) => {
-    e.stopPropagation()
-    const wrap = markdownWrapRef.current
-    if (!wrap) {
-      setExpanded((v) => !v)
-      return
-    }
-    // FLIP-style: measure the wrap's height NOW (before content swaps),
-    // toggle expanded, then on the next animation frame measure the new
-    // height and animate from old → new via Web Animations API. WAAPI is
-    // used (not CSS transition on `height`) because the wrap's natural
-    // height is `auto` — there's no explicit start value to transition
-    // from, and setting an explicit height permanently would clip future
-    // markdown re-renders.
-    const startHeight = wrap.offsetHeight
-    setExpanded((v) => !v)
-    requestAnimationFrame(() => {
-      if (!markdownWrapRef.current) return
-      const endHeight = markdownWrapRef.current.offsetHeight
-      if (startHeight === endHeight) return
-      markdownWrapRef.current.animate(
-        [
-          { height: `${startHeight}px`, overflow: 'hidden' },
-          { height: `${endHeight}px`, overflow: 'hidden' },
-        ],
-        { duration: 240, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' },
-      )
-    })
-  }
-
   const handleTrashClick = (e: MouseEvent) => {
     e.stopPropagation()
     if (deleteArmed) {
       if (armTimer.current !== null) clearTimeout(armTimer.current)
       setDeleteArmed(false)
-      onDelete()
+      onDelete(note.id)
       return
     }
     setDeleteArmed(true)
@@ -353,7 +341,7 @@ export function NoteBubble({
     // biome-ignore lint/a11y/useKeyWithClickEvents: focus selection is mouse-only at v0.1 (see spec §Keyboard — no E shortcut for bubble selection).
     <div
       data-bubble
-      onClick={onFocus}
+      onClick={handleFocus}
       onContextMenu={handleContextMenu}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
@@ -389,11 +377,10 @@ export function NoteBubble({
         overflowWrap: 'anywhere',
       }}
     >
-      {/* Single wrapper around the markdown body — ref'd for the expand/
-         collapse height animation (Web Animations API in handleToggleExpand).
-         position: relative anchors the fade-out overlay when truncated.
-         pointer-events:none on the overlay so clicks pass through. */}
-      <div ref={markdownWrapRef} style={{ position: 'relative' }}>
+      {/* data-bubble-body: Feed's expand/collapse morph sets this element's
+         height (overflow:hidden) frame-by-frame to roll the body up/down.
+         See useExpandCollapseMorph. */}
+      <div data-bubble-body style={{ position: 'relative' }}>
         <Markdown
           body={displayBody}
           onWikilinkClick={onWikilinkClick}
@@ -437,7 +424,10 @@ export function NoteBubble({
           <button
             type="button"
             aria-label={expanded ? 'collapse note' : `expand note — ${wordCount} words`}
-            onClick={handleToggleExpand}
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggleExpand(note.id)
+            }}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -538,7 +528,7 @@ export function NoteBubble({
             type="button"
             title="edit"
             aria-label="edit"
-            onClick={onEdit}
+            onClick={handleEdit}
             style={{ border: 0, background: 'transparent', cursor: 'pointer', padding: 4 }}
           >
             <Pen size={14} />
@@ -547,7 +537,7 @@ export function NoteBubble({
             type="button"
             title="copy link"
             aria-label="copy link"
-            onClick={onCopyLink}
+            onClick={handleCopyLink}
             style={{ border: 0, background: 'transparent', cursor: 'pointer', padding: 4 }}
           >
             <Link2 size={14} />
@@ -573,9 +563,9 @@ export function NoteBubble({
       {contextMenu && (
         <BubbleContextMenu
           pos={contextMenu}
-          onEdit={onEdit}
-          onCopyLink={onCopyLink}
-          onDelete={onDelete}
+          onEdit={handleEdit}
+          onCopyLink={handleCopyLink}
+          onDelete={handleDelete}
           onClose={() => setContextMenu(null)}
         />
       )}

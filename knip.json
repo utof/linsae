@@ -4,7 +4,8 @@
     "src/main/index.ts",
     "src/preload/index.ts",
     "src/renderer/src/main.tsx",
-    "tests/**/*.test.{ts,tsx}"
+    "tests/**/*.test.{ts,tsx}",
+    "scripts/*.mjs"
   ],
   "project": ["src/**/*.{ts,tsx}", "tests/**/*.{ts,tsx}"],
   "ignore": [
@@ -12,5 +13,5 @@
     "src/renderer/src/env.d.ts",
     "src/renderer/src/topbar/Topbar.tsx"
   ],
-  "ignoreDependencies": ["@vitejs/plugin-react"]
+  "ignoreDependencies": ["@vitejs/plugin-react", "babel-plugin-react-compiler"]
 }
