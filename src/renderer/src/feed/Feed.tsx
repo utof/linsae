@@ -154,24 +154,16 @@ export function Feed({
     anchorTo: 'end',
     followOnAppend: true,
     scrollEndThreshold: SCROLL_END_THRESHOLD,
-    // Rows rendered beyond the viewport on each side. tanstack's docs name
-    // this the lever for "slow-rendering blank items at the top and bottom
-    // when scrolling": a scroll event must recompute the range, re-render,
-    // and paint — at least a frame of latency — and a fast wheel flick can
-    // travel past a small buffer within that frame, exposing blank space.
-    // A trackpad/thumb drag moves only a few px per frame so it never
-    // outruns the buffer, which is why the gap only showed on hard wheel
-    // flicks. 16 (up from 5) pre-mounts ~1k+ px of bubbles each side so the
-    // Rows rendered beyond the viewport on each side. This is a tradeoff:
-    // too low and a fast wheel flick outruns the buffer (blank space); too
-    // high and the per-frame reconcile cost of all those off-screen bubbles
-    // makes a sustained scroll itself janky — worst through dense runs of
-    // SMALL notes, where one viewport already holds many bubbles. Note the
-    // unit is ITEMS, not pixels, so the same count buffers far less height
-    // through small notes than big ones. 12 splits the 8-felt-too-small /
-    // 16-felt-laggy range; re-tune against the dev FPS meter, not by feel.
-    // @see https://tanstack.com/virtual/latest/docs/api/virtualizer#overscan
-    overscan: 12,
+    // Rows rendered beyond the viewport on each side — tanstack's documented
+    // lever for "slow-rendering blank items when scrolling": a scroll event
+    // costs a recompute + re-render + paint, and a hard wheel flick can outrun
+    // a thin buffer within that frame, exposing blank space. It's a tradeoff —
+    // too low blanks on flicks, too high pays per-frame reconcile cost for the
+    // off-screen bubbles. Pre-React-Compiler that ceiling forced ~12–16; with
+    // the compiler skipping reconcile of unchanged bubbles (ADR 0006), 8 holds
+    // 60fps even in dev with no blanking. Re-tune against `DevFpsMeter`, not by
+    // feel. @see https://tanstack.com/virtual/latest/docs/api/virtualizer#overscan
+    overscan: 8,
   })
 
   const [morphingIndex, setMorphingIndex] = useState<number | null>(null)
