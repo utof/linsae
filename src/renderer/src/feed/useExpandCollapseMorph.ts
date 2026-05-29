@@ -1,9 +1,9 @@
 import type { Virtualizer } from '@tanstack/react-virtual'
 import { useCallback, useEffect, useRef } from 'react'
 import { flushSync } from 'react-dom'
-import { bottomAnchorScrollTop, easeOutCubic, lerp } from './expandCollapseMorph'
+import { bottomAnchorScrollTop, easeMorph, lerp } from './expandCollapseMorph'
 
-const MORPH_MS = 240
+const MORPH_MS = 320
 
 export interface PendingMorph {
   index: number
@@ -117,7 +117,7 @@ export function useExpandCollapseMorph(args: {
       const tick = (ts: number) => {
         if (startTs === null) startTs = ts
         const t = Math.min(1, (ts - startTs) / MORPH_MS)
-        applyFrame(lerp(startItemH, endItemH, easeOutCubic(t)))
+        applyFrame(lerp(startItemH, endItemH, easeMorph(t)))
         if (t < 1) rafRef.current = requestAnimationFrame(tick)
         else finish()
       }
