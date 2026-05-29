@@ -18,6 +18,12 @@ top-anchored (no scroll change). For the morph window:
 - the animating item detaches `measureElement` (tanstack forbids mixing
   `resizeItem` + `measureElement` on one item — "unpredictable behaviour"), via a
   conditional ref keyed on `morphingIndex`;
+- `resizeItem` is wrapped in `flushSync` each frame so the items BELOW the
+  morphing one reposition in the SAME frame as its body clip. Without it the
+  React re-render lands a frame late, so the note's bottom edge runs one frame
+  ahead of the notes below it → a gap opens and chases shut. They must move
+  glued together. Verified 60fps with the flushSync (the per-frame render is
+  cheap — the React Compiler memoizes the unchanged bubbles);
 - `shouldAdjustScrollPositionOnItemSizeChange` is forced to return `false` AND
   `options.anchorTo` is dropped to `'start'` for the morph window. Both are
   needed: `resizeItem`'s `anchorTo:'end'` "wasAtEnd" branch applies a scroll

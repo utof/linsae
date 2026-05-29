@@ -86,7 +86,12 @@ export function useExpandCollapseMorph(args: {
       const applyFrame = (h: number) => {
         bodyEl.style.overflow = 'hidden'
         bodyEl.style.height = `${Math.max(0, h - nonBodyH)}px`
-        virtualizer.resizeItem(index, h)
+        // flushSync so the virtualizer repositions the items BELOW this one in
+        // the SAME frame as the body clip above. Without it, resizeItem's React
+        // re-render lands a frame late, so the note's bottom edge runs one frame
+        // ahead of the notes below it — a gap opens and chases shut. They must
+        // move glued together ("attached sheets of paper"). See ADR 0007.
+        flushSync(() => virtualizer.resizeItem(index, h))
         if (collapsing && scroller) {
           const next = bottomAnchorScrollTop(start, h, bottomScreenOffset)
           scroller.scrollTop = Math.max(0, Math.min(maxScrollOf(), next))
