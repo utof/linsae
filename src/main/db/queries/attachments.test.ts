@@ -6,6 +6,8 @@ import {
   attachToNote,
   getAttachmentsByHash,
   insertAttachment,
+  listAttachmentsByTitleLike,
+  listAttachmentsByVideo,
   listAttachmentsForNote,
   listOrphanAttachments,
   softDeleteAttachment,
@@ -79,5 +81,26 @@ describe('attachments queries', () => {
     db.prepare('DELETE FROM notes WHERE id = ?').run('note-1')
     const orphans = listOrphanAttachments(db)
     expect(orphans.map((o) => o.id)).toContain(a.id)
+  })
+
+  it('listAttachmentsByVideo returns live rows for a video id', () => {
+    insertAttachment(db, base)
+    insertAttachment(db, { ...base, base_sha256: 'd2', base_path: '/tmp/a/d2.png' })
+    insertAttachment(db, {
+      ...base,
+      video_id: 'other',
+      base_sha256: 'd3',
+      base_path: '/tmp/a/d3.png',
+    })
+    expect(listAttachmentsByVideo(db, 'dQw4w9WgXcQ')).toHaveLength(2)
+  })
+
+  it('listAttachmentsByTitleLike matches via the video_sources title (case-insensitive substring)', () => {
+    db.prepare(
+      `INSERT INTO video_sources (video_id, source_kind, title, fetched_at) VALUES (?, 'youtube', ?, 0)`,
+    ).run('dQw4w9WgXcQ', 'Serre Spectral Sequences')
+    insertAttachment(db, base)
+    expect(listAttachmentsByTitleLike(db, 'spectral')).toHaveLength(1)
+    expect(listAttachmentsByTitleLike(db, 'nomatch')).toHaveLength(0)
   })
 })

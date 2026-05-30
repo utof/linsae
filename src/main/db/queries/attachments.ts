@@ -132,3 +132,35 @@ export function listAttachmentsForNote(db: DB, noteId: string): Attachment[] {
 export function softDeleteAttachment(db: DB, id: string): void {
   db.prepare(`UPDATE attachments SET deleted_at = ? WHERE id = ?`).run(Date.now(), id)
 }
+
+/**
+ * Live attachments captured from a given video (uses idx_attachments_video_id).
+ * @see docs/specs/v0.2-youtube-annotation.md §IPC contracts (AttachmentsApi.list)
+ */
+export function listAttachmentsByVideo(db: DB, videoId: string): Attachment[] {
+  return db
+    .prepare(
+      `SELECT ${SELECT_COLS} FROM attachments WHERE video_id = ? AND deleted_at IS NULL ORDER BY created_at`,
+    )
+    .all(videoId) as Attachment[]
+}
+
+/**
+ * Live attachments whose source video's title matches `like` (case-insensitive
+ * substring) — "screenshots from videos titled X" without a network call,
+ * using the denormalised video_sources.title (spec §Data model).
+ * @see docs/specs/v0.2-youtube-annotation.md §IPC contracts (AttachmentsApi.list)
+ */
+export function listAttachmentsByTitleLike(db: DB, like: string): Attachment[] {
+  return db
+    .prepare(
+      `SELECT ${SELECT_COLS.split(',')
+        .map((c) => `a.${c.trim()}`)
+        .join(', ')}
+       FROM attachments a
+       JOIN video_sources v ON v.video_id = a.video_id
+       WHERE a.deleted_at IS NULL AND v.title LIKE '%' || ? || '%' COLLATE NOCASE
+       ORDER BY a.created_at`,
+    )
+    .all(like) as Attachment[]
+}
