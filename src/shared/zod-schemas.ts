@@ -108,3 +108,51 @@ export const BacklinksInputSchema = z.object({ noteId: z.string().min(1) })
  * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 20 (handler registration)
  */
 export const ResolveInputSchema = z.object({ slug: z.string().min(1) })
+
+/** `youtube:capture` input. videoId/t give the orphan attachment its provenance. */
+export const CaptureInputSchema = z.object({
+  rect: z.object({
+    x: z.number(),
+    y: z.number(),
+    width: z.number().positive(),
+    height: z.number().positive(),
+  }),
+  videoId: z.string().min(1),
+  t: z.number().nonnegative(),
+})
+
+/** `youtube:fetchOEmbed` input. */
+export const FetchOEmbedInputSchema = z.object({ videoId: z.string().min(1) })
+
+/** `attachments:list` filter — every field optional (spec AttachmentsApi.list). */
+export const AttachmentsListInputSchema = z.object({
+  orphans: z.boolean().optional(),
+  videoId: z.string().min(1).optional(),
+  titleLike: z.string().min(1).optional(),
+  noteId: z.string().min(1).optional(),
+})
+
+/** `attachments:attachToNote` input. */
+export const AttachToNoteInputSchema = z.object({
+  attachmentId: z.string().min(1),
+  noteId: z.string().min(1),
+})
+
+/**
+ * `videoSources:upsert` input. sourceKind is typed for forward-compat but the
+ * v0.2.0 validator accepts only 'youtube' (spec line 350: widen when local ships).
+ */
+export const VideoSourcesUpsertInputSchema = z.object({
+  videoId: z.string().min(1),
+  sourceKind: z.literal('youtube'),
+  // oEmbed-derived metadata, all optional — the Plan 1 wrapper COALESCEs each, so
+  // a metadata-less re-upsert never wipes a cached title (spec §Add a video). The
+  // renderer fetches oEmbed then upserts with these set; Plan 3 needs no schema edit.
+  title: z.string().optional(),
+  channel: z.string().optional(),
+  thumbnailUrl: z.string().optional(),
+  durationSec: z.number().int().nonnegative().optional(),
+})
+
+/** `videoSources:get` input. */
+export const VideoSourcesGetInputSchema = z.object({ videoId: z.string().min(1) })
