@@ -50,7 +50,11 @@ export function upsertVideoSource(db: DB, input: UpsertVideoSourceInput): void {
   })
 }
 
-/** Retrieves a video-metadata row, or null if not cached. */
+/**
+ * Retrieves a video-metadata row, or null if not cached.
+ *
+ * @see docs/specs/v0.2-youtube-annotation.md §Data model
+ */
 export function getVideoSource(db: DB, videoId: string): VideoSource | null {
   return (
     (db
@@ -62,7 +66,14 @@ export function getVideoSource(db: DB, videoId: string): VideoSource | null {
   )
 }
 
-/** Fills duration lazily (oEmbed omits it; the player supplies it on first load). */
+/**
+ * Fills duration lazily (oEmbed omits it; the player supplies it on first load).
+ *
+ * Why: forced overwrite — distinct from `upsertVideoSource`'s COALESCE, which can
+ * only fill a null duration, never correct a stale one. Unknown id → silent no-op.
+ *
+ * @see docs/specs/v0.2-youtube-annotation.md §Data model
+ */
 export function setVideoDuration(db: DB, videoId: string, durationSec: number): void {
   db.prepare(`UPDATE video_sources SET duration_sec = ? WHERE video_id = ?`).run(
     durationSec,

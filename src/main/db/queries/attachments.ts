@@ -31,7 +31,11 @@ interface InsertAttachmentInput {
 const SELECT_COLS = `id, note_id, kind, base_sha256, base_path, overlay_path,
   video_id, time_seconds, width_px, height_px, device_pixel_ratio, created_at, deleted_at`
 
-/** Inserts an attachment (born an orphan unless note_id given) and returns it. */
+/**
+ * Inserts an attachment (born an orphan unless note_id given) and returns it.
+ *
+ * @see docs/specs/v0.2-youtube-annotation.md §Data model
+ */
 export function insertAttachment(db: DB, input: InsertAttachmentInput): Attachment {
   const id = uuidv7()
   const created_at = Date.now()
@@ -56,6 +60,8 @@ export function insertAttachment(db: DB, input: InsertAttachmentInput): Attachme
     device_pixel_ratio: input.device_pixel_ratio,
     created_at,
   })
+  // Non-null assertion: we just inserted, so the row must exist.
+  // Why: the INSERT above throws on any constraint violation, so a row with this id provably exists here.
   return getAttachment(db, id)!
 }
 
@@ -68,19 +74,33 @@ function getAttachment(db: DB, id: string): Attachment | null {
   )
 }
 
-/** Live attachments sharing a content hash (file-layer dedup is by sha256). */
+/**
+ * Live attachments sharing a content hash (file-layer dedup is by sha256).
+ *
+ * @see docs/specs/v0.2-youtube-annotation.md §Data model
+ */
 export function getAttachmentsByHash(db: DB, sha256: string): Attachment[] {
   return db
     .prepare(`SELECT ${SELECT_COLS} FROM attachments WHERE base_sha256 = ? AND deleted_at IS NULL`)
     .all(sha256) as Attachment[]
 }
 
-/** Points an orphan attachment at a note. */
+/**
+ * Points an attachment at a note.
+ *
+ * No orphan-check — the caller (Plan 2 IPC) guarantees the target is unattached.
+ * Unknown id → silent no-op (changes() === 0, no throw); call a getter first if
+ * you need not-found detection.
+ */
 export function attachToNote(db: DB, args: { id: string; noteId: string }): void {
   db.prepare(`UPDATE attachments SET note_id = ? WHERE id = ?`).run(args.noteId, args.id)
 }
 
-/** Unattached, non-deleted attachments, oldest first (orphan tray). */
+/**
+ * Unattached, non-deleted attachments, oldest first (orphan tray).
+ *
+ * @see docs/specs/v0.2-youtube-annotation.md §Data model
+ */
 export function listOrphanAttachments(db: DB): Attachment[] {
   return db
     .prepare(
@@ -90,14 +110,25 @@ export function listOrphanAttachments(db: DB): Attachment[] {
     .all() as Attachment[]
 }
 
-/** Live attachments belonging to a note. */
+/**
+ * Live attachments belonging to a note.
+ *
+ * @see docs/specs/v0.2-youtube-annotation.md §Data model
+ */
 export function listAttachmentsForNote(db: DB, noteId: string): Attachment[] {
   return db
     .prepare(`SELECT ${SELECT_COLS} FROM attachments WHERE note_id = ? AND deleted_at IS NULL`)
     .all(noteId) as Attachment[]
 }
 
-/** Soft-deletes an attachment (PNG bytes on disk are not touched). */
+/**
+ * Soft-deletes an attachment (PNG bytes on disk are not touched).
+ *
+ * Unknown id → silent no-op (changes() === 0, no throw); call a getter first
+ * if you need not-found detection.
+ *
+ * @see docs/specs/v0.2-youtube-annotation.md §Data model
+ */
 export function softDeleteAttachment(db: DB, id: string): void {
   db.prepare(`UPDATE attachments SET deleted_at = ? WHERE id = ?`).run(Date.now(), id)
 }
