@@ -20,6 +20,20 @@ describe('CaptureInputSchema', () => {
   it('rejects a missing rect field', () => {
     expect(() => CaptureInputSchema.parse({ videoId: 'x', t: 1 })).toThrow()
   })
+  it('rejects a zero/negative-dimension rect (the invisible-iframe guard)', () => {
+    const base = { videoId: 'x', t: 1 }
+    expect(() =>
+      CaptureInputSchema.parse({ ...base, rect: { x: 0, y: 0, width: 0, height: 360 } }),
+    ).toThrow()
+    expect(() =>
+      CaptureInputSchema.parse({ ...base, rect: { x: 0, y: 0, width: 640, height: -1 } }),
+    ).toThrow()
+  })
+  it('rejects an empty-string videoId', () => {
+    expect(() =>
+      CaptureInputSchema.parse({ rect: { x: 0, y: 0, width: 1, height: 1 }, videoId: '', t: 0 }),
+    ).toThrow()
+  })
 })
 
 describe('VideoSourcesUpsertInputSchema', () => {
@@ -44,6 +58,18 @@ describe('VideoSourcesUpsertInputSchema', () => {
     })
     expect(v.title).toBe('T')
     expect(v.durationSec).toBe(100)
+  })
+  it('rejects a fractional or negative durationSec', () => {
+    expect(() =>
+      VideoSourcesUpsertInputSchema.parse({
+        videoId: 'x',
+        sourceKind: 'youtube',
+        durationSec: 1.5,
+      }),
+    ).toThrow()
+    expect(() =>
+      VideoSourcesUpsertInputSchema.parse({ videoId: 'x', sourceKind: 'youtube', durationSec: -1 }),
+    ).toThrow()
   })
 })
 
