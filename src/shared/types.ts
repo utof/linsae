@@ -27,3 +27,14 @@ export interface ReconcileReport {
   deleted: number
   skipped: number
 }
+
+/** A cached video-metadata row (mirrors video_sources in 0002_video_threads.sql). */
+export interface VideoSource {
+  video_id: string
+  source_kind: 'youtube' | 'local'
+  title: string | null
+  channel: string | null
+  thumbnail_url: string | null
+  duration_sec: number | null
+  fetched_at: number
+}
