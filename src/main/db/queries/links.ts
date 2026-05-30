@@ -33,6 +33,11 @@ type DB = Database.Database
  * and safer than diffing the previous set, and the rowcount is small
  * (one note's outbound links).
  *
+ * Replaces only the **`'reference'`** (wikilink-derived) outbound edges;
+ * `'comment-on'` thread edges are managed separately via
+ * {@link setCommentOnEdge} and are intentionally preserved across saves and
+ * reconciles.
+ *
  * @param db - Open better-sqlite3 Database.
  * @param fromNoteId - UUID of the source note whose outbound edges are being rewritten.
  * @param links - The full new set of outbound wikilinks; pass `[]` to clear.
@@ -40,7 +45,7 @@ type DB = Database.Database
  */
 export function replaceLinksForNote(db: DB, fromNoteId: string, links: Wikilink[]): void {
   const tx = db.transaction((id: string, ls: Wikilink[]) => {
-    db.prepare('DELETE FROM links WHERE from_note_id = ?').run(id)
+    db.prepare(`DELETE FROM links WHERE from_note_id = ? AND edge_type = 'reference'`).run(id)
     if (ls.length === 0) return
     const insert = db.prepare(
       `INSERT OR IGNORE INTO links (from_note_id, to_slug, edge_type)
@@ -78,4 +83,21 @@ export function backlinks(db: DB, toSlug: string): Note[] {
        ORDER BY n.created_at DESC`,
     )
     .all(toSlug) as Note[]
+}
+
+/**
+ * Creates the `comment-on` edge linking a comment-note to its video-note
+ * (`edge_type='comment-on'`, spec §links / ADR 0010). Idempotent via the
+ * composite PK `(from_note_id, to_slug, edge_type)`. Unlike reference edges,
+ * comment-on edges are NOT derived from the body and survive
+ * {@link replaceLinksForNote} (which is scoped to `'reference'`).
+ *
+ * @param db - Open better-sqlite3 Database.
+ * @param fromNoteId - The comment-note's id.
+ * @param toVideoSlug - The video-note's slug (the thread it belongs to).
+ */
+export function setCommentOnEdge(db: DB, fromNoteId: string, toVideoSlug: string): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO links (from_note_id, to_slug, edge_type) VALUES (?, ?, 'comment-on')`,
+  ).run(fromNoteId, toVideoSlug)
 }
