@@ -76,4 +76,23 @@ describe('notes queries', () => {
     const after = getNote(db, 'n1')
     expect(after?.deleted_at).not.toBeNull()
   })
+
+  it('getNote hydrates source_kind and parses source_locator JSON', () => {
+    db.prepare(
+      `INSERT INTO notes (id, slug, body, type, created_at, updated_at, source_kind, source_locator)
+       VALUES ('v1', 'v1', 'b', 'source', 0, 0, 'youtube', ?)`,
+    ).run(JSON.stringify({ media: 'youtube', video_id: 'dQw4w9WgXcQ', t: 83 }))
+    const n = getNote(db, 'v1')
+    expect(n?.source_kind).toBe('youtube')
+    expect(n?.source_locator).toEqual({ media: 'youtube', video_id: 'dQw4w9WgXcQ', t: 83 })
+  })
+
+  it('getNote returns null source fields for a plain note', () => {
+    db.prepare(
+      `INSERT INTO notes (id, slug, body, type, created_at, updated_at) VALUES ('p1','p1','b','claim',0,0)`,
+    ).run()
+    const n = getNote(db, 'p1')
+    expect(n?.source_kind).toBeNull()
+    expect(n?.source_locator).toBeNull()
+  })
 })

@@ -4,6 +4,17 @@
 
 export type NoteType = 'claim' | 'question' | 'source'
 
+/**
+ * What external thing a note is anchored to (JSON in notes.source_locator).
+ * Media-agnostic (spec §Forward direction); v0.2.0 = youtube only. `t` (sec)
+ * is omitted for anchorless comment-notes.
+ */
+export interface SourceLocator {
+  media: 'youtube'
+  video_id: string
+  t?: number
+}
+
 export interface Note {
   id: string
   slug: string
@@ -12,6 +23,8 @@ export interface Note {
   created_at: number
   updated_at: number
   deleted_at: number | null
+  source_kind?: string | null
+  source_locator?: SourceLocator | null
 }
 
 export interface SearchHit {
