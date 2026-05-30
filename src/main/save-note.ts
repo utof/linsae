@@ -21,7 +21,7 @@
 
 import type Database from 'better-sqlite3'
 import { uuidv7 } from 'uuidv7'
-import type { Note, NoteType } from '../shared/types'
+import type { Note, NoteType, SourceLocator } from '../shared/types'
 import { replaceLinksForNote } from './db/queries/links'
 import { getNote } from './db/queries/notes'
 import { appendRevision } from './db/queries/revisions'
@@ -53,8 +53,21 @@ type DB = Database.Database
  *                  exist.
  */
 export type SaveInput =
-  | { mode: 'create'; body: string; type: NoteType }
-  | { mode: 'update'; id: string; body: string; type: NoteType }
+  | {
+      mode: 'create'
+      body: string
+      type: NoteType
+      source_kind?: string
+      source_locator?: SourceLocator
+    }
+  | {
+      mode: 'update'
+      id: string
+      body: string
+      type: NoteType
+      source_kind?: string
+      source_locator?: SourceLocator
+    }
   | { mode: 'softDelete'; id: string }
 
 /**
@@ -157,16 +170,36 @@ export function saveNote(db: DB, nd: NotesDir, input: SaveInput): Note {
   // also serialises to `deleted_at: undefined` in YAML on some js-yaml
   // configurations, polluting the file).
   const existingFile = input.mode === 'update' ? nd.readNote(input.id) : null
+
+  // Build source frontmatter fields using conditional spread so that
+  // `exactOptionalPropertyTypes` is satisfied — never assign `undefined`.
+  const sourceFm =
+    input.source_kind || input.source_locator
+      ? {
+          ...(input.source_kind ? { source_kind: input.source_kind } : {}),
+          ...(input.source_locator ? { source_locator: input.source_locator } : {}),
+        }
+      : {}
+
   let fm: NoteFrontmatter
   if (existingFile?.ok) {
     const { deleted_at: _drop, ...rest } = existingFile.frontmatter
-    fm = { ...rest, slug, type: input.type, created_at, updated_at: now }
+    fm = { ...rest, slug, type: input.type, created_at, updated_at: now, ...sourceFm }
   } else {
-    fm = { id, slug, type: input.type, created_at, updated_at: now }
+    fm = { id, slug, type: input.type, created_at, updated_at: now, ...sourceFm }
   }
 
   // 1. File first.
   nd.writeNote(fm, input.body)
+
+  // Prepare source column values for the DB. `source_locator` is stored as
+  // JSON TEXT (spec §Data model). The UPDATE path overwrites both columns with
+  // whatever the caller passed (null if omitted). For v0.2.0 the only updater
+  // of a video/comment-note always re-sends the source fields; a plain body-edit
+  // of a non-source note sends null→null (no-op). A COALESCE guard is deferred
+  // (YAGNI — the field is always re-supplied in the current call sites).
+  const sourceKind = input.source_kind ?? null
+  const sourceLocator = input.source_locator ? JSON.stringify(input.source_locator) : null
 
   // 2. DB second, in one transaction.
   // Why inline INSERT/UPDATE rather than calling createNote/updateNote: those
@@ -177,14 +210,15 @@ export function saveNote(db: DB, nd: NotesDir, input: SaveInput): Note {
     let n: Note
     if (input.mode === 'create') {
       db.prepare(
-        `INSERT INTO notes (id, slug, body, type, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run(id, slug, input.body, input.type, created_at, now)
+        `INSERT INTO notes (id, slug, body, type, created_at, updated_at, source_kind, source_locator)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(id, slug, input.body, input.type, created_at, now, sourceKind, sourceLocator)
       n = getNote(db, id)!
     } else {
       db.prepare(
-        `UPDATE notes SET body = ?, type = ?, updated_at = ?, deleted_at = NULL WHERE id = ?`,
-      ).run(input.body, input.type, now, input.id)
+        `UPDATE notes SET body = ?, type = ?, updated_at = ?, deleted_at = NULL,
+           source_kind = ?, source_locator = ? WHERE id = ?`,
+      ).run(input.body, input.type, now, sourceKind, sourceLocator, input.id)
       n = getNote(db, input.id)!
     }
     replaceLinksForNote(db, n.id, links)

@@ -13,6 +13,7 @@
 
 import type Database from 'better-sqlite3'
 import { ipcMain } from 'electron'
+import type { SourceLocator } from '../../shared/types'
 import {
   BacklinksInputSchema,
   NoteIdSchema,
@@ -64,11 +65,28 @@ export function registerNotesIpc(db: DB, nd: NotesDir): void {
   })
   ipcMain.handle('notes:create', (_e, input) => {
     const i = NotesCreateInputSchema.parse(input)
-    return saveNote(db, nd, { mode: 'create', body: i.body, type: i.type })
+    // Cast source_locator to SourceLocator: Zod infers `t?: number | undefined`
+    // but exactOptionalPropertyTypes requires `t?: number`. The schema validates
+    // the shape at runtime; the cast is safe.
+    return saveNote(db, nd, {
+      mode: 'create',
+      body: i.body,
+      type: i.type,
+      ...(i.source_kind ? { source_kind: i.source_kind } : {}),
+      ...(i.source_locator ? { source_locator: i.source_locator as SourceLocator } : {}),
+    })
   })
   ipcMain.handle('notes:update', (_e, input) => {
     const i = NotesUpdateInputSchema.parse(input)
-    return saveNote(db, nd, { mode: 'update', id: i.id, body: i.body, type: i.type })
+    // Same cast rationale as notes:create above.
+    return saveNote(db, nd, {
+      mode: 'update',
+      id: i.id,
+      body: i.body,
+      type: i.type,
+      ...(i.source_kind ? { source_kind: i.source_kind } : {}),
+      ...(i.source_locator ? { source_locator: i.source_locator as SourceLocator } : {}),
+    })
   })
   ipcMain.handle('notes:delete', (_e, input) => {
     const i = NoteIdSchema.parse(input)

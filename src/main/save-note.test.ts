@@ -25,6 +25,7 @@ import type Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openDb } from './db/client'
 import { runMigrations } from './db/migrate'
+import { getNote } from './db/queries/notes'
 import { listRevisions } from './db/queries/revisions'
 import { NotesDir } from './files/notes-dir'
 import { saveNote } from './save-note'
@@ -125,5 +126,24 @@ describe('saveNote', () => {
     const file = nd.readNote(n.id)
     expect(file.ok).toBe(true)
     if (file.ok) expect(file.frontmatter.deleted_at).toBeUndefined()
+  })
+
+  it('persists source_kind/source_locator to the DB and the file frontmatter', () => {
+    const note = saveNote(db, nd, {
+      mode: 'create',
+      body: 'a video',
+      type: 'source',
+      source_kind: 'youtube',
+      source_locator: { media: 'youtube', video_id: 'dQw4w9WgXcQ' },
+    })
+    const fetched = getNote(db, note.id)
+    expect(fetched?.source_kind).toBe('youtube')
+    expect(fetched?.source_locator).toEqual({ media: 'youtube', video_id: 'dQw4w9WgXcQ' })
+    const file = nd.readNote(note.id)
+    expect(file.ok && file.frontmatter.source_kind).toBe('youtube')
+    expect(file.ok && file.frontmatter.source_locator).toEqual({
+      media: 'youtube',
+      video_id: 'dQw4w9WgXcQ',
+    })
   })
 })

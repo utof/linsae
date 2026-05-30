@@ -32,6 +32,21 @@ import { z } from 'zod'
 const NoteTypeSchema = z.enum(['claim', 'question', 'source'])
 
 /**
+ * SourceLocator — what external thing a note is anchored to (JSON TEXT in
+ * notes.source_locator). Media-agnostic (spec §Forward direction); v0.2.0 =
+ * youtube only; `t` (sec) omitted for anchorless comment-notes.
+ * @see docs/specs/v0.2-youtube-annotation.md §Data model
+ * Why: not exported — its only current consumer is the Notes create/update
+ * schemas in this file. Re-export when a cross-file consumer lands (Plan 3 /
+ * reconcile validation) per the export-with-consumer (knip) discipline.
+ */
+const SourceLocatorSchema = z.object({
+  media: z.literal('youtube'),
+  video_id: z.string().min(1),
+  t: z.number().nonnegative().optional(),
+})
+
+/**
  * Input schema for the `notes:list` IPC channel.
  *
  * Why: `limit` caps the page size so the renderer cannot request an unbounded
@@ -54,6 +69,8 @@ export const NotesListInputSchema = z.object({
 export const NotesCreateInputSchema = z.object({
   body: z.string().min(1),
   type: NoteTypeSchema.default('claim'),
+  source_kind: z.literal('youtube').optional(),
+  source_locator: SourceLocatorSchema.optional(),
 })
 
 /**
@@ -67,6 +84,8 @@ export const NotesUpdateInputSchema = z.object({
   id: z.string().min(1),
   body: z.string().min(1),
   type: NoteTypeSchema,
+  source_kind: z.literal('youtube').optional(),
+  source_locator: SourceLocatorSchema.optional(),
 })
 
 /**
