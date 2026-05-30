@@ -3,8 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <title>linsae</title>
+    <!-- app: in img-src: app://bundle/_media/… is same-origin under the prod app:// document
+         ('self' already covers it) but cross-scheme under the dev http://localhost document;
+         app: permits the dev case and is harmless in prod because the app:// handler's
+         traversal guard confines what it serves. -->
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https://i.ytimg.com https://*.ytimg.com; frame-src https://www.youtube-nocookie.com; script-src 'self' https://www.youtube.com;" />
+          content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: app: https://i.ytimg.com https://*.ytimg.com; frame-src https://www.youtube-nocookie.com; script-src 'self' https://www.youtube.com;" />
   </head>
 
   <body>
