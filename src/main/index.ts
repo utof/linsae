@@ -24,6 +24,7 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, BrowserWindow, Menu, shell } from 'electron'
+import { registerAppProtocol, registerAppScheme } from './app-protocol'
 import { openDb } from './db/client'
 import { runMigrations } from './db/migrate'
 import { reconcile } from './db/reconcile'
@@ -41,6 +42,9 @@ if (!gotLock) {
   app.quit()
   process.exit(0)
 }
+
+// Declare the app:// scheme before the app is ready (required ordering).
+registerAppScheme()
 
 let mainWindow: BrowserWindow | null = null
 
@@ -92,7 +96,7 @@ function createWindow(): BrowserWindow {
   if (process.env.ELECTRON_RENDERER_URL) {
     win.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
-    win.loadFile(join(__dirname, '../renderer/index.html'))
+    win.loadURL('app://bundle/index.html')
   }
   return win
 }
@@ -114,6 +118,11 @@ app.whenReady().then(() => {
   console.log(`reconciled: ${JSON.stringify(report)}`)
 
   registerAllIpc(db, nd, notesDir, logsDir, report.skipped)
+  // Serve the built renderer + userData attachments over app:// (prod). In dev the
+  // window loads the vite server URL (http://localhost), so app:// is NOT the document
+  // origin there; registering the handler is still harmless. Dev image display over
+  // app:// is cross-origin and is Plan 3's concern (see Hand-off).
+  registerAppProtocol(join(__dirname, '../renderer'), join(userData, 'attachments'))
   // Role-only menu: no visible bar (frame:false has no menu slot), but the
   // editMenu / viewMenu / windowMenu roles register the standard keyboard
   // accelerators (cut/copy/paste, reload, devtools, minimize/zoom). The
