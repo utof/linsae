@@ -216,4 +216,38 @@ describe('reconcile', () => {
     }[]
     expect(edges.some((e) => e.edge_type === 'comment-on')).toBe(true)
   })
+
+  it('reconcile UPDATE reflects a changed source_locator from frontmatter', () => {
+    // insert a video-note, then change BOTH its source_locator and body on disk
+    // (the body change is what trips reconcile's hashBody change-oracle into the
+    // UPDATE branch — this exercises the UPDATE source_kind/source_locator binds).
+    nd.writeNote(
+      {
+        id: 'vid2',
+        slug: 'vid2',
+        type: 'source',
+        created_at: 1,
+        updated_at: 1,
+        source_kind: 'youtube',
+        source_locator: { media: 'youtube', video_id: 'abc123' },
+      },
+      'orig body',
+    )
+    reconcile(db, nd) // INSERT
+    nd.writeNote(
+      {
+        id: 'vid2',
+        slug: 'vid2',
+        type: 'source',
+        created_at: 1,
+        updated_at: 2,
+        source_kind: 'youtube',
+        source_locator: { media: 'youtube', video_id: 'xyz789', t: 42 },
+      },
+      'edited body',
+    )
+    reconcile(db, nd) // UPDATE
+    const n = getNote(db, 'vid2')
+    expect(n?.source_locator).toEqual({ media: 'youtube', video_id: 'xyz789', t: 42 })
+  })
 })
