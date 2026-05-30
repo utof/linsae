@@ -38,3 +38,22 @@ export interface VideoSource {
   duration_sec: number | null
   fetched_at: number
 }
+
+export type AttachmentKind = 'screenshot' | 'clip'
+
+/** An attachment row (mirrors attachments in 0002_video_threads.sql). */
+export interface Attachment {
+  id: string
+  note_id: string | null
+  kind: AttachmentKind
+  base_sha256: string
+  base_path: string
+  overlay_path: string | null
+  video_id: string | null
+  time_seconds: number | null
+  width_px: number
+  height_px: number
+  device_pixel_ratio: number
+  created_at: number
+  deleted_at: number | null
+}
