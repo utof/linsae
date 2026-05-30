@@ -94,11 +94,12 @@ export function reconcile(db: DB, nd: NotesDir, logsDir?: string): ReconcileRepo
     }
 
     const insertStmt = db.prepare(
-      `INSERT INTO notes (id, slug, body, type, created_at, updated_at, deleted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO notes (id, slug, body, type, created_at, updated_at, deleted_at, source_kind, source_locator)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     const updateStmt = db.prepare(
-      `UPDATE notes SET body = ?, slug = ?, type = ?, updated_at = ?, deleted_at = ?
+      `UPDATE notes SET body = ?, slug = ?, type = ?, updated_at = ?, deleted_at = ?,
+         source_kind = ?, source_locator = ?
        WHERE id = ?`,
     )
     const tombstoneStmt = db.prepare('UPDATE notes SET deleted_at = ? WHERE id = ?')
@@ -114,6 +115,13 @@ export function reconcile(db: DB, nd: NotesDir, logsDir?: string): ReconcileRepo
       // Why `?? null`: NoteFrontmatter.deleted_at is `number | undefined`, but
       // better-sqlite3's binding accepts `null` (not `undefined`); coerce.
       const deletedAt: number | null = fm.deleted_at ?? null
+      // Persist source fields as-written from frontmatter (no shape validation):
+      // JSON.stringify never throws, and reconcile already skips unparseable files,
+      // so a malformed hand-edit degrades only this note's anchor — never crashes.
+      const sourceKind: string | null = fm.source_kind ?? null
+      const sourceLocator: string | null = fm.source_locator
+        ? JSON.stringify(fm.source_locator)
+        : null
       const prev = existing.get(id)
       // Per-file work runs inside a nested db.transaction → SAVEPOINT. Without
       // it, one constraint violation (most commonly duplicate slug — two files
@@ -128,11 +136,30 @@ export function reconcile(db: DB, nd: NotesDir, logsDir?: string): ReconcileRepo
       try {
         db.transaction(() => {
           if (!prev) {
-            insertStmt.run(id, fm.slug, r.body, fm.type, fm.created_at, fm.updated_at, deletedAt)
+            insertStmt.run(
+              id,
+              fm.slug,
+              r.body,
+              fm.type,
+              fm.created_at,
+              fm.updated_at,
+              deletedAt,
+              sourceKind,
+              sourceLocator,
+            )
             replaceLinksForNote(db, id, extractWikilinks(r.body))
             report.inserted++
           } else if (hashBody(prev.body) !== hashBody(r.body)) {
-            updateStmt.run(r.body, fm.slug, fm.type, fm.updated_at, deletedAt, id)
+            updateStmt.run(
+              r.body,
+              fm.slug,
+              fm.type,
+              fm.updated_at,
+              deletedAt,
+              sourceKind,
+              sourceLocator,
+              id,
+            )
             replaceLinksForNote(db, id, extractWikilinks(r.body))
             // Spec §Reconciler algorithm line 180: external-edit UPDATE must
             // append a note_revisions row so the v0.2 edit-history pane has

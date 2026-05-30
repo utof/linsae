@@ -24,6 +24,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { NotesDir } from '../files/notes-dir'
 import { openDb } from './client'
 import { runMigrations } from './migrate'
+import { setCommentOnEdge } from './queries/links'
+import { getNote } from './queries/notes'
 import { listRevisions } from './queries/revisions'
 import { reconcile } from './reconcile'
 
@@ -176,5 +178,42 @@ describe('reconcile', () => {
     const revs = listRevisions(db, 'aaaaaaaa-aaaa-7aaa-aaaa-aaaaaaaaaaaa')
     expect(revs).toHaveLength(1)
     expect(revs[0]?.body).toBe('v2')
+  })
+
+  it('reconcile writes source_kind/source_locator from frontmatter on insert', () => {
+    // write a note file with source frontmatter directly to disk
+    nd.writeNote(
+      {
+        id: 'vid-note',
+        slug: 'vid-note',
+        type: 'source',
+        created_at: 1,
+        updated_at: 1,
+        source_kind: 'youtube',
+        source_locator: { media: 'youtube', video_id: 'abc123' },
+      },
+      '# a video',
+    )
+    reconcile(db, nd)
+    const n = getNote(db, 'vid-note')
+    expect(n?.source_kind).toBe('youtube')
+    expect(n?.source_locator).toEqual({ media: 'youtube', video_id: 'abc123' })
+  })
+
+  it('reconcile UPDATE (external body edit) preserves a comment-on edge', () => {
+    // seed: note in DB with a comment-on edge, file on disk with same id
+    nd.writeNote({ id: 'c9', slug: 'c9', type: 'claim', created_at: 1, updated_at: 1 }, 'orig body')
+    reconcile(db, nd) // inserts c9
+    setCommentOnEdge(db, 'c9', 'some-video')
+    // external edit changes the body → reconcile UPDATE path
+    nd.writeNote(
+      { id: 'c9', slug: 'c9', type: 'claim', created_at: 1, updated_at: 2 },
+      'edited body',
+    )
+    reconcile(db, nd)
+    const edges = db.prepare(`SELECT edge_type FROM links WHERE from_note_id='c9'`).all() as {
+      edge_type: string
+    }[]
+    expect(edges.some((e) => e.edge_type === 'comment-on')).toBe(true)
   })
 })
