@@ -89,8 +89,9 @@ describe('runMigrations', () => {
     const rows = db.prepare('SELECT name FROM _migrations ORDER BY name').all() as {
       name: string
     }[]
-    expect(rows).toHaveLength(1)
+    expect(rows).toHaveLength(2)
     expect(rows[0]!.name).toBe('0001_init.sql')
+    expect(rows[1]!.name).toBe('0002_video_threads.sql')
   })
 
   it('is idempotent — running twice does not error or duplicate records', () => {
@@ -98,7 +99,7 @@ describe('runMigrations', () => {
     runMigrations(db)
 
     const rows = db.prepare('SELECT name FROM _migrations').all() as { name: string }[]
-    expect(rows).toHaveLength(1)
+    expect(rows).toHaveLength(2)
   })
 
   it('creates FTS5 virtual table notes_fts', () => {
