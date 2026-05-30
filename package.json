@@ -17,7 +17,8 @@
     "lint:check": "biome check .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "knip": "knip"
+    "knip": "knip",
+    "smoke:capture": "node scripts/capture-smoke.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.100.14",
