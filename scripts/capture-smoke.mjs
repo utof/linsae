@@ -81,12 +81,11 @@ try {
     )
     if (zr.resolved) {
       console.warn(
-        `issue#34 probe: capture RESOLVED on a clamped-to-0 rect → ${zr.width}×${zr.height} (${zr.path}). ` +
-          `capturePage does NOT reject 0-area; youtube:capture SHOULD guard width/height===0 to avoid a junk row.`,
+        `issue#34 probe: capture RESOLVED on a clamped-to-0 rect → ${zr.width}×${zr.height} — the 0-area guard (GH #34) is MISSING or regressed; a junk row was written.`,
       )
     } else {
       console.log(
-        `issue#34 probe: capture REJECTED on a clamped-to-0 rect (${zr.error}). Guard is optional.`,
+        `issue#34 probe: capture correctly REJECTED a clamped-to-0 rect (${zr.error}) — 0-area guard working.`,
       )
     }
   } catch (e) {

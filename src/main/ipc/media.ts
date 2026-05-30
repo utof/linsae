@@ -47,6 +47,12 @@ export function registerMediaIpc(db: DB, attachmentsDir: string): void {
     if (!win) throw new Error('capture: no window for sender')
     const view = win.getContentBounds()
     const rect = clampRect(i.rect, { width: view.width, height: view.height })
+    // clampRect can collapse a fully off-viewport iframe to a 0-area rect; Electron's
+    // capturePage RESOLVES (not rejects) on 0×0, writing a degenerate empty PNG + junk
+    // row (verified via scripts/capture-smoke.mjs). Reject early instead. (GH #34)
+    if (rect.width === 0 || rect.height === 0) {
+      throw new Error('capture: rect is empty after clamping (frame off-screen?)')
+    }
     const image = await win.webContents.capturePage(rect)
     const size = image.getSize() // physical px (rect × scaleFactor)
     const devicePixelRatio = screen.getDisplayMatching(win.getBounds()).scaleFactor
