@@ -118,7 +118,7 @@ Every exported function/class **must** carry TSDoc with one of: `@see <url|file>
 - Skeleton: Context · Decision · Alternatives · Consequences · Sources (URLs).
 
 ## Branching & merge
-Each milestone = its own branch named `phase/v0.x-name`. The `phase/` prefix is a literal sort key retained for stable branch ordering — it is not a workflow term (see `## Workflow`). All batches in that milestone land on the branch. When the milestone is done: open PR → CI green → **merge commit into `main` (NOT squash, NOT rebase)** to preserve per-task TDD history. Tag `v0.x` on the merge commit.
+Each milestone = its own branch named `v0.x/feature` (e.g. `v0.2/youtube-annotation`); patch-level work uses `v0.x.y/feature` (e.g. `v0.1.3/polish`). The version prefix keeps branches sorted alongside the matching `v0.x` git tags and the `docs/specs/v0.x-*.md` / `docs/plans/v0.x-*.md` filenames. All batches in that milestone land on the branch. When the milestone is done: open PR → CI green → **merge commit into `main` (NOT squash, NOT rebase)** to preserve per-task TDD history. Tag `v0.x` on the merge commit.
 
 **Commit messages follow Conventional Commits** (`feat:` / `fix:` / `chore:` / `docs:` / `refactor:` / `test:` / `build:` / `perf:` / `ci:` / `revert:`; optional scope `feat(scope): …`). The plan's literal `git commit -m "…"` examples predate this rule — apply a conventional prefix when executing them.
 
