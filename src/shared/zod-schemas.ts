@@ -62,32 +62,50 @@ export const NotesListInputSchema = z.object({
 /**
  * Input schema for the `notes:create` IPC channel.
  *
- * Why: body must be non-empty; type defaults to 'claim' so callers that omit
- * it (quick-capture flow) get a sensible default without an extra round-trip.
+ * Why: body must be non-empty for plain notes (no source_kind), but a
+ * video-anchored note (source_kind is set) may legitimately have an empty
+ * body — e.g. a source note created on URL-paste or a screenshot comment
+ * with no caption yet. Non-anchored notes still require a non-empty,
+ * non-whitespace body. type defaults to 'claim' so callers that omit it
+ * (quick-capture flow) get a sensible default without an extra round-trip.
  * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 6
  */
-export const NotesCreateInputSchema = z.object({
-  body: z.string().min(1),
-  type: NoteTypeSchema.default('claim'),
-  source_kind: z.literal('youtube').optional(),
-  source_locator: SourceLocatorSchema.optional(),
-  commentOn: z.string().min(1).optional(),
-})
+export const NotesCreateInputSchema = z
+  .object({
+    body: z.string(),
+    type: NoteTypeSchema.default('claim'),
+    source_kind: z.literal('youtube').optional(),
+    source_locator: SourceLocatorSchema.optional(),
+    commentOn: z.string().min(1).optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (!v.source_kind && v.body.trim().length === 0) {
+      ctx.addIssue({ code: 'custom', path: ['body'], message: 'body required' })
+    }
+  })
 
 /**
  * Input schema for the `notes:update` IPC channel.
  *
- * Why: all three fields are required — the renderer must always supply the
- * full updated note to avoid partial-update confusion.
+ * Why: all fields are required — the renderer must always supply the full
+ * updated note to avoid partial-update confusion. body may be empty only
+ * when source_kind is set (video-anchored note); non-anchored notes still
+ * require a non-empty, non-whitespace body.
  * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 6
  */
-export const NotesUpdateInputSchema = z.object({
-  id: z.string().min(1),
-  body: z.string().min(1),
-  type: NoteTypeSchema,
-  source_kind: z.literal('youtube').optional(),
-  source_locator: SourceLocatorSchema.optional(),
-})
+export const NotesUpdateInputSchema = z
+  .object({
+    id: z.string().min(1),
+    body: z.string(),
+    type: NoteTypeSchema,
+    source_kind: z.literal('youtube').optional(),
+    source_locator: SourceLocatorSchema.optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (!v.source_kind && v.body.trim().length === 0) {
+      ctx.addIssue({ code: 'custom', path: ['body'], message: 'body required' })
+    }
+  })
 
 /**
  * Minimal schema for channels that operate on a single note by ID.

@@ -4,6 +4,8 @@ import {
   AttachToNoteInputSchema,
   CaptureInputSchema,
   FetchOEmbedInputSchema,
+  NotesCreateInputSchema,
+  NotesUpdateInputSchema,
   VideoSourcesGetInputSchema,
   VideoSourcesUpsertInputSchema,
 } from './zod-schemas'
@@ -87,5 +89,63 @@ describe('the remaining input schemas', () => {
     expect(FetchOEmbedInputSchema.parse({ videoId: 'x' }).videoId).toBe('x')
     expect(AttachToNoteInputSchema.parse({ attachmentId: 'a', noteId: 'n' }).noteId).toBe('n')
     expect(VideoSourcesGetInputSchema.parse({ videoId: 'x' }).videoId).toBe('x')
+  })
+})
+
+describe('NotesCreateInputSchema — empty-body rule', () => {
+  it('allows empty body when source_kind is set (video-anchored note)', () => {
+    const result = NotesCreateInputSchema.parse({
+      body: '',
+      source_kind: 'youtube',
+      source_locator: { media: 'youtube', video_id: 'v' },
+    })
+    expect(result.body).toBe('')
+  })
+
+  it('rejects empty body when source_kind is absent', () => {
+    expect(() => NotesCreateInputSchema.parse({ body: '' })).toThrow()
+  })
+
+  it('rejects whitespace-only body when source_kind is absent', () => {
+    expect(() => NotesCreateInputSchema.parse({ body: '   ' })).toThrow()
+  })
+
+  it('accepts a non-empty body without source_kind', () => {
+    const result = NotesCreateInputSchema.parse({ body: 'hello' })
+    expect(result.body).toBe('hello')
+  })
+
+  it('allows a whitespace-only body when source_kind is set (gate is anchoring, not content)', () => {
+    const result = NotesCreateInputSchema.parse({
+      body: '   ',
+      source_kind: 'youtube',
+      source_locator: { media: 'youtube', video_id: 'v' },
+    })
+    expect(result.body).toBe('   ')
+  })
+})
+
+describe('NotesUpdateInputSchema — empty-body rule', () => {
+  it('allows empty body when source_kind is set (video-anchored note)', () => {
+    const result = NotesUpdateInputSchema.parse({
+      id: 'n1',
+      body: '',
+      type: 'source',
+      source_kind: 'youtube',
+    })
+    expect(result.body).toBe('')
+  })
+
+  it('rejects empty body when source_kind is absent', () => {
+    expect(() => NotesUpdateInputSchema.parse({ id: 'n1', body: '', type: 'claim' })).toThrow()
+  })
+
+  it('rejects whitespace-only body when source_kind is absent', () => {
+    expect(() => NotesUpdateInputSchema.parse({ id: 'n1', body: '   ', type: 'claim' })).toThrow()
+  })
+
+  it('accepts a non-empty body without source_kind', () => {
+    const result = NotesUpdateInputSchema.parse({ id: 'n1', body: 'x', type: 'claim' })
+    expect(result.body).toBe('x')
   })
 })
