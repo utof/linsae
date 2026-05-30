@@ -2,14 +2,20 @@
  * Main-process bootstrap for linsae.
  *
  * Boot order (must not be reshuffled):
+ *  0a. `registerAppScheme()` is called at module load, BEFORE `app.whenReady()`
+ *      — Electron requires the custom scheme to be registered before the app is
+ *      ready; moving it inside `whenReady` would make `app://` non-functional.
  *  1. Acquire the single-instance lock BEFORE any other init — losing the
  *     lock means we exit immediately, so we must not have created any
  *     windows, opened the DB, or registered IPC handlers.
- *  2. `app.whenReady()` → resolve `userData`, mkdir notes + logs.
+ *  2. `app.whenReady()` → resolve `userData`, mkdir notes + logs + attachments.
  *  3. Open the SQLite DB and run migrations (schema is the precondition for
  *     the reconciler).
  *  4. Run the startup reconciler (file system → DB).
  *  5. Register IPC handlers (renderer must never see an empty IPC surface).
+ *  0b. `registerAppProtocol(...)` installs the `app://` request handler inside
+ *      `whenReady` (after `registerAppScheme` has reserved the scheme), before
+ *      `createWindow()` so the renderer's first load hits a live handler.
  *  6. Build the application menu, then create the renderer window.
  *
  * Why this order: every step depends on the one before it. Creating the
@@ -105,9 +111,12 @@ app.whenReady().then(() => {
   const userData = app.getPath('userData')
   const notesDir = join(userData, 'notes')
   const logsDir = join(userData, 'logs')
+  const attachmentsDir = join(userData, 'attachments')
   const dbPath = join(userData, 'linsae.db')
-  // notesDir is created by NotesDir's constructor below; only logsDir needs explicit mkdir.
+  // notesDir is created by NotesDir's constructor below; logsDir and attachmentsDir
+  // need explicit mkdir (attachmentsDir is also pre-created so IPC never races the fs).
   if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true })
+  if (!existsSync(attachmentsDir)) mkdirSync(attachmentsDir, { recursive: true })
 
   const db = openDb(dbPath)
   runMigrations(db)
@@ -117,12 +126,12 @@ app.whenReady().then(() => {
   // `report.skipped` via `system:getReconcileSkipped` to drive the banner.
   console.log(`reconciled: ${JSON.stringify(report)}`)
 
-  registerAllIpc(db, nd, notesDir, logsDir, report.skipped)
+  registerAllIpc(db, nd, notesDir, logsDir, report.skipped, attachmentsDir)
   // Serve the built renderer + userData attachments over app:// (prod). In dev the
   // window loads the vite server URL (http://localhost), so app:// is NOT the document
   // origin there; registering the handler is still harmless. Dev image display over
   // app:// is cross-origin and is Plan 3's concern (see Hand-off).
-  registerAppProtocol(join(__dirname, '../renderer'), join(userData, 'attachments'))
+  registerAppProtocol(join(__dirname, '../renderer'), attachmentsDir)
   // Role-only menu: no visible bar (frame:false has no menu slot), but the
   // editMenu / viewMenu / windowMenu roles register the standard keyboard
   // accelerators (cut/copy/paste, reload, devtools, minimize/zoom). The

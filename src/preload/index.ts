@@ -21,15 +21,21 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import type { z } from 'zod'
-import type { Note, SearchHit } from '../shared/types'
+import type { Attachment, Note, SearchHit } from '../shared/types'
 import type {
+  AttachmentsListInputSchema,
+  AttachToNoteInputSchema,
   BacklinksInputSchema,
+  CaptureInputSchema,
+  FetchOEmbedInputSchema,
   NoteIdSchema,
   NotesCreateInputSchema,
   NotesListInputSchema,
   NotesUpdateInputSchema,
   ResolveInputSchema,
   SearchRunInputSchema,
+  VideoSourcesGetInputSchema,
+  VideoSourcesUpsertInputSchema,
 } from '../shared/zod-schemas'
 
 const api = {
@@ -54,6 +60,40 @@ const api = {
       ipcRenderer.invoke('links:backlinks', i),
     resolve: (i: z.input<typeof ResolveInputSchema>): Promise<Note | null> =>
       ipcRenderer.invoke('links:resolve', i),
+  },
+  youtube: {
+    capture: (
+      i: z.input<typeof CaptureInputSchema>,
+    ): Promise<{
+      id: string
+      path: string
+      sha256: string
+      width: number
+      height: number
+      devicePixelRatio: number
+    }> => ipcRenderer.invoke('youtube:capture', i),
+    fetchOEmbed: (
+      i: z.input<typeof FetchOEmbedInputSchema>,
+    ): Promise<{
+      title: string
+      author_name: string
+      author_url: string
+      thumbnail_url: string
+    } | null> => ipcRenderer.invoke('youtube:fetchOEmbed', i),
+  },
+  attachments: {
+    list: (i: z.input<typeof AttachmentsListInputSchema>): Promise<Attachment[]> =>
+      ipcRenderer.invoke('attachments:list', i),
+    attachToNote: (i: z.input<typeof AttachToNoteInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('attachments:attachToNote', i),
+  },
+  videoSources: {
+    upsert: (i: z.input<typeof VideoSourcesUpsertInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('videoSources:upsert', i),
+    get: (
+      i: z.input<typeof VideoSourcesGetInputSchema>,
+    ): Promise<{ title: string | null; channel: string | null } | null> =>
+      ipcRenderer.invoke('videoSources:get', i),
   },
   system: {
     revealNotesFolder: (): Promise<{ ok: true }> => ipcRenderer.invoke('system:revealNotesFolder'),
