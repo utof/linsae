@@ -17,7 +17,7 @@
  * @see src/preload/index.ts
  */
 
-import type { Note, SearchHit } from '../../../shared/types'
+import type { Attachment, Note, SearchHit, SourceLocator } from '../../../shared/types'
 
 /**
  * Ergonomic typed facade over `window.api`. Use this from components / hooks
@@ -48,17 +48,53 @@ export const api = {
      * Create a new note. Why `type` defaults to `'claim'`: claim is the
      * default authoring mode in the composer (spec §Composer); explicit
      * `'question'` is only used in question-mode.
+     *
+     * `source` carries the optional YouTube-annotation fields added in v0.2:
+     * `source_kind` / `source_locator` link the note to a media position;
+     * `commentOn` sets the parent video slug for thread-child notes.
+     * Undefined fields are omitted (not passed as `undefined`) to satisfy
+     * `exactOptionalPropertyTypes` and the Zod `optional()` contract.
+     *
      * @see src/main/ipc/notes.ts
+     * @see docs/specs/v0.2-youtube-annotation.md §Data model
      */
-    create: (body: string, type: Note['type'] = 'claim'): Promise<Note> =>
-      window.api.notes.create({ body, type }),
+    create: (
+      body: string,
+      type: Note['type'] = 'claim',
+      source?: { source_kind?: 'youtube'; source_locator?: SourceLocator; commentOn?: string },
+    ): Promise<Note> =>
+      window.api.notes.create({
+        body,
+        type,
+        ...(source?.source_kind ? { source_kind: source.source_kind } : {}),
+        ...(source?.source_locator ? { source_locator: source.source_locator } : {}),
+        ...(source?.commentOn ? { commentOn: source.commentOn } : {}),
+      }),
     /**
      * Update an existing note's body / type. Why no default for `type`:
      * updates always carry an explicit type — the composer round-trips it.
+     *
+     * `source` carries optional YouTube-annotation fields added in v0.2:
+     * `source_kind` / `source_locator` (no `commentOn` — threads don't
+     * move parents post-creation). Undefined fields are omitted to satisfy
+     * `exactOptionalPropertyTypes`.
+     *
      * @see src/main/ipc/notes.ts
+     * @see docs/specs/v0.2-youtube-annotation.md §Data model
      */
-    update: (id: string, body: string, type: Note['type']): Promise<Note> =>
-      window.api.notes.update({ id, body, type }),
+    update: (
+      id: string,
+      body: string,
+      type: Note['type'],
+      source?: { source_kind?: 'youtube'; source_locator?: SourceLocator },
+    ): Promise<Note> =>
+      window.api.notes.update({
+        id,
+        body,
+        type,
+        ...(source?.source_kind ? { source_kind: source.source_kind } : {}),
+        ...(source?.source_locator ? { source_locator: source.source_locator } : {}),
+      }),
     /**
      * Soft-delete a note (sets `deleted_at`; file is removed from disk).
      * Returns the soft-deleted row for optimistic UI updates.
@@ -91,6 +127,93 @@ export const api = {
      * @see src/main/ipc/notes.ts
      */
     resolve: (slug: string): Promise<Note | null> => window.api.links.resolve({ slug }),
+  },
+  /**
+   * YouTube IPC facade: screenshot capture and oEmbed metadata fetch.
+   * @see src/preload/index.ts (youtube namespace)
+   * @see docs/specs/v0.2-youtube-annotation.md §Capture flow
+   */
+  youtube: {
+    /**
+     * Capture a screenshot rectangle of the current window at the given
+     * video position. Returns an orphan attachment row.
+     * Why positional `rect` + `videoId` + `t`: mirrors the call sites in
+     * the capture flow where all three are known at the point of invocation.
+     * @see src/main/ipc/youtube.ts
+     */
+    capture: (
+      rect: { x: number; y: number; width: number; height: number },
+      videoId: string,
+      t: number,
+    ): Promise<{
+      id: string
+      path: string
+      sha256: string
+      width: number
+      height: number
+      devicePixelRatio: number
+    }> => window.api.youtube.capture({ rect, videoId, t }),
+    /**
+     * Fetch oEmbed metadata for a YouTube video (title, channel, thumbnail).
+     * Returns null if the video is not accessible / not found.
+     * @see src/main/ipc/youtube.ts
+     */
+    fetchOEmbed: (
+      videoId: string,
+    ): Promise<{
+      title: string
+      author_name: string
+      author_url: string
+      thumbnail_url: string
+    } | null> => window.api.youtube.fetchOEmbed({ videoId }),
+  },
+  /**
+   * Attachments IPC facade: list and associate screenshot/clip rows.
+   * @see src/preload/index.ts (attachments namespace)
+   * @see docs/specs/v0.2-youtube-annotation.md §Attachments
+   */
+  attachments: {
+    /**
+     * List attachment rows with optional filters (orphans / by video / by
+     * title / by note). All filters are optional and combinable.
+     * @see src/main/ipc/attachments.ts
+     */
+    list: (filter: {
+      orphans?: boolean
+      videoId?: string
+      titleLike?: string
+      noteId?: string
+    }): Promise<Attachment[]> => window.api.attachments.list(filter),
+    /**
+     * Associate an orphan attachment with a note row.
+     * @see src/main/ipc/attachments.ts
+     */
+    attachToNote: (attachmentId: string, noteId: string): Promise<void> =>
+      window.api.attachments.attachToNote({ attachmentId, noteId }),
+  },
+  /**
+   * VideoSources IPC facade: upsert and retrieve cached video metadata.
+   * @see src/preload/index.ts (videoSources namespace)
+   * @see docs/specs/v0.2-youtube-annotation.md §Add a video
+   */
+  videoSources: {
+    /**
+     * Upsert a video_sources row. `sourceKind` is always 'youtube' for v0.2.
+     * Optional oEmbed-derived fields are COALESCEd server-side so a
+     * metadata-less re-upsert never wipes a cached title.
+     * @see src/main/ipc/videoSources.ts
+     */
+    upsert: (
+      videoId: string,
+      opts?: { title?: string; channel?: string; thumbnailUrl?: string; durationSec?: number },
+    ): Promise<void> =>
+      window.api.videoSources.upsert({ videoId, sourceKind: 'youtube', ...(opts ?? {}) }),
+    /**
+     * Fetch cached title/channel for a video, or null if not yet upserted.
+     * @see src/main/ipc/videoSources.ts
+     */
+    get: (videoId: string): Promise<{ title: string | null; channel: string | null } | null> =>
+      window.api.videoSources.get({ videoId }),
   },
   system: {
     /**
