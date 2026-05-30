@@ -25,6 +25,7 @@ import type Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openDb } from './db/client'
 import { runMigrations } from './db/migrate'
+import { backlinks } from './db/queries/links'
 import { getNote } from './db/queries/notes'
 import { listRevisions } from './db/queries/revisions'
 import { NotesDir } from './files/notes-dir'
@@ -145,5 +146,30 @@ describe('saveNote', () => {
       media: 'youtube',
       video_id: 'dQw4w9WgXcQ',
     })
+  })
+
+  it('creates a comment-on edge to the video-note when commentOn is given', () => {
+    // a video-note to comment on
+    const video = saveNote(db, nd, {
+      mode: 'create',
+      body: '# Serre lecture',
+      type: 'source',
+      source_kind: 'youtube',
+      source_locator: { media: 'youtube', video_id: 'vid123' },
+    })
+    const comment = saveNote(db, nd, {
+      mode: 'create',
+      body: 'great point at the pullback',
+      type: 'claim',
+      source_kind: 'youtube',
+      source_locator: { media: 'youtube', video_id: 'vid123', t: 83 },
+      commentOn: video.slug,
+    })
+    // backlinks(video.slug) should include the comment via the comment-on edge
+    const back = backlinks(db, video.slug)
+    expect(back.map((n) => n.id)).toContain(comment.id)
+    // and a body re-save of the comment must NOT drop the edge (Task 11 scoping)
+    saveNote(db, nd, { mode: 'update', id: comment.id, body: 'edited', type: 'claim' })
+    expect(backlinks(db, video.slug).map((n) => n.id)).toContain(comment.id)
   })
 })

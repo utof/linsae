@@ -74,6 +74,7 @@ export function registerNotesIpc(db: DB, nd: NotesDir): void {
       type: i.type,
       ...(i.source_kind ? { source_kind: i.source_kind } : {}),
       ...(i.source_locator ? { source_locator: i.source_locator as SourceLocator } : {}),
+      ...(i.commentOn ? { commentOn: i.commentOn } : {}),
     })
   })
   ipcMain.handle('notes:update', (_e, input) => {

@@ -22,7 +22,7 @@
 import type Database from 'better-sqlite3'
 import { uuidv7 } from 'uuidv7'
 import type { Note, NoteType, SourceLocator } from '../shared/types'
-import { replaceLinksForNote } from './db/queries/links'
+import { replaceLinksForNote, setCommentOnEdge } from './db/queries/links'
 import { getNote } from './db/queries/notes'
 import { appendRevision } from './db/queries/revisions'
 import type { NoteFrontmatter } from './files/frontmatter'
@@ -59,6 +59,7 @@ export type SaveInput =
       type: NoteType
       source_kind?: string
       source_locator?: SourceLocator
+      commentOn?: string
     }
   | {
       mode: 'update'
@@ -222,6 +223,9 @@ export function saveNote(db: DB, nd: NotesDir, input: SaveInput): Note {
       n = getNote(db, input.id)!
     }
     replaceLinksForNote(db, n.id, links)
+    if (input.mode === 'create' && input.commentOn) {
+      setCommentOnEdge(db, n.id, input.commentOn)
+    }
     appendRevision(db, { revisionId: uuidv7(), noteId: n.id, body: n.body, type: n.type })
     return n
   })()

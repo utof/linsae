@@ -71,6 +71,7 @@ export const NotesCreateInputSchema = z.object({
   type: NoteTypeSchema.default('claim'),
   source_kind: z.literal('youtube').optional(),
   source_locator: SourceLocatorSchema.optional(),
+  commentOn: z.string().min(1).optional(),
 })
 
 /**
