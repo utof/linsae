@@ -33,4 +33,13 @@ describe('parseOEmbed', () => {
     expect(parseOEmbed('Not Found')).toBeNull()
     expect(parseOEmbed({ error: 'unauthorized' })).toBeNull()
   })
+
+  it('falls back to empty strings when author/thumbnail fields are absent', () => {
+    expect(parseOEmbed({ title: 'Only a title' })).toEqual({
+      title: 'Only a title',
+      author_name: '',
+      author_url: '',
+      thumbnail_url: '',
+    })
+  })
 })
