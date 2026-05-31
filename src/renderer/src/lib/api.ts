@@ -218,11 +218,17 @@ export const api = {
     ): Promise<void> =>
       window.api.videoSources.upsert({ videoId, sourceKind: 'youtube', ...(opts ?? {}) }),
     /**
-     * Fetch cached title/channel for a video, or null if not yet upserted.
+     * Fetch cached title/channel/thumbnail/duration for a video, or null if not yet upserted.
      * @see src/main/ipc/videoSources.ts
      */
-    get: (videoId: string): Promise<{ title: string | null; channel: string | null } | null> =>
-      window.api.videoSources.get({ videoId }),
+    get: (
+      videoId: string,
+    ): Promise<{
+      title: string | null
+      channel: string | null
+      thumbnailUrl: string | null
+      durationSec: number | null
+    } | null> => window.api.videoSources.get({ videoId }),
   },
   system: {
     /**

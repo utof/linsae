@@ -2,6 +2,7 @@ import { ChevronDown, Link2, Pen, Trash2 } from 'lucide-react'
 import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { Markdown } from '../lib/markdown'
+import { MediaFeedNoteContainer } from './MediaFeedNote'
 
 interface ContextMenuPos {
   x: number
@@ -211,6 +212,8 @@ interface Props {
   onEdit: (id: string) => void
   onDelete: (id: string) => void
   onCopyLink: (id: string) => void
+  /** Called when the user clicks "open video notes" on a source-kind note. */
+  onOpenThread?: (id: string) => void
 }
 
 /**
@@ -251,6 +254,7 @@ export function NoteBubble({
   onEdit,
   onDelete,
   onCopyLink,
+  onOpenThread,
 }: Props) {
   const [hover, setHover] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
@@ -335,6 +339,14 @@ export function NoteBubble({
     },
     [],
   )
+
+  // Source-kind branch: render the MediaFeedNoteContainer card instead of a
+  // standard text bubble. Checked here (after all hooks) so the Rules of Hooks
+  // are satisfied. The condition uses source_kind (not type === 'source') so the
+  // branch fires only when a YouTube video_id is present in source_locator.
+  if (note.source_kind === 'youtube' && note.source_locator?.video_id != null) {
+    return <MediaFeedNoteContainer note={note} {...(onOpenThread ? { onOpenThread } : {})} />
+  }
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: bubble is a click target for focus selection; keyboard nav lives on Composer / palette per spec.

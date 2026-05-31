@@ -1,6 +1,6 @@
-import { fireEvent, screen } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { renderWithProviders as render } from '../../../../tests/setup'
+import { installMockApi, renderWithProviders as render } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
 import { NoteBubble } from './NoteBubble'
 
@@ -518,5 +518,95 @@ describe('NoteBubble', () => {
       />,
     )
     expect(screen.getByRole('button', { name: /collapse note/i })).toBeInTheDocument()
+  })
+
+  // ── Source-kind (YouTube) branch ──────────────────────────────────────────
+
+  it('source note renders MediaFeedNote affordance ("open video notes"), not the standard bubble', async () => {
+    const api = installMockApi()
+    api.videoSources.get.mockResolvedValue({
+      title: 'Test Video',
+      channel: 'Test Channel',
+      thumbnailUrl: null,
+      durationSec: null,
+    })
+    api.links.commentsOf.mockResolvedValue([])
+    const sourceNote: Note = {
+      ...baseNote,
+      source_kind: 'youtube',
+      source_locator: { media: 'youtube', video_id: 'abc123' },
+    }
+    render(
+      <NoteBubble
+        note={sourceNote}
+        focused={false}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /open video notes/i })).toBeInTheDocument()
+    })
+    // Standard markdown body must NOT be the primary surface for source notes.
+    expect(screen.queryByText('hello')).not.toBeInTheDocument()
+  })
+
+  it('source note "open video notes" click calls onOpenThread with the note id', async () => {
+    const api = installMockApi()
+    api.videoSources.get.mockResolvedValue({
+      title: 'Test Video',
+      channel: 'Test Channel',
+      thumbnailUrl: null,
+      durationSec: null,
+    })
+    api.links.commentsOf.mockResolvedValue([])
+    const onOpenThread = vi.fn()
+    const sourceNote: Note = {
+      ...baseNote,
+      source_kind: 'youtube',
+      source_locator: { media: 'youtube', video_id: 'abc123' },
+    }
+    render(
+      <NoteBubble
+        note={sourceNote}
+        focused={false}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+        onOpenThread={onOpenThread}
+      />,
+    )
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /open video notes/i })).toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByRole('button', { name: /open video notes/i }))
+    expect(onOpenThread).toHaveBeenCalledWith(sourceNote.id)
+  })
+
+  it('normal (non-source) note still renders the standard bubble body', () => {
+    render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    expect(screen.getByText('hello')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /open video notes/i })).not.toBeInTheDocument()
   })
 })

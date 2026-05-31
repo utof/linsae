@@ -15,6 +15,8 @@ interface Props {
   onEdit: (id: string) => void
   onDelete: (id: string) => void
   onCopyLink: (id: string) => void
+  /** Called when the user opens the thread panel for a source note. */
+  onOpenThread?: (id: string) => void
 }
 
 /** Returns a new Set with `id` toggled — immutable so React sees a new ref. */
@@ -62,7 +64,26 @@ function removeId(prev: ReadonlySet<string>, id: string): ReadonlySet<string> {
  * `measureElement` on first paint and the inner container's CSS height then
  * equals the virtualizer's exact total, so scroll-anchoring stays stable.
  */
-function estimateBubbleHeight(body: string): number {
+/**
+ * Height estimate (px) for a YouTube source-note card in the feed.
+ *
+ * Breakdown: 16:9 thumbnail at card width 360px → ~202px + title row ~36px +
+ * meta/timestamp row ~28px + hairline + bottom-row button ~44px = ~310px total.
+ * The virtualizer re-measures on first paint, so this estimate only needs to be
+ * close enough to avoid a visible scroll jump when the item is first virtualised.
+ *
+ * Why: `estimateBubbleHeight` comment explains close estimates prevent blank
+ * frames on fast scroll.
+ */
+const SOURCE_NOTE_HEIGHT_ESTIMATE = 320
+
+function estimateBubbleHeight(note: Note): number {
+  // Source notes render a fixed-height media card — use a constant estimate.
+  // The virtualizer replaces this with the measured value on first paint.
+  if (note.source_kind === 'youtube' && note.source_locator?.video_id != null) {
+    return SOURCE_NOTE_HEIGHT_ESTIMATE
+  }
+  const body = note.body
   const RENDER_CAP = 4096
   const overCap = body.length > RENDER_CAP
   const renderedLen = overCap ? RENDER_CAP : body.length
@@ -136,6 +157,7 @@ export function Feed({
   onEdit,
   onDelete,
   onCopyLink,
+  onOpenThread,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null)
@@ -144,7 +166,10 @@ export function Feed({
   const virtualizer = useVirtualizer({
     count: notes.length,
     getScrollElement: () => scrollerEl,
-    estimateSize: (index) => estimateBubbleHeight(notes[index]?.body ?? ''),
+    estimateSize: (index) => {
+      const n = notes[index]
+      return n ? estimateBubbleHeight(n) : 80
+    },
     // Stable key per note (uuidv7 id). Critical for prepend stability under
     // `anchorTo: 'end'`: tanstack captures the visible item by key before a
     // data change, finds the same keyed item after, and adjusts scrollTop
@@ -358,6 +383,7 @@ export function Feed({
                     onEdit={onEdit}
                     onDelete={onDelete}
                     onCopyLink={onCopyLink}
+                    {...(onOpenThread ? { onOpenThread } : {})}
                   />
                 </div>
               )

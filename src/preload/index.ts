@@ -97,8 +97,12 @@ const api = {
       ipcRenderer.invoke('videoSources:upsert', i),
     get: (
       i: z.input<typeof VideoSourcesGetInputSchema>,
-    ): Promise<{ title: string | null; channel: string | null } | null> =>
-      ipcRenderer.invoke('videoSources:get', i),
+    ): Promise<{
+      title: string | null
+      channel: string | null
+      thumbnailUrl: string | null
+      durationSec: number | null
+    } | null> => ipcRenderer.invoke('videoSources:get', i),
   },
   system: {
     revealNotesFolder: (): Promise<{ ok: true }> => ipcRenderer.invoke('system:revealNotesFolder'),

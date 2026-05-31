@@ -101,6 +101,13 @@ export function registerMediaIpc(db: DB, attachmentsDir: string): void {
   ipcMain.handle('videoSources:get', (_e, input) => {
     const i = VideoSourcesGetInputSchema.parse(input)
     const v = getVideoSource(db, i.videoId)
-    return v ? { title: v.title, channel: v.channel } : null
+    return v
+      ? {
+          title: v.title,
+          channel: v.channel,
+          thumbnailUrl: v.thumbnail_url,
+          durationSec: v.duration_sec,
+        }
+      : null
   })
 }

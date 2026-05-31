@@ -1,5 +1,9 @@
+import { useQuery } from '@tanstack/react-query'
 import { ChevronRight, MessagesSquare, Play } from 'lucide-react'
+import type { Note } from '../../../shared/types'
+import { api } from '../lib/api'
 import { formatClock } from '../lib/time'
+import { useThreadNotes } from '../thread/useThreadNotes'
 
 /**
  * Presentational card for a YouTube video source note in the chronological feed.
@@ -50,6 +54,47 @@ function formatTimestamp(ms: number): string {
         hour: 'numeric',
         minute: '2-digit',
       })
+}
+
+/**
+ * Data container for a video source note in the feed.
+ * Fetches title/channel/thumbnail/duration from the videoSources cache and
+ * derives noteCount/openQuestionCount from the thread comment list, then
+ * renders a `MediaFeedNote` card.
+ *
+ * Why a separate container (not inline in NoteBubble): the query + hook coupling
+ * lives here so NoteBubble stays a thin dispatcher that delegates based on
+ * `source_kind`; the container owns its own loading boundary.
+ *
+ * @see src/renderer/src/feed/NoteBubble.tsx (isSource branch)
+ * @see docs/specs/v0.2-youtube-annotation.md §Feed card
+ */
+export function MediaFeedNoteContainer({
+  note,
+  onOpenThread,
+}: {
+  note: Note
+  onOpenThread?: (id: string) => void
+}) {
+  const videoId = note.source_locator?.video_id ?? ''
+  const { data: meta } = useQuery({
+    queryKey: ['videoSource', videoId],
+    queryFn: () => api.videoSources.get(videoId),
+    enabled: !!videoId,
+  })
+  const { noteCount, openQuestionCount } = useThreadNotes(note.id, 'video')
+  return (
+    <MediaFeedNote
+      title={meta?.title ?? videoId}
+      channel={meta?.channel ?? null}
+      durationSec={meta?.durationSec ?? null}
+      thumbnailUrl={meta?.thumbnailUrl ?? null}
+      noteCount={noteCount}
+      openQuestionCount={openQuestionCount}
+      createdAt={note.created_at}
+      onOpenThread={() => onOpenThread?.(note.id)}
+    />
+  )
 }
 
 export function MediaFeedNote({
