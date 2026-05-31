@@ -89,21 +89,30 @@ export function ThreadComposer({
   const effectiveFocused = focused || manuallyFrozen
 
   // ── freeze/resume logic ───────────────────────────────────────────────────
-  // Update frozenAt only when textarea focused or hasDraft changes — NOT on
-  // every livePlayhead tick and NOT when manuallyFrozen changes. Rationale:
+  // Update frozenAt only when textarea focused, hasDraft, or manuallyFrozen
+  // changes — NOT on every livePlayhead tick. Rationale:
   //   • When focused transitions true (textarea focus): capture livePlayhead.
   //   • When hasDraft transitions true (first keystroke): nextFrozenAt keeps prev.
   //   • When both go false (blur + cleared): returns livePlayhead so the NEXT
   //     focus captures a fresh value.
   //   • While focused, livePlayhead advances but we must NOT re-capture.
-  //   • manuallyFrozen transitions are excluded because the manual chip-input
-  //     sets frozenAt directly — re-running nextFrozenAt would overwrite it.
+  //   • manuallyFrozen=true: early-return to prevent re-running nextFrozenAt and
+  //     overwriting the user's explicit chip-input value (the original bug).
+  //     When manuallyFrozen flips false (submit / blur-while-empty) the effect
+  //     runs normally and resumes live capture.
   //   • In live state, chipTime returns livePlayhead directly — frozenAt doesn't
   //     need continuous updating.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: livePlayhead and manuallyFrozen intentionally excluded — see comment
+  // biome-ignore lint/correctness/useExhaustiveDependencies: livePlayhead intentionally excluded — see comment
   useEffect(() => {
+    // Short-circuit: a manual chip-input value must never be overwritten by a
+    // focus-triggered re-capture. When manuallyFrozen flips back to false the
+    // effect re-runs and resumes normal freeze/resume behaviour.
+    // Why: bug fix — previously the effect ran on focus (focused→true) and called
+    // nextFrozenAt(focused=true,hasDraft=false) → livePlayhead, silently
+    // discarding the user's manually entered chip time.
+    if (manuallyFrozen) return
     setFrozenAt((prev) => nextFrozenAt(prev, { focused, hasDraft, livePlayhead }))
-  }, [focused, hasDraft]) // livePlayhead and manuallyFrozen deliberately excluded
+  }, [focused, hasDraft, manuallyFrozen]) // livePlayhead deliberately excluded
 
   // ── auto-grow textarea ─────────────────────────────────────────────────────
   // Mirrors the pattern in src/renderer/src/composer/Composer.tsx.
@@ -288,7 +297,14 @@ export function ThreadComposer({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
+          onBlur={() => {
+            setFocused(false)
+            // Clear manual freeze when the user abandons the composer without
+            // posting. Without this the chip would stay frozen at the manually
+            // entered time indefinitely even after the user walks away.
+            // Why: "blur-while-empty = abandon = resume live-tracking" contract.
+            if (!hasDraft) setManuallyFrozen(false)
+          }}
           onKeyDown={onKeyDown}
           aria-label="write a note"
           placeholder="note at this frame…"

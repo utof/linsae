@@ -187,4 +187,66 @@ describe('ThreadComposer', () => {
     expect(onManualSeekEntry).toHaveBeenCalledOnce()
     expect(onManualSeekEntry).toHaveBeenCalledWith(150) // 2*60+30
   })
+
+  // ── manual chip entry bug regression tests (fix: preserve manual time across focus) ──
+
+  it('(f) manual chip value survives textarea focus — not overwritten by live playhead', () => {
+    // Regression: before the fix, focusing the textarea re-ran nextFrozenAt with
+    // focused=true/hasDraft=false which returned livePlayhead, discarding "1:15".
+    const { rerender } = render(<ThreadComposer {...makeProps({ livePlayhead: 30 })} />)
+
+    // Set chip to 1:15 (75 s) manually
+    fireEvent.click(screen.getByTestId('composer-chip'))
+    fireEvent.change(screen.getByTestId('chip-time-input'), { target: { value: '1:15' } })
+    fireEvent.keyDown(screen.getByTestId('chip-time-input'), { key: 'Enter' })
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:15')
+
+    // Now focus the textarea
+    fireEvent.focus(screen.getByRole('textbox'))
+
+    // Advance livePlayhead to a different value
+    rerender(<ThreadComposer {...makeProps({ livePlayhead: 200 })} />)
+
+    // Chip must still show the manually entered 1:15, NOT the new live value
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:15')
+  })
+
+  it('(f) manual chip value resets to live tracking after submit', () => {
+    const onPost = vi.fn()
+    const { rerender } = render(<ThreadComposer {...makeProps({ livePlayhead: 30, onPost })} />)
+
+    // Set chip to 1:15 manually
+    fireEvent.click(screen.getByTestId('composer-chip'))
+    fireEvent.change(screen.getByTestId('chip-time-input'), { target: { value: '1:15' } })
+    fireEvent.keyDown(screen.getByTestId('chip-time-input'), { key: 'Enter' })
+
+    // Type a note and submit
+    const textarea = screen.getByRole('textbox')
+    fireEvent.focus(textarea)
+    fireEvent.change(textarea, { target: { value: 'a note' } })
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+
+    // After submit, re-render with a new livePlayhead — chip must resume live tracking
+    rerender(<ThreadComposer {...makeProps({ livePlayhead: 99, onPost })} />)
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:39')
+  })
+
+  it('(f) manual chip value resets to live tracking on blur-while-empty', () => {
+    const { rerender } = render(<ThreadComposer {...makeProps({ livePlayhead: 30 })} />)
+
+    // Set chip to 1:15 manually (no draft text)
+    fireEvent.click(screen.getByTestId('composer-chip'))
+    fireEvent.change(screen.getByTestId('chip-time-input'), { target: { value: '1:15' } })
+    fireEvent.keyDown(screen.getByTestId('chip-time-input'), { key: 'Enter' })
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:15')
+
+    // Focus then blur the textarea without typing anything
+    const textarea = screen.getByRole('textbox')
+    fireEvent.focus(textarea)
+    fireEvent.blur(textarea)
+
+    // Advance livePlayhead — chip must now live-track again
+    rerender(<ThreadComposer {...makeProps({ livePlayhead: 45 })} />)
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('0:45')
+  })
 })
