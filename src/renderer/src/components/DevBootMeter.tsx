@@ -43,13 +43,31 @@ function domContentLoadedMs(): number | null {
 export function DevBootMeter(): React.JSX.Element {
   const { status, data } = useQuery({ queryKey: ['notes'], queryFn: () => api.notes.list() })
   const [notesMs, setNotesMs] = useState<number | null>(null)
+  const [fcp, setFcp] = useState<number | null>(() => paintMs('first-contentful-paint'))
   useEffect(() => {
     // Freeze the first success time (subsequent invalidations would overwrite it
     // with re-fetch times that aren't boot costs).
     if (status === 'success' && notesMs === null) setNotesMs(Math.round(performance.now()))
   }, [status, notesMs])
+  useEffect(() => {
+    if (fcp != null) return
+    // FCP lands in the performance buffer ASYNCHRONOUSLY — typically after this
+    // overlay's first sync renders (which fire on mount + notes-resolved), so
+    // reading it inline left it stuck on "…". Observe it instead; `buffered:true`
+    // replays an entry recorded before the observer attached.
+    let obs: PerformanceObserver | undefined
+    try {
+      obs = new PerformanceObserver((list) => {
+        const e = list.getEntriesByName('first-contentful-paint')[0]
+        if (e) setFcp(Math.round(e.startTime))
+      })
+      obs.observe({ type: 'paint', buffered: true })
+    } catch {
+      // paint timing unsupported in this runtime — leave fcp null ("…")
+    }
+    return () => obs?.disconnect()
+  }, [fcp])
 
-  const fcp = paintMs('first-contentful-paint')
   const dcl = domContentLoadedMs()
   const count = data?.length ?? 0
   const notesCell = status === 'success' ? `${count} · ${notesMs ?? '…'}ms` : status
