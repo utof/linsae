@@ -166,6 +166,13 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     measurePill()
   }, [measurePill])
 
+  // Unmount cleanup: clear the flash timer so a pending setTimeout cannot call
+  // setFlashClusterIdx on an unmounted tree. React 19 makes this a no-op in
+  // practice, but clearing timers on unmount is the correct pattern.
+  // Why empty dep array: this is a mount-only cleanup (fires only on unmount).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => () => clearTimeout(flashTimerRef.current), [])
+
   // ── capture → pending frame → post comment-note (spec §298–315) ────────────
   // A single pending frame per composer; capturing again REPLACES it. The chip
   // (and post anchor) use the captured moment's `t`, not the live playhead.
@@ -356,6 +363,7 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
       <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex' }}>
         <div
           ref={scrollRef}
+          data-testid="thread-scroll"
           onScroll={measurePill}
           style={{
             flex: 1,

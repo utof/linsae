@@ -365,6 +365,30 @@ describe('ThreadView capture flow', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Scroll-never-seeks invariant: dispatching a scroll event on the scroll
+// container must NOT call player.seekTo (no scroll→playback coupling).
+// ---------------------------------------------------------------------------
+
+describe('ThreadView scroll-never-seeks invariant', () => {
+  it('scroll event on the thread-scroll container does NOT call seekTo', async () => {
+    seekTo.mockClear()
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+
+    // Wait for data to settle so the container is mounted and measurePill's
+    // onScroll handler is attached.
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    const scrollContainer = screen.getByTestId('thread-scroll')
+    // Simulate a user scroll: set scrollTop then fire the scroll event.
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 200, writable: true })
+    fireEvent.scroll(scrollContainer)
+
+    // measurePill reads geometry (no-op in jsdom) — it must NEVER call seekTo.
+    expect(seekTo).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // FIX 2: guard against empty commentOn when note hasn't loaded
 // ---------------------------------------------------------------------------
 
