@@ -1,4 +1,11 @@
-import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import {
+  type ClipboardEvent,
+  type KeyboardEvent,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 import type { NoteType } from '../../../shared/types'
 
 /**
@@ -30,6 +37,20 @@ interface Props {
    * `error={null}` and the red UI disappears.
    */
   onClearError?: () => void
+  /**
+   * Optional paste interceptor for the create-mode composer (never called in
+   * edit mode). Receives the pasted plain-text string; return `true` to
+   * signal the paste was fully handled (prevents default textarea insertion),
+   * `false` / `undefined` to let the default paste proceed.
+   *
+   * Why a callback instead of handling in App directly: the textarea's
+   * ClipboardEvent fires on the textarea DOM node, so the seam is most
+   * natural here. Keeping the interceptor optional preserves the edit-mode
+   * Composer's existing contract unchanged (no regressions).
+   *
+   * @see src/renderer/src/App.tsx §paste handler
+   */
+  onPasteText?: (text: string) => boolean
 }
 
 /**
@@ -71,6 +92,7 @@ export function Composer({
   editMode = false,
   error = null,
   onClearError,
+  onPasteText,
 }: Props) {
   const [body, setBody] = useState(initialBody)
   const [mode, setMode] = useState<NoteType>(initialMode)
@@ -135,6 +157,15 @@ export function Composer({
     }
   }
 
+  // Paste interceptor — only active in create mode when onPasteText is provided.
+  // Edit-mode composers never carry onPasteText, so this is a no-op for them.
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!onPasteText) return
+    const text = e.clipboardData.getData('text')
+    const handled = onPasteText(text)
+    if (handled) e.preventDefault()
+  }
+
   const isQuestion = mode === 'question'
   // Error border wins over question-mode border so the user sees the failure
   // state even when the composer is in amber question mode.
@@ -189,6 +220,7 @@ export function Composer({
               setBody(e.target.value)
             }}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             aria-label={isQuestion ? 'ask a question' : 'write a note'}
             placeholder={isQuestion ? 'ask a question…' : 'write — or press ? for a question'}
             // Class hides the native scrollbar (rules in globals.css); native
