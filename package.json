@@ -45,6 +45,7 @@
     "@biomejs/biome": "^2.4.15",
     "@electron-toolkit/tsconfig": "^2.0.0",
     "@electron/rebuild": "^4.0.4",
+    "@rolldown/plugin-babel": "^0.2.3",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/better-sqlite3": "^7.6.13",
@@ -54,11 +55,11 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@types/youtube-player": "^5.5.11",
-    "@vitejs/plugin-react": "^5.1.1",
+    "@vitejs/plugin-react": "^6.0.2",
     "babel-plugin-react-compiler": "^1.0.0",
     "electron": "^39.2.6",
     "electron-builder": "^26.0.12",
-    "electron-vite": "^5.0.0",
+    "electron-vite": "6.0.0-beta.1",
     "jsdom": "^29.1.1",
     "knip": "^6.14.2",
     "lefthook": "^2.1.8",
@@ -66,7 +67,7 @@
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
     "typescript": "^5.9.3",
-    "vite": "^7.2.6",
+    "vite": "^8.0.14",
     "vitest": "^4.1.7"
   }
 }

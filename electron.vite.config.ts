@@ -1,5 +1,6 @@
 import { resolve } from 'node:path'
-import react from '@vitejs/plugin-react'
+import babel from '@rolldown/plugin-babel'
+import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import { DEV_MEDIA_PORT } from './src/main/http-shell'
 
@@ -27,16 +28,19 @@ export default defineConfig({
       },
     },
     plugins: [
+      react(),
       // React Compiler (babel-plugin-react-compiler 1.0) auto-memoizes
-      // components and stabilizes callbacks at build time, so the rolling
-      // feed reconciles only the bubbles that actually changed during a
-      // scroll instead of every visible one each frame. This is the classic-
-      // Babel form valid for @vitejs/plugin-react v5; v6 (Vite 8, oxc) would
-      // instead need @rolldown/plugin-babel. No `target` or runtime package
-      // is needed on React 19 — `react/compiler-runtime` ships with React.
+      // components and stabilizes callbacks at build time, so the rolling feed
+      // reconciles only the bubbles that changed during a scroll. On
+      // @vitejs/plugin-react v6 (Vite 8 / oxc) the classic-Babel pipeline
+      // (react({ babel: { plugins: [...] } })) is gone, so the compiler runs via
+      // @rolldown/plugin-babel + reactCompilerPreset. The `await` works around
+      // electron-vite's deepClone choking on the babel factory's Promise<Plugin>
+      // (electron-vite#902). No runtime package needed on React 19 —
+      // `react/compiler-runtime` ships with React.
       // @see adrs/0006-react-compiler.md
-      // @see https://react.dev/learn/react-compiler/installation
-      react({ babel: { plugins: ['babel-plugin-react-compiler'] } }),
+      // @see https://github.com/alex8088/electron-vite/issues/902
+      await babel({ presets: [reactCompilerPreset()] }),
     ],
     server: {
       // Warm up the first-paint module graph at dev-server start so the

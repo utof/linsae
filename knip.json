@@ -14,6 +14,7 @@
     "src/renderer/src/topbar/Topbar.tsx"
   ],
   "ignoreDependencies": [
+    "@rolldown/plugin-babel",
     "@vitejs/plugin-react",
     "babel-plugin-react-compiler",
     "rehype-katex",
