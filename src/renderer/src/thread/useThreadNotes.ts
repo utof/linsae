@@ -2,9 +2,9 @@
  * Hook that fetches a video-note's comment-on-linked notes and derives the
  * layout inputs for the thread Rail and ThreadView.
  *
- * The query is keyed on `['thread', videoNoteId, sortMode]` so switching sort
- * mode invalidates nothing but re-sorts the cached data locally — no extra
- * network / IPC round-trip.
+ * The query is keyed on `['thread', videoNoteId]` (NOT sortMode) so switching
+ * sort mode re-derives the order locally from the already-cached data — no extra
+ * network / IPC round-trip (the raw thread data is identical across modes).
  *
  * Why derive thread items inside the hook (not in components): `sortForMode`,
  * `clusterByPause`, and `partitionAnchorless` are pure functions; doing the
@@ -88,7 +88,7 @@ export interface UseThreadNotesResult {
  */
 export function useThreadNotes(videoNoteId: string, sortMode: SortMode): UseThreadNotesResult {
   const { data = [], isLoading } = useQuery({
-    queryKey: ['thread', videoNoteId, sortMode],
+    queryKey: ['thread', videoNoteId],
     queryFn: () => api.links.commentsOf(videoNoteId),
     enabled: !!videoNoteId,
   })
