@@ -127,6 +127,15 @@ export const api = {
      * @see src/main/ipc/notes.ts
      */
     resolve: (slug: string): Promise<Note | null> => window.api.links.resolve({ slug }),
+    /**
+     * Comment-notes linked to a video-note via `comment-on` edges, with their
+     * latest live attachment. Returns oldest-first so callers can feed directly
+     * into `sortForMode` without pre-sorting.
+     * @issue utof/linsae#36
+     * @see src/main/ipc/notes.ts
+     */
+    commentsOf: (noteId: string): Promise<Array<{ note: Note; attachment: Attachment | null }>> =>
+      window.api.links.commentsOf({ noteId }),
   },
   /**
    * YouTube IPC facade: screenshot capture and oEmbed metadata fetch.

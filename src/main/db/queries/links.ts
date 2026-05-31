@@ -12,7 +12,7 @@
  */
 
 import type Database from 'better-sqlite3'
-import type { Note } from '../../../shared/types'
+import type { Attachment, Note, SourceLocator } from '../../../shared/types'
 import type { Wikilink } from '../../text/wikilinks'
 
 type DB = Database.Database
@@ -83,6 +83,60 @@ export function backlinks(db: DB, toSlug: string): Note[] {
        ORDER BY n.created_at DESC`,
     )
     .all(toSlug) as Note[]
+}
+
+/**
+ * Returns live (non-deleted) comment-notes whose `comment-on` edge targets `videoSlug`,
+ * together with each note's latest live attachment (or `null` if none).
+ *
+ * The correlated attachment lookup uses `ORDER BY created_at DESC LIMIT 1` so a
+ * future note with multiple screenshots still resolves correctly without a schema
+ * change — v0.2.0 has at most one screenshot per comment-note.
+ *
+ * Why separate SELECT for attachment: a LEFT JOIN + LIMIT 1 inside a single query
+ * does not work portably with SQLite correlated subqueries at the column position;
+ * two statements per row keeps the SQL simple and the result predictable.
+ *
+ * Why `source_kind`/`source_locator`: thread items need the timestamp `t` from
+ * `source_locator.t` to place themselves on the rail — omitting these columns would
+ * force a second `getNote` call for every row.
+ *
+ * @param db - Open better-sqlite3 Database.
+ * @param videoSlug - Slug of the video-note that is the thread target.
+ * @returns Comment-notes (oldest first) with their latest live screenshot attachment.
+ * @see https://github.com/utof/linsae/issues/36
+ * @issue utof/linsae#36
+ * @see adrs/0010-comment-on-edge.md
+ */
+export function commentsForVideo(
+  db: DB,
+  videoSlug: string,
+): Array<{ note: Note; attachment: Attachment | null }> {
+  const rows = db
+    .prepare(
+      `SELECT n.id, n.slug, n.body, n.type, n.created_at, n.updated_at, n.deleted_at,
+              n.source_kind, n.source_locator
+       FROM notes n
+       JOIN links l ON l.from_note_id = n.id
+       WHERE l.to_slug = ? AND l.edge_type = 'comment-on' AND n.deleted_at IS NULL
+       ORDER BY n.created_at`,
+    )
+    .all(videoSlug) as Array<Omit<Note, 'source_locator'> & { source_locator: string | null }>
+
+  const attachStmt = db.prepare(
+    `SELECT id, note_id, kind, base_sha256, base_path, overlay_path, video_id,
+            time_seconds, width_px, height_px, device_pixel_ratio, created_at, deleted_at
+     FROM attachments WHERE note_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+  )
+
+  return rows.map((row) => {
+    const note: Note = {
+      ...row,
+      source_locator: row.source_locator ? (JSON.parse(row.source_locator) as SourceLocator) : null,
+    }
+    const attachment = (attachStmt.get(note.id) as Attachment | undefined) ?? null
+    return { note, attachment }
+  })
 }
 
 /**

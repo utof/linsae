@@ -50,7 +50,12 @@ export interface MockApi {
     delete: ReturnType<typeof vi.fn>
   }
   search: { run: ReturnType<typeof vi.fn> }
-  links: { backlinks: ReturnType<typeof vi.fn>; resolve: ReturnType<typeof vi.fn> }
+  links: {
+    backlinks: ReturnType<typeof vi.fn>
+    resolve: ReturnType<typeof vi.fn>
+    /** commentsOf mock — added in v0.2 for useThreadNotes. @issue utof/linsae#36 */
+    commentsOf: ReturnType<typeof vi.fn>
+  }
   /** YouTube IPC mocks — added in v0.2. @see src/preload/index.ts */
   youtube: {
     capture: ReturnType<typeof vi.fn>
@@ -98,6 +103,7 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
     links: {
       backlinks: vi.fn(async (): Promise<Note[]> => []),
       resolve: vi.fn(async () => null),
+      commentsOf: vi.fn(async (): Promise<Array<{ note: Note; attachment: null }>> => []),
     },
     youtube: {
       capture: vi.fn(async () => ({

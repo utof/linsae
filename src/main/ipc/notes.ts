@@ -16,6 +16,7 @@ import { ipcMain } from 'electron'
 import type { SourceLocator } from '../../shared/types'
 import {
   BacklinksInputSchema,
+  CommentsOfInputSchema,
   NoteIdSchema,
   NotesCreateInputSchema,
   NotesListInputSchema,
@@ -23,7 +24,7 @@ import {
   ResolveInputSchema,
   SearchRunInputSchema,
 } from '../../shared/zod-schemas'
-import { backlinks } from '../db/queries/links'
+import { backlinks, commentsForVideo } from '../db/queries/links'
 import { getNote, listNotes } from '../db/queries/notes'
 import { resolveWikilink } from '../db/queries/resolver'
 import { searchNotes } from '../db/queries/search'
@@ -101,6 +102,11 @@ export function registerNotesIpc(db: DB, nd: NotesDir): void {
     const i = BacklinksInputSchema.parse(input)
     const note = getNote(db, i.noteId)
     return note ? backlinks(db, note.slug) : []
+  })
+  ipcMain.handle('links:commentsOf', (_e, input) => {
+    const i = CommentsOfInputSchema.parse(input)
+    const note = getNote(db, i.noteId)
+    return note ? commentsForVideo(db, note.slug) : []
   })
   ipcMain.handle('links:resolve', (_e, input) => {
     const i = ResolveInputSchema.parse(input)

@@ -194,3 +194,13 @@ export const VideoSourcesUpsertInputSchema = z.object({
 
 /** `videoSources:get` input. */
 export const VideoSourcesGetInputSchema = z.object({ videoId: z.string().min(1) })
+
+/**
+ * Input schema for the `links:commentsOf` IPC channel.
+ *
+ * Why `noteId` (not `slug`): the renderer holds note ids (UUIDs), not slugs.
+ * Slug resolution happens in the handler after Zod parse, mirroring the
+ * `links:backlinks` pattern — see src/main/ipc/notes.ts.
+ * @issue utof/linsae#36
+ */
+export const CommentsOfInputSchema = z.object({ noteId: z.string().min(1) })

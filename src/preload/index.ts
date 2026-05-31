@@ -27,6 +27,7 @@ import type {
   AttachToNoteInputSchema,
   BacklinksInputSchema,
   CaptureInputSchema,
+  CommentsOfInputSchema,
   FetchOEmbedInputSchema,
   NoteIdSchema,
   NotesCreateInputSchema,
@@ -60,6 +61,10 @@ const api = {
       ipcRenderer.invoke('links:backlinks', i),
     resolve: (i: z.input<typeof ResolveInputSchema>): Promise<Note | null> =>
       ipcRenderer.invoke('links:resolve', i),
+    commentsOf: (
+      i: z.input<typeof CommentsOfInputSchema>,
+    ): Promise<Array<{ note: Note; attachment: Attachment | null }>> =>
+      ipcRenderer.invoke('links:commentsOf', i),
   },
   youtube: {
     capture: (
