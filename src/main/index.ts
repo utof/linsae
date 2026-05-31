@@ -2,9 +2,6 @@
  * Main-process bootstrap for linsae.
  *
  * Boot order (must not be reshuffled):
- *  0a. `registerAppScheme()` is called at module load, BEFORE `app.whenReady()`
- *      — Electron requires the custom scheme to be registered before the app is
- *      ready; moving it inside `whenReady` would make `app://` non-functional.
  *  1. Acquire the single-instance lock BEFORE any other init — losing the
  *     lock means we exit immediately, so we must not have created any
  *     windows, opened the DB, or registered IPC handlers.
@@ -13,28 +10,29 @@
  *     the reconciler).
  *  4. Run the startup reconciler (file system → DB).
  *  5. Register IPC handlers (renderer must never see an empty IPC surface).
- *  0b. `registerAppProtocol(...)` installs the `app://` request handler inside
- *      `whenReady` (after `registerAppScheme` has reserved the scheme), before
- *      `createWindow()` so the renderer's first load hits a live handler.
- *  6. Build the application menu, then create the renderer window.
+ *  6. Start the loopback HTTP shell (BEFORE loadURL — otherwise the renderer's
+ *     first GET races to ECONNREFUSED).
+ *  7. Build the application menu, then create the renderer window.
  *
  * Why this order: every step depends on the one before it. Creating the
  * window before IPC is registered would race the renderer's first calls;
- * running the reconciler before migrations would query a non-existent schema.
+ * running the reconciler before migrations would query a non-existent schema;
+ * the loopback shell must be listening before loadURL is called.
  *
  * @see docs/specs/v0.1-rolling-feed-and-search.md §Storage architecture
  * @see docs/specs/v0.1-rolling-feed-and-search.md §Electron security baseline
  * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 21
+ * @see docs/specs/v0.2-localhost-shell.md §7 B3
  */
 
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, BrowserWindow, Menu, shell } from 'electron'
-import { registerAppProtocol, registerAppScheme } from './app-protocol'
 import { openDb } from './db/client'
 import { runMigrations } from './db/migrate'
 import { reconcile } from './db/reconcile'
 import { NotesDir } from './files/notes-dir'
+import { DEV_MEDIA_PORT, startLoopbackShell } from './http-shell'
 import { registerAllIpc } from './ipc'
 import { secureWebPreferences } from './security'
 
@@ -49,9 +47,6 @@ if (!gotLock) {
   process.exit(0)
 }
 
-// Declare the app:// scheme before the app is ready (required ordering).
-registerAppScheme()
-
 let mainWindow: BrowserWindow | null = null
 
 app.on('second-instance', () => {
@@ -64,7 +59,7 @@ app.on('second-instance', () => {
 /**
  * Creates the renderer `BrowserWindow` with the hardened web preferences
  * from {@link secureWebPreferences} and loads either the dev server URL or
- * the bundled `index.html`.
+ * the loopback shell origin.
  *
  * Why `show: false` + `ready-to-show`: avoids the white-flash on first
  * paint; the window only appears once the renderer has its initial frame.
@@ -73,10 +68,15 @@ app.on('second-instance', () => {
  * renderer should open in the user's browser, not in a second Electron
  * window (which would inherit the renderer's privileges).
  *
+ * @param origin - The loopback shell origin (`http://127.0.0.1:<port>`).
+ *   Used as the document URL in prod; ignored in dev (ELECTRON_RENDERER_URL
+ *   takes precedence). The loopback shell must already be listening before
+ *   this is called.
  * @returns The newly created `BrowserWindow`.
  * @see https://www.electronjs.org/docs/latest/api/browser-window
+ * @see src/main/http-shell.ts (startLoopbackShell)
  */
-function createWindow(): BrowserWindow {
+function createWindow(origin: string): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -102,12 +102,12 @@ function createWindow(): BrowserWindow {
   if (process.env.ELECTRON_RENDERER_URL) {
     win.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
-    win.loadURL('app://bundle/index.html')
+    win.loadURL(`${origin}/`)
   }
   return win
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   const userData = app.getPath('userData')
   const notesDir = join(userData, 'notes')
   const logsDir = join(userData, 'logs')
@@ -127,11 +127,21 @@ app.whenReady().then(() => {
   console.log(`reconciled: ${JSON.stringify(report)}`)
 
   registerAllIpc(db, nd, notesDir, logsDir, report.skipped, attachmentsDir)
-  // Serve the built renderer + userData attachments over app:// (prod). In dev the
-  // window loads the vite server URL (http://localhost), so app:// is NOT the document
-  // origin there; registering the handler is still harmless. Dev image display over
-  // app:// is cross-origin and is Plan 3's concern (see Hand-off).
-  registerAppProtocol(join(__dirname, '../renderer'), attachmentsDir)
+
+  // Start the loopback HTTP shell BEFORE createWindow/loadURL so the server
+  // is listening before the renderer's first GET. In dev (ELECTRON_RENDERER_URL
+  // set) we start on the fixed DEV_MEDIA_PORT so the Vite proxy can reach it;
+  // in prod we use an ephemeral port (listen(0)) and pass the origin to loadURL.
+  // exactOptionalPropertyTypes: omit the key entirely rather than set port:undefined.
+  // @see docs/specs/v0.2-localhost-shell.md §7 B3
+  const shellBaseOpts = { rendererDir: join(__dirname, '../renderer'), attachmentsDir }
+  const shell = await startLoopbackShell(
+    process.env.ELECTRON_RENDERER_URL ? { ...shellBaseOpts, port: DEV_MEDIA_PORT } : shellBaseOpts,
+  )
+  app.on('will-quit', () => {
+    void shell.close()
+  })
+
   // Role-only menu: no visible bar (frame:false has no menu slot), but the
   // editMenu / viewMenu / windowMenu roles register the standard keyboard
   // accelerators (cut/copy/paste, reload, devtools, minimize/zoom). The
@@ -142,9 +152,11 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([{ role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' }]),
   )
-  mainWindow = createWindow()
+  mainWindow = createWindow(shell.origin)
+  // Reuse the same shell when macOS re-activates the app with no windows open.
+  // Do NOT restart the shell — it's already bound and listening.
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow(shell.origin)
   })
 })
 
