@@ -7,7 +7,7 @@
   "homepage": "https://electron-vite.org",
   "scripts": {
     "prepare": "lefthook install",
-    "dev": "electron-vite dev",
+    "dev": "pnpm rebuild:electron && electron-vite dev",
     "build": "electron-vite build && electron-builder",
     "preview": "electron-vite preview",
     "rebuild:electron": "electron-rebuild -f -w better-sqlite3",
