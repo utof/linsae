@@ -85,3 +85,28 @@ and the embed reaches cued/playing with no `ERROR:153/152/101`.
 - Simon Willison, "YouTube embed 153 error" — https://simonwillison.net/2025/Dec/1/youtube-embed-153-error/
 - YouTube IFrame Player API — https://developers.google.com/youtube/iframe_api_reference
 - Electron `protocol.registerSchemesAsPrivileged` / `protocol.handle` — https://www.electronjs.org/docs/latest/api/protocol
+
+## Amendment (Plan 3 / G1) — `script-src` admits `http://www.youtube.com`
+
+The renderer loads over `http://127.0.0.1` (this ADR's decision), and
+`youtube-player@5.6.0`'s `loadYouTubeIframeApi.js` builds the IFrame-API
+script URL from `window.location.protocol` → `http://www.youtube.com/iframe_api`,
+which an https-only `script-src` blocks. The CSP therefore admits
+`http://www.youtube.com` (alongside the retained `https://www.youtube.com` token).
+
+**Not a plaintext downgrade.** `www.youtube.com` is on the Chromium HSTS preload
+list (apex `youtube.com`, includeSubDomains — verified at hstspreload.org), so the
+request is upgraded to `https://` before any socket opens; the `http://` token only
+lets the pre-upgrade URL string pass the CSP source-expression check. No plaintext
+fetch reaches the wire.
+
+**Alternatives rejected.** `upgrade-insecure-requests` would also upgrade the
+renderer's own `http://127.0.0.1` bundle + `/_media/` requests to `https://127.0.0.1`
+(the loopback server has no TLS) and break the app on first load; `127.0.0.1` is not
+HSTS-eligible. Pre-injecting an `https://` `iframe_api` `<script>` before constructing
+the player is racy — `getPlayer()` calls `YouTubePlayer(target, …)` synchronously and
+the library's loader injects its own `http:` tag unless `window.YT.Player` is already
+fully present. Keeping the `http://` token (HSTS-protected) is the minimal, safe fix.
+
+Verified by the G1 Playwright `_electron` smoke's Error-153 / embed-loads gate
+(`scripts/thread-smoke.mjs`).
