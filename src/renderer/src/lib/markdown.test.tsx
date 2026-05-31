@@ -1,4 +1,4 @@
-import { fireEvent } from '@testing-library/react'
+import { fireEvent, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { renderWithProviders as render } from '../../../../tests/setup'
 import { Markdown } from './markdown'
@@ -76,9 +76,11 @@ describe('Markdown', () => {
     expect(link.textContent).toBe('alpha')
   })
 
-  it('renders inline math via KaTeX', () => {
+  it('renders inline math via KaTeX (lazily, after paint — see #53)', async () => {
     const { container } = render(<Markdown body="$x^2$" onWikilinkClick={() => {}} />)
-    expect(container.querySelector('.katex')).toBeTruthy()
+    // KaTeX now renders imperatively after the markdown paints (deferred to
+    // idle/rAF) so it doesn't block the synchronous render / morph. See #53.
+    await waitFor(() => expect(container.querySelector('.katex')).toBeTruthy())
   })
 
   it('adds class="dangling" + tooltip when resolveSlug returns false', () => {

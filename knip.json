@@ -13,5 +13,10 @@
     "src/renderer/src/env.d.ts",
     "src/renderer/src/topbar/Topbar.tsx"
   ],
-  "ignoreDependencies": ["@vitejs/plugin-react", "babel-plugin-react-compiler"]
+  "ignoreDependencies": [
+    "@vitejs/plugin-react",
+    "babel-plugin-react-compiler",
+    "rehype-katex",
+    "remark-math"
+  ]
 }

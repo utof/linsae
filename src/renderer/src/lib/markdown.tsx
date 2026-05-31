@@ -1,8 +1,11 @@
+// SPIKE (#4 / lazy-KaTeX): render math imperatively AFTER paint instead of
+// synchronously via rehype-katex, so the markdown render (and the morph) isn't
+// blocked by KaTeX. Literal $...$ shows first, then upgrades. REVERT if bad.
+// @ts-expect-error - katex auto-render contrib has no bundled types
+import renderMathInElement from 'katex/contrib/auto-render'
 import { type MouseEvent, memo, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
-import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
 import { remarkWikilinks } from './remark-wikilinks'
 import { remarkYtTimestamps } from './remark-yt-timestamps'
 
@@ -96,7 +99,20 @@ export const Markdown = memo(function Markdown({
   // biome-ignore lint/correctness/useExhaustiveDependencies: `body` is depended on so the ref-callback re-fires after ReactMarkdown emits new anchors; keeps `resolveSlug` out of the plugin array to avoid busting the mdast/hast cache.
   const containerRef = useCallback(
     (el: HTMLDivElement | null) => {
-      if (!el || !resolveSlug) return
+      if (!el) return
+      // SPIKE: defer KaTeX to idle so the synchronous render + morph aren't
+      // blocked; literal $...$ shows first, then upgrades to rendered math.
+      const renderMath = () =>
+        renderMathInElement(el, {
+          delimiters: [
+            { left: '$$', right: '$$', display: true },
+            { left: '$', right: '$', display: false },
+          ],
+          throwOnError: false,
+        })
+      if ('requestIdleCallback' in window) window.requestIdleCallback(renderMath)
+      else requestAnimationFrame(renderMath)
+      if (!resolveSlug) return
       for (const a of el.querySelectorAll<HTMLAnchorElement>('a.wikilink')) {
         const slug = a.dataset.slug
         if (!slug) continue
@@ -113,10 +129,7 @@ export const Markdown = memo(function Markdown({
     // biome-ignore lint/a11y/noStaticElementInteractions: click delegated to nested <a class="wikilink"> anchors which are themselves keyboard-focusable; the div carries no semantic role.
     // biome-ignore lint/a11y/useKeyWithClickEvents: anchors handle keyboard activation (Enter dispatches click on focused <a>); no key handler needed on the delegating wrapper.
     <div ref={containerRef} className="markdown-root" onClick={handleClick}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath, remarkWikilinks, remarkYtTimestamps]}
-        rehypePlugins={[rehypeKatex]}
-      >
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkWikilinks, remarkYtTimestamps]}>
         {body}
       </ReactMarkdown>
     </div>
