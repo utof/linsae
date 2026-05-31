@@ -38,11 +38,24 @@ vi.mock('./thread/ThreadView', () => ({
   ),
 }))
 
-// Mock Feed to a minimal component that exposes an "open thread" button per note.
-// This avoids the full virtualizer + DOM measurement path in jsdom.
+// Mock Feed to a minimal component that exposes one "open thread" button per
+// note in the list. Each button fires onOpenThread with its note's id so tests
+// can navigate to specific threads. Avoids the full virtualizer + DOM measurement
+// path in jsdom.
 vi.mock('./feed/Feed', () => ({
-  Feed: ({ onOpenThread }: { onOpenThread?: (id: string) => void; notes: Note[] }) => (
+  Feed: ({ onOpenThread, notes }: { onOpenThread?: (id: string) => void; notes: Note[] }) => (
     <div data-testid="feed-sentinel">
+      {notes.map((n) => (
+        <button
+          key={n.id}
+          type="button"
+          data-testid={`open-thread-btn-${n.id}`}
+          onClick={() => onOpenThread?.(n.id)}
+        >
+          {`open thread ${n.id}`}
+        </button>
+      ))}
+      {/* Legacy alias: fires note-src-1, used by existing tests that rely on FEED_NOTE seeding. */}
       <button
         type="button"
         data-testid="open-thread-btn"
@@ -72,6 +85,19 @@ const CREATED_SOURCE_NOTE: Note = {
   deleted_at: null,
   source_kind: 'youtube',
   source_locator: { media: 'youtube', video_id: 'dQw4w9WgXcQ' },
+}
+
+/** Second source note for A→B thread navigation test. */
+const SOURCE_NOTE_B: Note = {
+  id: 'note-src-2',
+  slug: 'note-src-2',
+  body: '',
+  type: 'source',
+  created_at: 2000,
+  updated_at: 2000,
+  deleted_at: null,
+  source_kind: 'youtube',
+  source_locator: { media: 'youtube', video_id: 'oHg5SJYRHA0' },
 }
 
 const OEMBED_RESULT = {
@@ -280,18 +306,49 @@ describe('App — ThreadView nav (mutual exclusivity)', () => {
     expect(screen.queryByTestId('thread-view-sentinel')).not.toBeInTheDocument()
   })
 
-  it('(c) switching threads uses key={threadNoteId} to remount ThreadView', async () => {
-    // The mock Feed fires 'note-src-1' for onOpenThread; verify the sentinel
-    // carries the correct id so we know key={threadNoteId} is wired.
-    mockApi.notes.list.mockResolvedValue([FEED_NOTE])
+  it('(c) navigating A→B swaps ThreadView noteId (proves key={threadNoteId} remount)', async () => {
+    // Seed two source notes so the Feed mock renders per-note open-thread buttons.
+    // Proves key={threadNoteId} wires the noteId prop swap: A must show A's id,
+    // then after close+reopen to B, ThreadView must show B's id.
+    mockApi.notes.list.mockResolvedValue([CREATED_SOURCE_NOTE, SOURCE_NOTE_B])
     renderWithProviders(<App />)
 
+    // Wait for both per-note buttons to appear.
+    await screen.findByTestId('open-thread-btn-note-src-1')
+    await screen.findByTestId('open-thread-btn-note-src-2')
+
+    // Open thread A.
     await act(async () => {
-      fireEvent.click(await screen.findByTestId('open-thread-btn'))
+      fireEvent.click(screen.getByTestId('open-thread-btn-note-src-1'))
     })
     await waitFor(() => {
-      const sentinel = screen.getByTestId('thread-view-sentinel')
-      expect(sentinel).toHaveAttribute('data-note-id', 'note-src-1')
+      expect(screen.getByTestId('thread-view-sentinel')).toHaveAttribute(
+        'data-note-id',
+        'note-src-1',
+      )
     })
+
+    // Close thread A.
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('back'))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('feed-sentinel')).toBeInTheDocument()
+    })
+
+    // Open thread B.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('open-thread-btn-note-src-2'))
+    })
+    await waitFor(() => {
+      // ThreadView must now carry B's id — proves noteId prop changed + remount.
+      expect(screen.getByTestId('thread-view-sentinel')).toHaveAttribute(
+        'data-note-id',
+        'note-src-2',
+      )
+    })
+    // Feed and composer must be absent while thread B is open.
+    expect(screen.queryByTestId('feed-sentinel')).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
   })
 })

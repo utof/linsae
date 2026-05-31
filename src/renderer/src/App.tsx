@@ -118,19 +118,36 @@ export function App() {
     const videoId = parseYouTubeUrl(text)
     if (!videoId) return false
     void (async () => {
-      await api.notes.create('', 'source', {
-        source_kind: 'youtube',
-        source_locator: { media: 'youtube', video_id: videoId },
-      })
-      void queryClient.invalidateQueries({ queryKey: ['notes'] })
-      const o = await api.youtube.fetchOEmbed(videoId)
-      if (o) {
-        await api.videoSources.upsert(videoId, {
-          title: o.title,
-          channel: o.author_name,
-          thumbnailUrl: o.thumbnail_url,
+      try {
+        await api.notes.create('', 'source', {
+          source_kind: 'youtube',
+          source_locator: { media: 'youtube', video_id: videoId },
         })
-        void queryClient.invalidateQueries({ queryKey: ['videoSource', videoId] })
+        // Tick successCount so the create-mode Composer remounts clean (clears
+        // question mode) exactly as createMut.onSuccess does. Runs on create
+        // success before the fail-soft oEmbed step. Why: a failed create must
+        // surface the error (see catch below); a succeeded create must reset
+        // the composer regardless of whether oEmbed succeeds.
+        setSuccessCount((c) => c + 1)
+        void queryClient.invalidateQueries({ queryKey: ['notes'] })
+        // oEmbed + upsert are fail-soft: if either rejects the note still exists
+        // and the card shows the raw video id as its title.
+        const o = await api.youtube.fetchOEmbed(videoId)
+        if (o) {
+          await api.videoSources.upsert(videoId, {
+            title: o.title,
+            channel: o.author_name,
+            thumbnailUrl: o.thumbnail_url,
+          })
+          void queryClient.invalidateQueries({ queryKey: ['videoSource', videoId] })
+        }
+      } catch (err) {
+        // Surface create failures the same way createMut.onError does so the
+        // user knows the paste failed and their text is already gone
+        // (preventDefault was called before this async block started). The
+        // oEmbed/upsert portion is intentionally outside the catch — it is
+        // fail-soft and must not change the error state on its own.
+        setSubmitError(err instanceof Error ? err.message : String(err))
       }
     })()
     return true
@@ -193,12 +210,15 @@ export function App() {
 
   /**
    * Opens the ThreadView for a source note, clearing focusedId so the
-   * BacklinksPane doesn't linger while the thread is open.
+   * BacklinksPane doesn't linger while the thread is open, and clearing
+   * editingNoteId so a stale edit-mode Composer cannot reappear when the
+   * thread is later closed.
    * Mutual exclusivity: when threadNoteId is non-null, the feed+composer
    * branch is not rendered (see JSX below).
    */
   const openThread = (id: string) => {
     setFocusedId(null)
+    setEditingNoteId(null)
     setThreadNoteId(id)
   }
 
