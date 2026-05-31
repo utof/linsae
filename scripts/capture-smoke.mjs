@@ -1,6 +1,6 @@
 /**
  * Playwright-Electron smoke for the v0.2 capture pipeline (ADR 0009).
- * Launches the BUILT app (loads over app://), calls window.api.youtube.capture
+ * Launches the BUILT app (loads over http://127.0.0.1 loopback shell), calls window.api.youtube.capture
  * with a fixed rect, and asserts the returned image is physical-pixel sized
  * (width === rect.width × scaleFactor) and the PNG was written to disk.
  *
@@ -23,6 +23,73 @@ const app = await electron.launch({ args: ['out/main/index.js', `--user-data-dir
 try {
   const win = await app.firstWindow()
   await win.waitForLoadState('domcontentloaded')
+
+  // Error-153 gate (spec:446): the embed must load under the loopback origin.
+  const origin = await win.evaluate(() => location.origin)
+  console.log(`thread-smoke: document origin = ${origin}`)
+  assert.ok(
+    origin.startsWith('http://127.0.0.1'),
+    `renderer served over loopback http (got ${origin})`,
+  )
+
+  const embed = await win.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const events = []
+        const wrapper = document.createElement('div')
+        wrapper.style.cssText = 'position:fixed;left:0;top:0;width:480px;height:270px;z-index:99999'
+        const iframe = document.createElement('iframe')
+        iframe.id = 'yt-smoke'
+        iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin')
+        iframe.width = '480'
+        iframe.height = '270'
+        iframe.src =
+          'https://www.youtube-nocookie.com/embed/M7lc1UVf-VE?enablejsapi=1&controls=0&rel=0&playsinline=1'
+        wrapper.appendChild(iframe)
+        document.body.appendChild(wrapper)
+        let player
+        function attach() {
+          player = new window.YT.Player('yt-smoke', {
+            events: {
+              onReady: () => {
+                events.push('ready')
+                try {
+                  player.cueVideoById('M7lc1UVf-VE')
+                } catch (e) {
+                  events.push('cueErr:' + e)
+                }
+              },
+              onStateChange: (e) => events.push('state:' + e.data),
+              onError: (e) => events.push('ERROR:' + e.data),
+            },
+          })
+        }
+        if (window.YT && window.YT.Player) attach()
+        else {
+          window.onYouTubeIframeAPIReady = attach
+          const s = document.createElement('script')
+          s.src = 'https://www.youtube.com/iframe_api'
+          document.head.appendChild(s)
+        }
+        setTimeout(() => resolve({ events, duration: player?.getDuration?.() ?? 0 }), 14000)
+      }),
+  )
+  console.log(
+    `thread-smoke: embed events = ${JSON.stringify(embed.events)} duration=${embed.duration}`,
+  )
+  const hadEmbedError = embed.events.some((e) => /^ERROR:(153|152|101|150|100)$/.test(e))
+  const reachedPlayable = embed.events.some(
+    (e) => e === 'state:5' || e === 'state:1' || e === 'state:3',
+  )
+  assert.ok(
+    !hadEmbedError,
+    `embed must not hit an embedding/referrer error (events: ${embed.events.join(',')})`,
+  )
+  assert.ok(
+    reachedPlayable && embed.duration > 0,
+    `embed must reach cued/playing with a duration (events: ${embed.events.join(',')}, dur ${embed.duration})`,
+  )
+  console.log('thread-smoke: Error-153 gate PASSED — embed loaded under loopback origin')
 
   const rect = { x: 0, y: 0, width: 200, height: 120 }
   const result = await win.evaluate(
