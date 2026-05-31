@@ -8,8 +8,12 @@
          on the same http://127.0.0.1:<port> origin; in dev the Vite server proxies
          /_media/ to the loopback shell's fixed port. 'self' covers all three cases;
          the former app: token is removed as app:// is no longer the document origin. -->
+    <!-- script-src includes http://www.youtube.com because youtube-player's
+         loadYouTubeIframeApi.js picks the document protocol (http: on the
+         loopback shell) when building the iframe_api URL. The https: variant
+         is retained for forward-compat / dev. -->
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https://i.ytimg.com https://*.ytimg.com; frame-src https://www.youtube-nocookie.com; script-src 'self' https://www.youtube.com;" />
+          content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https://i.ytimg.com https://*.ytimg.com; frame-src https://www.youtube-nocookie.com; script-src 'self' https://www.youtube.com http://www.youtube.com;" />
   </head>
 
   <body>

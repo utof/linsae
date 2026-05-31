@@ -18,7 +18,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "knip": "knip",
-    "smoke:capture": "node scripts/capture-smoke.mjs"
+    "smoke:capture": "node scripts/capture-smoke.mjs",
+    "smoke:thread": "node scripts/thread-smoke.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.100.14",

@@ -98,14 +98,18 @@ export function listNotes(db: DB, opts: { limit: number; before?: number }): Not
       ? 'WHERE deleted_at IS NULL AND created_at < ?'
       : 'WHERE deleted_at IS NULL'
   const params = opts.before !== undefined ? [opts.before, opts.limit] : [opts.limit]
-  return db
+  const rows = db
     .prepare(
-      `SELECT id, slug, body, type, created_at, updated_at, deleted_at
+      `SELECT id, slug, body, type, created_at, updated_at, deleted_at, source_kind, source_locator
        FROM notes ${where}
        ORDER BY created_at ASC, rowid ASC
        LIMIT ?`,
     )
-    .all(...params) as Note[]
+    .all(...params) as (Omit<Note, 'source_locator'> & { source_locator: string | null })[]
+  return rows.map((row) => ({
+    ...row,
+    source_locator: row.source_locator ? (JSON.parse(row.source_locator) as SourceLocator) : null,
+  }))
 }
 
 /**
