@@ -87,7 +87,7 @@ export function startLoopbackShell({
     const server = createServer((req, res) => {
       // GET-only gate.
       if (req.method !== 'GET') {
-        res.writeHead(405, { Allow: 'GET' })
+        res.writeHead(405, { Allow: 'GET', 'X-Content-Type-Options': 'nosniff' })
         res.end('Method Not Allowed')
         return
       }
@@ -101,15 +101,29 @@ export function startLoopbackShell({
       try {
         pathname = new URL(rawUrl, base).pathname
       } catch {
-        res.writeHead(400)
+        res.writeHead(400, { 'X-Content-Type-Options': 'nosniff' })
         res.end('Bad Request')
         return
       }
 
       const decoded = decodeURIComponent(pathname)
+
+      // Reject NUL bytes before any fs access.  `createReadStream` throws
+      // synchronously (ERR_INVALID_ARG_VALUE) for NUL-containing paths, and
+      // that happens before the 'error' listener is attached → uncaughtException
+      // → main-process crash.  Belt-and-suspenders: also guard here so we reply
+      // 400 cleanly instead of crashing.
+      // Why NUL is the trigger: NUL passes the traversal guard (it is not ".."),
+      // but every POSIX fs call treats it as a string terminator and throws.
+      if (decoded.includes('\0')) {
+        res.writeHead(400, { 'X-Content-Type-Options': 'nosniff' })
+        res.end('Bad Request')
+        return
+      }
+
       const fsPath = resolveAppRequest(decoded, { rendererDir, attachmentsDir })
       if (!fsPath) {
-        res.writeHead(400)
+        res.writeHead(400, { 'X-Content-Type-Options': 'nosniff' })
         res.end('Bad Request')
         return
       }
@@ -119,18 +133,29 @@ export function startLoopbackShell({
       const ext = extname(fsPath).toLowerCase()
       const contentType = MIME[ext] ?? 'application/octet-stream'
 
-      const stream = createReadStream(fsPath)
+      // Wrap createReadStream creation in try/catch so any other synchronous
+      // fs throw (e.g. a future Node version that adds new synchronous checks)
+      // cannot propagate past the request handler and crash the main process.
+      // The async 'error' handler below still covers ENOENT / EISDIR / etc.
+      let stream: ReturnType<typeof createReadStream>
+      try {
+        stream = createReadStream(fsPath)
+      } catch {
+        res.writeHead(400, { 'X-Content-Type-Options': 'nosniff' })
+        res.end('Bad Request')
+        return
+      }
       stream.once('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'ENOENT' || err.code === 'EISDIR') {
-          res.writeHead(404)
+          res.writeHead(404, { 'X-Content-Type-Options': 'nosniff' })
           res.end('Not Found')
         } else {
-          res.writeHead(500)
+          res.writeHead(500, { 'X-Content-Type-Options': 'nosniff' })
           res.end('Internal Server Error')
         }
       })
       stream.once('open', () => {
-        res.writeHead(200, { 'Content-Type': contentType })
+        res.writeHead(200, { 'Content-Type': contentType, 'X-Content-Type-Options': 'nosniff' })
         stream.pipe(res)
       })
     })

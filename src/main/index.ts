@@ -135,9 +135,24 @@ app.whenReady().then(async () => {
   // exactOptionalPropertyTypes: omit the key entirely rather than set port:undefined.
   // @see docs/specs/v0.2-localhost-shell.md §7 B3
   const shellBaseOpts = { rendererDir: join(__dirname, '../renderer'), attachmentsDir }
-  const shell = await startLoopbackShell(
-    process.env.ELECTRON_RENDERER_URL ? { ...shellBaseOpts, port: DEV_MEDIA_PORT } : shellBaseOpts,
-  )
+  const isDev = Boolean(process.env.ELECTRON_RENDERER_URL)
+  // In dev the renderer loads via ELECTRON_RENDERER_URL so only /_media/ is
+  // routed through the shell.  If DEV_MEDIA_PORT is already in use (e.g. a
+  // previous dev run still listening) we log and continue — /_media/ will 404
+  // but the app is otherwise functional.  In prod the shell serves the whole
+  // document origin so a failure there must still propagate (let it reject).
+  let shell: Awaited<ReturnType<typeof startLoopbackShell>>
+  if (isDev) {
+    try {
+      shell = await startLoopbackShell({ ...shellBaseOpts, port: DEV_MEDIA_PORT })
+    } catch (err) {
+      console.error('http-shell: dev shell failed to start (/_media/ will 404):', err)
+      // Fabricate a no-op shell handle so the rest of boot doesn't branch.
+      shell = { origin: `http://127.0.0.1:${DEV_MEDIA_PORT}`, close: () => Promise.resolve() }
+    }
+  } else {
+    shell = await startLoopbackShell(shellBaseOpts)
+  }
   app.on('will-quit', () => {
     void shell.close()
   })

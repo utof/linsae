@@ -128,4 +128,44 @@ describe('startLoopbackShell', () => {
     const res = await fetch(`${origin}/`)
     expect(res.headers.get('access-control-allow-origin')).toBeNull()
   })
+
+  // FIX 1: NUL-byte paths must be rejected with 400 before any fs call.
+  // `fetch` / `new URL` strip NUL bytes during normalisation, so we use the
+  // raw HTTP client (which sends the literal request line) to verify the guard.
+  it('GET /%00 (NUL byte) → 400, server does not crash', async () => {
+    const { port } = new URL(origin)
+    const res = await rawGet(`http://127.0.0.1:${port}/%00`)
+    expect(res.status).toBe(400)
+    // Confirm the server is still up by issuing a normal request after the
+    // NUL-byte probe.
+    const followUp = await fetch(`${origin}/`)
+    expect(followUp.status).toBe(200)
+  })
+
+  it('GET /_media/%00.png (NUL byte in media path) → 400, server does not crash', async () => {
+    const { port } = new URL(origin)
+    const res = await rawGet(`http://127.0.0.1:${port}/_media/%00.png`)
+    expect(res.status).toBe(400)
+    // Confirm the server is still up.
+    const followUp = await fetch(`${origin}/`)
+    expect(followUp.status).toBe(200)
+  })
+
+  // FIX 2: every response must carry X-Content-Type-Options: nosniff.
+  it('200 response includes x-content-type-options: nosniff', async () => {
+    const res = await fetch(`${origin}/`)
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+  })
+
+  it('404 response includes x-content-type-options: nosniff', async () => {
+    const res = await fetch(`${origin}/_media/absent.png`)
+    expect(res.status).toBe(404)
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+  })
+
+  it('405 response includes x-content-type-options: nosniff', async () => {
+    const res = await fetch(`${origin}/`, { method: 'POST' })
+    expect(res.status).toBe(405)
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+  })
 })
