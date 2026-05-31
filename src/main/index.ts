@@ -27,6 +27,7 @@
 
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import { app, BrowserWindow, Menu, shell } from 'electron'
 import { openDb } from './db/client'
 import { runMigrations } from './db/migrate'
@@ -48,6 +49,15 @@ if (!gotLock) {
 }
 
 let mainWindow: BrowserWindow | null = null
+
+// Boot timeline origin, set when app.whenReady() fires. Logged at each serial
+// boot step + at the renderer's first paint (ready-to-show) so the dev console
+// shows where startup time goes. ready-to-show now fires on the #boot-splash's
+// first paint (fast) rather than after React mounts — the delta makes that
+// improvement visible. @see src/renderer/index.html (#boot-splash)
+let bootStart = 0
+const bootMark = (label: string) =>
+  console.log(`[boot] ${label} +${Math.round(performance.now() - bootStart)}ms`)
 
 app.on('second-instance', () => {
   if (mainWindow) {
@@ -92,9 +102,32 @@ function createWindow(origin: string): BrowserWindow {
     // autoHideMenuBar would be a no-op and is omitted.
     frame: false,
     title: '',
+    // Match the #boot-splash / app canvas so the window's pre-paint frame isn't
+    // a white flash when we show it before ready-to-show (the dev cap below).
+    backgroundColor: '#FFFFFF',
     webPreferences: secureWebPreferences(join(__dirname, '../preload/index.js')),
   })
-  win.on('ready-to-show', () => win.show())
+  win.on('ready-to-show', () => {
+    bootMark('renderer first paint (ready-to-show)')
+    win.show()
+  })
+  win.webContents.once('dom-ready', () => bootMark('renderer dom-ready'))
+  win.webContents.once('did-finish-load', () => bootMark('renderer did-finish-load'))
+  // Dev: ready-to-show lags seconds behind the static #boot-splash's first paint
+  // while Vite compiles the renderer module graph on a cold start (~4.2s here vs
+  // ~67ms of main-process boot). Gating win.show() on ready-to-show therefore
+  // keeps the splash painting into an invisible window. Show after a short cap so
+  // the splash is visible during the compile; backgroundColor above keeps any
+  // pre-splash frame from flashing white. In prod ready-to-show fires fast, so
+  // we keep the clean ready-to-show path and skip the cap entirely.
+  if (process.env.ELECTRON_RENDERER_URL) {
+    setTimeout(() => {
+      if (!win.isDestroyed() && !win.isVisible()) {
+        bootMark('show (dev splash cap, pre-ready-to-show)')
+        win.show()
+      }
+    }, 500)
+  }
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: 'deny' }
@@ -108,6 +141,7 @@ function createWindow(origin: string): BrowserWindow {
 }
 
 app.whenReady().then(async () => {
+  bootStart = performance.now()
   const userData = app.getPath('userData')
   const notesDir = join(userData, 'notes')
   const logsDir = join(userData, 'logs')
@@ -119,12 +153,15 @@ app.whenReady().then(async () => {
   if (!existsSync(attachmentsDir)) mkdirSync(attachmentsDir, { recursive: true })
 
   const db = openDb(dbPath)
+  bootMark('db open')
   runMigrations(db)
+  bootMark('migrations')
   const nd = new NotesDir(notesDir)
   const report = reconcile(db, nd, logsDir)
   // Surfaces the reconciler bucket counts on every launch; renderer reads
   // `report.skipped` via `system:getReconcileSkipped` to drive the banner.
   console.log(`reconciled: ${JSON.stringify(report)}`)
+  bootMark(`reconcile (${report.scanned} notes)`)
 
   registerAllIpc(db, nd, notesDir, logsDir, report.skipped, attachmentsDir)
 
@@ -156,6 +193,7 @@ app.whenReady().then(async () => {
   app.on('will-quit', () => {
     void shell.close()
   })
+  bootMark('http-shell listening')
 
   // Role-only menu: no visible bar (frame:false has no menu slot), but the
   // editMenu / viewMenu / windowMenu roles register the standard keyboard

@@ -15,9 +15,55 @@
          future https document origin. -->
     <meta http-equiv="Content-Security-Policy"
           content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https://i.ytimg.com https://*.ytimg.com; frame-src https://www.youtube-nocookie.com; script-src 'self' https://www.youtube.com http://www.youtube.com;" />
+    <!-- Boot splash: a zero-JS skeleton painted on the FIRST frame so the window
+         (show:false → ready-to-show) appears immediately instead of waiting for
+         the whole JS module graph (React + markdown + KaTeX) to load and mount.
+         It lives OUTSIDE React's #root, so createRoot leaves it untouched; App
+         removes it (crossfade) once the notes query settles — covering both the
+         module-load gap and the notes-IPC gap with one skeleton. Colors are
+         hardcoded (not v21 CSS vars) because in dev the token CSS is injected by
+         JS and isn't present at this first paint. style-src allows inline CSS;
+         script-src forbids inline JS, so the skeleton is pure HTML+CSS. -->
+    <style>
+      #boot-splash {
+        position: fixed; inset: 0; z-index: 90000; background: #ffffff;
+        display: flex; flex-direction: column;
+        opacity: 1; transition: opacity 0.32s ease;
+      }
+      #boot-splash.boot-splash--hide { opacity: 0; pointer-events: none; }
+      #boot-splash .bs-topbar { height: 40px; flex: 0 0 auto; background: #fafafa; border-bottom: 1px solid #e6e6e6; }
+      #boot-splash .bs-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0 32px; }
+      #boot-splash .bs-feed {
+        flex: 1; width: 100%; max-width: 720px; margin: 0 auto;
+        display: flex; flex-direction: column; justify-content: flex-end;
+        gap: 14px; padding-bottom: 18px;
+      }
+      #boot-splash .bs-composer { width: 100%; max-width: 720px; margin: 0 auto 20px; height: 56px; border-radius: 10px; background: #fafafa; border: 1px solid #e6e6e6; }
+      #boot-splash .bs-bubble {
+        height: 30px; border-radius: 8px;
+        background-image: linear-gradient(90deg, #f4f4f4 0%, #ececec 40%, #f4f4f4 80%);
+        background-size: 300% 100%; animation: bs-shimmer 1.4s ease-in-out infinite;
+      }
+      #boot-splash .bs-tall { height: 64px; }
+      @keyframes bs-shimmer { 0% { background-position: 120% 0; } 100% { background-position: -120% 0; } }
+      @media (prefers-reduced-motion: reduce) { #boot-splash .bs-bubble { animation: none; } }
+    </style>
   </head>
 
   <body>
+    <div id="boot-splash" aria-hidden="true">
+      <div class="bs-topbar"></div>
+      <div class="bs-body">
+        <div class="bs-feed">
+          <div class="bs-bubble" style="width: 62%"></div>
+          <div class="bs-bubble" style="width: 80%"></div>
+          <div class="bs-bubble bs-tall" style="width: 54%"></div>
+          <div class="bs-bubble" style="width: 72%"></div>
+          <div class="bs-bubble" style="width: 44%"></div>
+        </div>
+        <div class="bs-composer"></div>
+      </div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

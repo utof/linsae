@@ -50,7 +50,7 @@ import { WindowFrame } from './topbar/WindowFrame'
  */
 export function App() {
   const queryClient = useQueryClient()
-  const { data: notes = [] } = useQuery({
+  const { data: notes = [], isPending: notesPending } = useQuery({
     queryKey: ['notes'],
     // limit: defaults to 100 via the Zod schema. The plan literal said 5000 but
     // NotesListInputSchema caps limit at 500 (zod-schemas.ts:60), so 5000 throws.
@@ -87,6 +87,23 @@ export function App() {
   useEffect(() => {
     setSubmitError(null)
   }, [editingNoteId, draftBody])
+
+  // Remove the static boot splash (index.html #boot-splash) once the notes
+  // query has settled. The splash paints on the first frame — before the JS
+  // module graph mounts — so the window appears immediately instead of after
+  // React is ready; keeping it until `notesPending` flips false also covers the
+  // post-mount notes-IPC gap, so the feed crossfades straight in with no
+  // "nothing yet" flash. The splash lives outside React's #root (createRoot
+  // never touches it), so we remove it imperatively. This effect runs after the
+  // commit that rendered the feed has painted, so we reveal a painted feed.
+  useEffect(() => {
+    if (notesPending) return
+    const splash = document.getElementById('boot-splash')
+    if (!splash) return
+    splash.classList.add('boot-splash--hide')
+    const t = window.setTimeout(() => splash.remove(), 360)
+    return () => window.clearTimeout(t)
+  }, [notesPending])
 
   // Synchronous slug-only resolver for the Markdown component's dangling
   // class pass. The full alias-aware resolver runs only on click (below).

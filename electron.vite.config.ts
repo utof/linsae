@@ -39,6 +39,26 @@ export default defineConfig({
       react({ babel: { plugins: ['babel-plugin-react-compiler'] } }),
     ],
     server: {
+      // Warm up the first-paint module graph at dev-server start so the
+      // renderer's first request doesn't waterfall through ~50 source files
+      // (each paying the Babel react-compiler pass) on a cold `pnpm dev`. This
+      // overlaps the transform with main-process boot + Electron window startup.
+      // Paths are relative to the renderer root (`src/renderer`, set by
+      // electron-vite). Only OUR source is listed — node_modules deps are
+      // already pre-bundled (node_modules/.vite/deps shows `discovered: none`),
+      // so `optimizeDeps.include` would be redundant. Measured: cold first paint
+      // ~4.2s vs warm ~1.2s, so the cold source-transform is the target here.
+      // @see https://vite.dev/guide/performance#warm-up-frequently-used-files
+      warmup: {
+        clientFiles: [
+          './src/main.tsx',
+          './src/App.tsx',
+          './src/feed/Feed.tsx',
+          './src/feed/NoteBubble.tsx',
+          './src/lib/markdown.tsx',
+          './src/composer/Composer.tsx',
+        ],
+      },
       // Proxy /_media/ to the loopback shell's fixed dev port so attachment
       // images are same-origin (relative /_media/<tail>) in the dev renderer.
       // In prod the loopback shell serves both the renderer bundle and /_media/
