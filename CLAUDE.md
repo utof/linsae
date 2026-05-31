@@ -41,15 +41,14 @@
 
 **Review-round cap (per artifact):** spec reviews = **1**, plan reviews = **1**. After the cap, accept residual nits, queue them for `gh issue create -l nit`, and proceed. (Numbers literal — bump to 2 if drift is observed.)
 
-**Nit threshold:** see `## Inline-fix gate` below. **Never** mention Claude Code / sessions / AI authorship in issue / PR / commit text.
+**Nit threshold:** see `## Inline-fix gate` below. **Never** mention Claude Code / sessions / AI authorship in issue / PR.
 
-## Inline-fix gate (ALL must hold; else `gh issue create -R utof/linsae -l nit`)
+## Inline-fix gate (ALL must hold; else `gh issue create -R utof/linsae -l nit`) p.s. REMINDER - DONT FORGET ABOUT THIS. also, if issue - check & include relevant tags
 **Scope: nits only.** Blockers (failing tests, spec / ADR violations, security regressions, hard-gate breaches) fix on the branch regardless of size — gate doesn't apply.
 
 **Hard gates (never relax — independent of model power):**
 - Diff touches no exported symbol, no public type, no config schema, no Zod schema, no DB/migration/ADR.
 - No new dep, no version bump, no lockfile churn.
-- No public-network surface (env var / secret / route / cron / webhook) added or renamed.
 
 **Capability-bounded gates (Opus-era ceilings; relax further only with measurement):**
 - ≤4 impl files (tests / docs / fixtures don't count).
