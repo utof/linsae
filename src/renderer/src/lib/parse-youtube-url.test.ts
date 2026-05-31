@@ -20,4 +20,11 @@ describe('parseYouTubeUrl', () => {
     expect(parseYouTubeUrl('https://vimeo.com/123')).toBeNull()
     expect(parseYouTubeUrl('just a note')).toBeNull()
   })
+  it('rejects lookalike domains that merely contain the host as a substring', () => {
+    expect(parseYouTubeUrl('https://notyoutu.be/dQw4w9WgXcQ')).toBeNull()
+    expect(parseYouTubeUrl('https://soyoutube.com/watch?v=dQw4w9WgXcQ')).toBeNull()
+  })
+  it('still parses legitimate subdomains (m./music.)', () => {
+    expect(parseYouTubeUrl('https://m.youtube.com/watch?v=dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ')
+  })
 })

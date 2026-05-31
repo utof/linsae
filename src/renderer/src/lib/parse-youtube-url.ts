@@ -16,12 +16,16 @@
  */
 export function parseYouTubeUrl(text: string): string | null {
   // Regex explanation:
+  //   (?<![\w-])
+  //     left-boundary so the host must START a domain label — rejects lookalike
+  //     domains like `notyoutu.be` / `soyoutube.com` (preceded by a word char),
+  //     while still allowing scheme/`www.`/subdomain/space/start prefixes
   //   (?:youtu\.be/|(?:youtube(?:-nocookie)?\.com)/(?:watch\?(?:\S*?&)*?v=|embed/))
   //     matches the host+path prefix for all three supported URL forms
   //   ([A-Za-z0-9_-]{11})
   //     captures exactly the 11-character video ID (YouTube's fixed-length format)
   const RE =
-    /(?:youtu\.be\/|(?:youtube(?:-nocookie)?\.com)\/(?:watch\?(?:\S*?&)*?v=|embed\/))([A-Za-z0-9_-]{11})/
+    /(?<![\w-])(?:youtu\.be\/|(?:youtube(?:-nocookie)?\.com)\/(?:watch\?(?:\S*?&)*?v=|embed\/))([A-Za-z0-9_-]{11})/
 
   const match = RE.exec(text)
   return match?.[1] ?? null
