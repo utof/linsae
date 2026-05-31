@@ -23,6 +23,7 @@
  */
 
 import { useQuery } from '@tanstack/react-query'
+import { useMemo } from 'react'
 import type { Attachment, Note } from '../../../shared/types'
 import { api } from '../lib/api'
 import { clusterByPause, partitionAnchorless, sortForMode } from './rail-layout'
@@ -93,32 +94,34 @@ export function useThreadNotes(videoNoteId: string, sortMode: SortMode): UseThre
     enabled: !!videoNoteId,
   })
 
-  const items: ThreadItem[] = data.map(({ note, attachment }) => ({
-    id: note.id,
-    t: note.source_locator?.t ?? null,
-    createdAt: note.created_at,
-    note,
-    attachment,
-  }))
+  // Memoize the derived layout on the (stable) react-query result + sortMode so
+  // the arrays keep referential identity across playhead-tick re-renders — else
+  // every Rail <Markdown> re-parses (incl. KaTeX) on each ~5Hz tick, since the
+  // fresh objects defeat the React Compiler's auto-memo of the bubbles. See #51.
+  const derived = useMemo(() => {
+    const items: ThreadItem[] = data.map(({ note, attachment }) => ({
+      id: note.id,
+      t: note.source_locator?.t ?? null,
+      createdAt: note.created_at,
+      note,
+      attachment,
+    }))
+    const sorted = sortForMode(items, sortMode) as ThreadItem[]
+    const { anchored, anchorless } = partitionAnchorless(items)
+    // clusterByPause accepts { id, t, createdAt } structurally; cast the result
+    // back to ThreadItemCluster[] since the function preserves object identity
+    // (no reconstruction — it pushes existing refs into the clusters array).
+    const clusters = clusterByPause(anchored) as unknown as ThreadItemCluster[]
+    return {
+      sorted,
+      clusters,
+      // partitionAnchorless preserves object identity (no reconstruction);
+      // cast to ThreadItem[] so callers get note/attachment fields.
+      anchorless: anchorless as unknown as ThreadItem[],
+      noteCount: items.length,
+      openQuestionCount: items.filter((i) => i.note.type === 'question').length,
+    }
+  }, [data, sortMode])
 
-  const sorted = sortForMode(items, sortMode) as ThreadItem[]
-  const { anchored, anchorless } = partitionAnchorless(items)
-  // clusterByPause accepts { id, t, createdAt } structurally; cast the result
-  // back to ThreadItemCluster[] since the function preserves object identity
-  // (no reconstruction — it pushes existing refs into the clusters array).
-  const clusters = clusterByPause(anchored) as unknown as ThreadItemCluster[]
-
-  const noteCount = items.length
-  const openQuestionCount = items.filter((i) => i.note.type === 'question').length
-
-  return {
-    sorted,
-    clusters,
-    // partitionAnchorless preserves object identity (no reconstruction);
-    // cast to ThreadItem[] so callers get note/attachment fields.
-    anchorless: anchorless as unknown as ThreadItem[],
-    noteCount,
-    openQuestionCount,
-    isLoading,
-  }
+  return { ...derived, isLoading }
 }

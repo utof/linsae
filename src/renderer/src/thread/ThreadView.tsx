@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, Clock, Film } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { api } from '../lib/api'
 import { mediaUrlFromPath } from '../lib/media-url'
@@ -243,7 +243,13 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
 
   // ── derived transport values ──────────────────────────────────────────────
 
-  const markers = markerPositions(sorted, duration).map((m) => m.t)
+  // Memoized so the array identity is stable across playhead ticks (sorted is
+  // now memoized in useThreadNotes); otherwise TransportBar gets a fresh markers
+  // array every ~5Hz tick. See #51.
+  const markers = useMemo(
+    () => markerPositions(sorted, duration).map((m) => m.t),
+    [sorted, duration],
+  )
 
   // ── render ────────────────────────────────────────────────────────────────
 

@@ -175,4 +175,21 @@ describe('useThreadNotes', () => {
     await waitFor(() => expect(result.current.isLoading).toBe(false))
     expect(mock.links.commentsOf).toHaveBeenCalledWith({ noteId: 'vid-abc' })
   })
+
+  it('returns referentially stable sorted/clusters/anchorless across re-renders (regression #51)', async () => {
+    // The thread playhead ticks ~5Hz (usePlayer); each tick re-renders the
+    // consumer. If this hook rebuilds its derived arrays every render, every
+    // Rail <Markdown> re-renders (+ re-parses KaTeX) on every tick. The derived
+    // data must be memoized on the stable query result so identities survive
+    // playhead-driven re-renders and the React Compiler can skip the bubbles.
+    const { result, rerender } = renderHook(() => useThreadNotes('video-note-id', 'video'), {
+      wrapper: makeWrapper(),
+    })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+    const first = result.current
+    rerender() // simulate a parent re-render (playhead tick) with UNCHANGED data
+    expect(result.current.sorted).toBe(first.sorted)
+    expect(result.current.clusters).toBe(first.clusters)
+    expect(result.current.anchorless).toBe(first.anchorless)
+  })
 })
