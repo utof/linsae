@@ -95,4 +95,15 @@ describe('notes queries', () => {
     expect(n?.source_kind).toBeNull()
     expect(n?.source_locator).toBeNull()
   })
+
+  it('listNotes hydrates source_kind and parses source_locator for a source note', () => {
+    db.prepare(
+      `INSERT INTO notes (id, slug, body, type, created_at, updated_at, source_kind, source_locator)
+       VALUES ('v1','v1','b','source',0,0,'youtube',?)`,
+    ).run(JSON.stringify({ media: 'youtube', video_id: 'dQw4w9WgXcQ', t: 83 }))
+    const [n] = listNotes(db, { limit: 10 })
+    expect(n?.source_kind).toBe('youtube')
+    expect(n?.source_locator).toEqual({ media: 'youtube', video_id: 'dQw4w9WgXcQ', t: 83 })
+    expect(typeof n?.source_locator).toBe('object') // guards against the string-not-parsed regression
+  })
 })
