@@ -342,9 +342,17 @@ export function NoteBubble({
 
   // Source-kind branch: render the MediaFeedNoteContainer card instead of a
   // standard text bubble. Checked here (after all hooks) so the Rules of Hooks
-  // are satisfied. The condition uses source_kind (not type === 'source') so the
-  // branch fires only when a YouTube video_id is present in source_locator.
-  if (note.source_kind === 'youtube' && note.source_locator?.video_id != null) {
+  // are satisfied. Requires type === 'source' to exclude comment-notes (type:
+  // 'claim'/'question') that also carry source_kind:'youtube' + source_locator.t
+  // — those must render as normal bubbles showing their markdown body/screenshot.
+  // Why: comment-notes created by ⌘⇧C have { type:'claim', source_kind:'youtube',
+  // source_locator:{ media:'youtube', video_id, t } }; without the type guard
+  // they incorrectly render as video cards in the main feed.
+  const isSource =
+    note.type === 'source' &&
+    note.source_kind === 'youtube' &&
+    note.source_locator?.video_id != null
+  if (isSource) {
     return <MediaFeedNoteContainer note={note} {...(onOpenThread ? { onOpenThread } : {})} />
   }
 

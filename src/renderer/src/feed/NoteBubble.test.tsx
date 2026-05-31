@@ -533,6 +533,7 @@ describe('NoteBubble', () => {
     api.links.commentsOf.mockResolvedValue([])
     const sourceNote: Note = {
       ...baseNote,
+      type: 'source',
       source_kind: 'youtube',
       source_locator: { media: 'youtube', video_id: 'abc123' },
     }
@@ -568,6 +569,7 @@ describe('NoteBubble', () => {
     const onOpenThread = vi.fn()
     const sourceNote: Note = {
       ...baseNote,
+      type: 'source',
       source_kind: 'youtube',
       source_locator: { media: 'youtube', video_id: 'abc123' },
     }
@@ -608,5 +610,41 @@ describe('NoteBubble', () => {
     )
     expect(screen.getByText('hello')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /open video notes/i })).not.toBeInTheDocument()
+  })
+
+  it('youtube comment-note (type:claim + source_locator.t) renders as a normal bubble, NOT a video card', () => {
+    // A comment-note posted by ⌘⇧C has type:'claim', source_kind:'youtube',
+    // and source_locator with a timestamp (t). Before the isSource fix these
+    // notes incorrectly rendered as MediaFeedNoteContainer video cards in the
+    // main feed because the old predicate only checked source_kind + video_id.
+    installMockApi()
+    const commentNote: Note = {
+      id: 'c1',
+      slug: 'c1',
+      body: 'a comment',
+      type: 'claim',
+      created_at: 1737000000000,
+      updated_at: 1737000000000,
+      deleted_at: null,
+      source_kind: 'youtube',
+      source_locator: { media: 'youtube', video_id: 'abc', t: 42 },
+    }
+    render(
+      <NoteBubble
+        note={commentNote}
+        focused={false}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    // Must NOT render the video card affordance.
+    expect(screen.queryByRole('button', { name: /open video notes/i })).not.toBeInTheDocument()
+    // Must render its markdown body as a standard bubble.
+    expect(screen.getByText('a comment')).toBeInTheDocument()
   })
 })
