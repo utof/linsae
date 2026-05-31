@@ -1,20 +1,26 @@
 # Lefthook v2 pre-commit hooks (order matches CLAUDE.md ## Precommit).
 # See: https://lefthook.dev/configuration/
+#
+# Docs-only commits (markdown — docs/, adrs/, *.md) skip the heavy steps
+# (typecheck/rebuild/test/knip) via `scripts/staged-has-code.sh`: none of them
+# can be affected by prose, and it spares ~2min + a native rebuild per ADR/docs
+# commit. The hook still runs (we never --no-verify); biome + design-tokens
+# (both trivial) stay on for every commit.
 pre-commit:
   parallel: false
   commands:
     biome:
       run: pnpm lint:check
     typecheck:
-      run: pnpm typecheck
-    # `pnpm dev` leaves better-sqlite3 in Electron ABI; vitest runs under Node.
-    # Rebuilding unconditionally is a ~5s no-op when already aligned and
-    # eliminates the manual rebuild dance between dev and commit. See #24.
+      run: if ./scripts/staged-has-code.sh; then pnpm typecheck; else echo "↳ docs-only commit — skipping typecheck"; fi
+    # `pnpm dev` leaves better-sqlite3 in Electron ABI; vitest runs under Node, so
+    # rebuild for Node before the tests (#24). Skipped on docs-only commits — no
+    # tests run, and skipping also preserves the Electron binding for `pnpm dev`.
     rebuild:
-      run: pnpm rebuild:node
+      run: if ./scripts/staged-has-code.sh; then pnpm rebuild:node; else echo "↳ docs-only commit — skipping rebuild"; fi
     test:
-      run: pnpm test
+      run: if ./scripts/staged-has-code.sh; then pnpm test; else echo "↳ docs-only commit — skipping test"; fi
     knip:
-      run: pnpm knip
+      run: if ./scripts/staged-has-code.sh; then pnpm knip; else echo "↳ docs-only commit — skipping knip"; fi
     design-tokens:
       run: ./scripts/check-design-tokens.sh
