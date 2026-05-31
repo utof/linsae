@@ -3,6 +3,7 @@ import { ChevronLeft, Clock, Film } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import { usePlayer } from '../yt/usePlayer'
+import { Rail } from './Rail'
 import { markerPositions } from './rail-layout'
 import { TransportBar } from './TransportBar'
 import { useThreadNotes } from './useThreadNotes'
@@ -90,7 +91,7 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   // ── sort + thread notes ───────────────────────────────────────────────────
 
   const [sortMode, setSortMode] = useState<'video' | 'capture'>('video')
-  const { sorted } = useThreadNotes(noteId, sortMode)
+  const { sorted, clusters, anchorless } = useThreadNotes(noteId, sortMode)
 
   // ── follow state ──────────────────────────────────────────────────────────
 
@@ -231,38 +232,17 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
             onToggle={() => setSortMode((m) => (m === 'video' ? 'capture' : 'video'))}
           />
 
-          {/* Minimal note list — D4 will replace this with the full Rail.
-              Each item exposes data-note-id and data-testid so tests can assert order. */}
-          <ol
-            style={{
-              listStyle: 'none',
-              margin: 0,
-              padding: 0,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 8,
+          {/* The thread rendering: video-order rail (default) or capture feed. */}
+          <Rail
+            clusters={clusters}
+            anchorless={anchorless}
+            sorted={sorted}
+            mode={sortMode}
+            playheadT={currentTime}
+            onSeekNote={(t) => {
+              void player.seekTo(t)
             }}
-          >
-            {sorted.map((item) => (
-              <li
-                key={item.id}
-                data-testid="thread-note-item"
-                data-note-id={item.id}
-                style={{
-                  fontSize: 14,
-                  lineHeight: 'var(--lh-normal)',
-                  color: 'var(--fg-1)',
-                  background: '#fff',
-                  border: '1px solid var(--border-0)',
-                  borderRadius: 'var(--r-5)',
-                  padding: '9px 11px',
-                }}
-              >
-                {/* Rail mounts here (next task) */}
-                {item.note.body}
-              </li>
-            ))}
-          </ol>
+          />
         </div>
       </div>
 

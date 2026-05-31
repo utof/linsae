@@ -118,32 +118,23 @@ describe('ThreadView', () => {
     await waitFor(() => expect(screen.getByText('note at ten seconds')).toBeInTheDocument())
     await waitFor(() => expect(screen.getByText('note at five seconds')).toBeInTheDocument())
 
-    // In video-time mode: note-B (t=5) before note-A (t=10)
-    const getOrder = () => {
-      const items = screen.getAllByTestId('thread-note-item')
-      return items.map((el) => el.getAttribute('data-note-id'))
-    }
-    expect(getOrder()).toEqual(['note-b', 'note-a'])
+    // Order is asserted via the rail's rendered note bodies in DOM order.
+    const getOrder = () => screen.getAllByTestId('rail-note').map((el) => el.textContent?.trim())
+    // In video-time mode: note-B (t=5, "five") before note-A (t=10, "ten")
+    expect(getOrder()).toEqual(['note at five seconds', 'note at ten seconds'])
 
-    // Toggle to capture-time mode: note-B (created_at=100) still first, note-A (created_at=200) second
-    // But let's check the pill toggles the icon correctly AND re-orders
     const pill = screen.getByLabelText('sort mode')
-    // In video mode, Film icon is shown — pill button exists
     expect(pill).toBeInTheDocument()
 
-    // Click to switch to capture mode
+    // Click to switch to capture mode. note-B created_at=100 < note-A created_at=200
+    // → same [b, a] order here (both modes coincide for this data).
     fireEvent.click(pill)
-
-    // In capture mode: sorted by createdAt — note-B (100) before note-A (200), same order here
-    // To observe a difference let's verify the Film icon changed to Clock
-    // by checking the aria-label on the sort pill stays correct
     expect(screen.getByLabelText('sort mode')).toBeInTheDocument()
+    expect(getOrder()).toEqual(['note at five seconds', 'note at ten seconds'])
 
-    // In capture mode: note-B created_at=100 < note-A created_at=200 → same order [b, a]
-    // This is correct: both modes coincide for this data.
-    // Let's also confirm toggling back restores video order
+    // Toggling back restores video order.
     fireEvent.click(pill)
-    expect(getOrder()).toEqual(['note-b', 'note-a'])
+    expect(getOrder()).toEqual(['note at five seconds', 'note at ten seconds'])
   })
 
   it('(d) player host element is in the DOM', async () => {
@@ -161,13 +152,12 @@ describe('ThreadView', () => {
     renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
     await waitFor(() => expect(screen.getByText('note at ten seconds')).toBeInTheDocument())
 
-    // Video mode: by t → note-B (t=5) first, then note-A (t=10)
-    const getOrder = () =>
-      screen.getAllByTestId('thread-note-item').map((el) => el.getAttribute('data-note-id'))
-    expect(getOrder()).toEqual(['note-b', 'note-a'])
+    // Video mode: by t → note-B (t=5, "five") first, then note-A (t=10, "ten")
+    const getOrder = () => screen.getAllByTestId('rail-note').map((el) => el.textContent?.trim())
+    expect(getOrder()).toEqual(['note at five seconds', 'note at ten seconds'])
 
     // Switch to capture mode: note-A created_at=50 < note-B created_at=100 → note-A first
     fireEvent.click(screen.getByLabelText('sort mode'))
-    expect(getOrder()).toEqual(['note-a', 'note-b'])
+    expect(getOrder()).toEqual(['note at ten seconds', 'note at five seconds'])
   })
 })
