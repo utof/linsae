@@ -144,13 +144,22 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   // create, the pending attachment is linked to the new note.
   const post = useMutation({
     mutationFn: async ({ body, t }: { body: string; t: number }) => {
-      const tAnchor = pendingFrame ? pendingFrame.t : t
+      // FIX 2: guard against posting before the video note has loaded — an
+      // empty commentOn would create an orphan note with no thread parent.
+      // Why: note resolves async; the composer is mounted before it settles.
+      if (!note?.slug) throw new Error('video note not loaded')
+      // FIX 1: snapshot pendingFrame at the top of the async fn to avoid a
+      // stale-closure bug. If a second capture fires during the await below,
+      // the re-assigned React state would make the SECOND capture's attachmentId
+      // land on this (first) note — wrong. Using a local constant prevents that.
+      const frame = pendingFrame
+      const tAnchor = frame ? frame.t : t
       const created = await api.notes.create(body, 'claim', {
         source_kind: 'youtube',
         source_locator: { media: 'youtube', video_id: videoId, t: tAnchor },
-        commentOn: note?.slug ?? '',
+        commentOn: note.slug,
       })
-      if (pendingFrame) await api.attachments.attachToNote(pendingFrame.attachmentId, created.id)
+      if (frame) await api.attachments.attachToNote(frame.attachmentId, created.id)
       return created
     },
     onSuccess: () => {

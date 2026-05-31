@@ -284,3 +284,41 @@ describe('ThreadView capture flow', () => {
     expect(screen.queryByRole('img', { name: /frame/i })).toBeNull()
   })
 })
+
+// ---------------------------------------------------------------------------
+// FIX 2: guard against empty commentOn when note hasn't loaded
+// ---------------------------------------------------------------------------
+
+describe('ThreadView FIX 2 — post guard when note not loaded', () => {
+  it('does not call notes.create when note is null (commentOn guard throws)', async () => {
+    // Override notes.get to return null so `note` never populates.
+    mockApi.notes.get.mockResolvedValue(null)
+    // Capture still works (videoId will be '' but the mock accepts anything).
+    mockApi.youtube.capture.mockResolvedValue({
+      id: 'att3',
+      path: '/store/x.png',
+      sha256: 'x',
+      width: 480,
+      height: 270,
+      devicePixelRatio: 1,
+    })
+
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    // Wait for render to settle (title won't appear since videoSource has no title).
+    await waitFor(() => expect(screen.getByLabelText('back')).toBeInTheDocument())
+
+    // Trigger capture to get a pending frame, then try to post.
+    fireEvent.click(screen.getByLabelText('capture frame'))
+    await waitFor(() => expect(mockApi.youtube.capture).toHaveBeenCalled())
+
+    // Type a caption and submit.
+    const textarea = screen.getByRole('textbox')
+    fireEvent.change(textarea, { target: { value: 'caption' } })
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+
+    // The mutationFn should throw before reaching notes.create.
+    // Allow React Query a tick to process the mutation.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(mockApi.notes.create).not.toHaveBeenCalled()
+  })
+})

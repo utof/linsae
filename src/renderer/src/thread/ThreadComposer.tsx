@@ -127,8 +127,17 @@ export function ThreadComposer({
 
   // ── submit ────────────────────────────────────────────────────────────────
   const submit = () => {
-    if (!hasDraft) return
-    const t = chipTime({ focused: effectiveFocused, hasDraft, livePlayhead, frozenAt })
+    // FIX 4: allow an empty-caption post when a pending frame is present —
+    // the screenshot IS the content. A truly empty post (no draft, no frame)
+    // is still a no-op.
+    if (!hasDraft && !pendingFrame) return
+    // FIX 3: when a frame is pending the post MUST anchor to the capture
+    // moment (pendingFrame.t), not the live chip time — they can differ.
+    // Using the same value for both the chip display and onPost keeps them
+    // consistent from the user's perspective.
+    const t = pendingFrame
+      ? pendingFrame.t
+      : chipTime({ focused: effectiveFocused, hasDraft, livePlayhead, frozenAt })
     onPost({ body: draft, t })
     setDraft('')
     setManuallyFrozen(false)
@@ -181,7 +190,12 @@ export function ThreadComposer({
   }
 
   // ── displayed time ────────────────────────────────────────────────────────
-  const displaySeconds = chipTime({ focused: effectiveFocused, hasDraft, livePlayhead, frozenAt })
+  // FIX 3: when a pending frame is set, the chip must display the CAPTURE
+  // moment (pendingFrame.t) so it matches what submit() will post. Without
+  // this, the chip could show a different second than the posted anchor.
+  const displaySeconds = pendingFrame
+    ? pendingFrame.t
+    : chipTime({ focused: effectiveFocused, hasDraft, livePlayhead, frozenAt })
   const displayTime = formatClock(displaySeconds)
 
   // ── render ────────────────────────────────────────────────────────────────

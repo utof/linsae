@@ -250,3 +250,63 @@ describe('ThreadComposer', () => {
     expect(screen.getByTestId('composer-chip')).toHaveTextContent('0:45')
   })
 })
+
+// ── FIX 3 + FIX 4: pending frame tests ───────────────────────────────────────
+
+describe('ThreadComposer pendingFrame behavior', () => {
+  it('(FIX 3) chip displays formatClock(pendingFrame.t) when a frame is pending', () => {
+    // pendingFrame.t = 42 → chip should show "0:42", NOT the live chipTime
+    render(
+      <ThreadComposer
+        {...makeProps({ livePlayhead: 30 })}
+        pendingFrame={{ thumbnailUrl: 'x', t: 42 }}
+      />,
+    )
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('0:42')
+  })
+
+  it('(FIX 4) empty-caption Enter with pendingFrame calls onPost with body="" and t=pendingFrame.t', () => {
+    // FIX 4: !hasDraft alone must NOT block submit when a pending frame exists.
+    // FIX 3: the posted t must be pendingFrame.t (42), not the live chip time.
+    const onPost = vi.fn()
+    render(
+      <ThreadComposer
+        {...makeProps({ livePlayhead: 30, onPost })}
+        pendingFrame={{ thumbnailUrl: 'x', t: 42 }}
+      />,
+    )
+    const textarea = screen.getByRole('textbox')
+    // Leave textarea EMPTY, press Enter
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+
+    expect(onPost).toHaveBeenCalledOnce()
+    expect(onPost).toHaveBeenCalledWith({ body: '', t: 42 })
+  })
+
+  it('(FIX 4) empty Enter with NO pendingFrame does NOT call onPost (truly empty post)', () => {
+    const onPost = vi.fn()
+    render(<ThreadComposer {...makeProps({ livePlayhead: 30, onPost })} pendingFrame={null} />)
+    const textarea = screen.getByRole('textbox')
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+    expect(onPost).not.toHaveBeenCalled()
+  })
+
+  it('(FIX 3) chip shows capture-t even when livePlayhead differs', () => {
+    // Ensure the pendingFrame.t wins over livePlayhead for the chip display.
+    const { rerender } = render(
+      <ThreadComposer
+        {...makeProps({ livePlayhead: 10 })}
+        pendingFrame={{ thumbnailUrl: 'x', t: 99 }}
+      />,
+    )
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:39') // 99 s
+    // Advancing livePlayhead must not change the chip while frame is pending
+    rerender(
+      <ThreadComposer
+        {...makeProps({ livePlayhead: 200 })}
+        pendingFrame={{ thumbnailUrl: 'x', t: 99 }}
+      />,
+    )
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:39')
+  })
+})
