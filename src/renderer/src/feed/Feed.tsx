@@ -195,6 +195,16 @@ export function Feed({
   const morphingIndexRef = useRef<number | null>(null)
   morphingIndexRef.current = morphingIndex
   const suppressThumbResizeRef = useRef<boolean>(false)
+  // Collapsed-state geometry (item height + constant chrome), captured for free
+  // when a note is EXPANDED — at that instant the note is still rendered
+  // collapsed, so its pre-swap layout IS the collapse target. Reused on collapse
+  // so we DON'T re-render the heavy `<Markdown>` (full markdown + KaTeX) just to
+  // measure: the old full→truncated→full measure-swap froze the animation for
+  // hundreds of ms on KaTeX-heavy notes in dev (#48, #50). `expandedIds` is
+  // ephemeral, so every collapse follows an expand this session → the cache is
+  // populated; the measure-swap stays as a fallback. Stale geometry (resize/edit
+  // between expand and collapse) is reconciled by the morph's final remeasure.
+  const collapsedGeomRef = useRef<Map<string, { itemH: number; nonBodyH: number }>>(new Map())
   const { run: runMorph, cancel: cancelMorph } = useExpandCollapseMorph({
     virtualizer,
     scrollerEl,
@@ -271,18 +281,41 @@ export function Feed({
       const scrollTopStart = scroller.scrollTop
 
       // Detach measureElement + switch anchorTo to 'start' (render-body overrides
-      // keyed on morphingIndex) BEFORE the measurement swaps, so they don't
-      // trigger the virtualizer's own resize/scroll reactions.
+      // keyed on morphingIndex) BEFORE any measurement, so they don't trigger the
+      // virtualizer's own resize/scroll reactions. This re-render does NOT change
+      // the morphing bubble's props, so its memoized `<Markdown>` is untouched.
       flushSync(() => setMorphingIndex(index))
       const startItemH = itemEl.getBoundingClientRect().height
 
-      // Commit the END content to measure its true size + chrome.
-      flushSync(() => setExpandedIds((prev) => (collapsing ? removeId(prev, id) : addId(prev, id))))
-      const endItemH = itemEl.getBoundingClientRect().height
-      const nonBodyH = endItemH - bodyEl.getBoundingClientRect().height
-      // Collapse: restore FULL content so the roll-up animates over real text;
-      // finish() re-commits the collapse. Expand: leave it expanded (end state).
-      if (collapsing) flushSync(() => setExpandedIds((prev) => addId(prev, id)))
+      let endItemH: number
+      let nonBodyH: number
+      const cachedCollapsed = collapsedGeomRef.current.get(id)
+      if (collapsing && cachedCollapsed) {
+        // Collapse via geometry cached at expand time — NO content swap, so the
+        // heavy full `<Markdown>` (already mounted) is not re-rendered. The full
+        // content stays mounted for the roll-up; `onCommit` truncates at finish
+        // and the final remeasure reconciles any staleness. See #50.
+        endItemH = cachedCollapsed.itemH
+        nonBodyH = cachedCollapsed.nonBodyH
+      } else {
+        // Expand (or a collapse with no cached geometry — note wasn't on screen
+        // when expanded). On expand, capture the CURRENT (collapsed) geometry for
+        // a future collapse before swapping; then commit the END content to
+        // measure its true size + chrome.
+        if (!collapsing) {
+          collapsedGeomRef.current.set(id, {
+            itemH: startItemH,
+            nonBodyH: startItemH - bodyEl.getBoundingClientRect().height,
+          })
+        }
+        flushSync(() =>
+          setExpandedIds((prev) => (collapsing ? removeId(prev, id) : addId(prev, id))),
+        )
+        endItemH = itemEl.getBoundingClientRect().height
+        nonBodyH = endItemH - bodyEl.getBoundingClientRect().height
+        // Collapse fallback: restore FULL content so the roll-up animates over real text.
+        if (collapsing) flushSync(() => setExpandedIds((prev) => addId(prev, id)))
+      }
 
       runMorph(
         {
