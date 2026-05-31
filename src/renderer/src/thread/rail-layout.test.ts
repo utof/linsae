@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  activeClusterIndex,
   clusterByPause,
   jumpPillVisible,
   logGapHeight,
@@ -61,6 +62,32 @@ describe('markerPositions', () => {
   it('is empty for a non-positive duration', () => {
     expect(markerPositions([n('a', 30)], 0)).toEqual([])
     expect(markerPositions([n('a', 30)], -1)).toEqual([])
+  })
+})
+
+describe('activeClusterIndex', () => {
+  const c = (t: number) => ({ t })
+
+  it('returns -1 for an empty cluster list', () => {
+    expect(activeClusterIndex([], 42)).toBe(-1)
+  })
+
+  it('returns -1 when the playhead precedes every cluster', () => {
+    expect(activeClusterIndex([c(30), c(90)], 10)).toBe(-1)
+  })
+
+  it('returns the lower index when the playhead falls between two clusters', () => {
+    // playhead 60 is between t=30 (idx 0) and t=90 (idx 1) → idx 0.
+    expect(activeClusterIndex([c(30), c(90)], 60)).toBe(0)
+  })
+
+  it('returns the last index when the playhead is past every cluster', () => {
+    expect(activeClusterIndex([c(30), c(90)], 200)).toBe(1)
+  })
+
+  it('is inclusive on an exact-match timestamp', () => {
+    expect(activeClusterIndex([c(30), c(90)], 90)).toBe(1)
+    expect(activeClusterIndex([c(30), c(90)], 30)).toBe(0)
   })
 })
 

@@ -1,16 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, Clock, Film } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { api } from '../lib/api'
 import { mediaUrlFromPath } from '../lib/media-url'
 import { getPlayer } from '../yt/playerSingleton'
 import { usePlayer } from '../yt/usePlayer'
+import { JumpPill } from './JumpPill'
 import { Rail } from './Rail'
-import { markerPositions } from './rail-layout'
+import { activeClusterIndex, jumpPillVisible, markerPositions } from './rail-layout'
 import { ThreadComposer } from './ThreadComposer'
 import { TransportBar } from './TransportBar'
 import { useThreadNotes } from './useThreadNotes'
+
+/** ms the accent flash ring stays on a cluster after follow-scroll / click-to-seek. */
+const FLASH_MS = 600
 
 /**
  * Centered content column width — matches ThreadView.jsx in the design-system
@@ -100,6 +104,67 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   // ── follow state ──────────────────────────────────────────────────────────
 
   const [followOn, setFollowOn] = useState(true)
+
+  // ── follow auto-scroll · jump-pill · flash (spec §319–322) ──────────────────
+  // The active cluster is the one the playhead currently sits in. `scrollRef`
+  // owns the scrolling notes column; `flashClusterIdx` paints a transient accent
+  // ring on a cluster after follow-scroll / click-to-seek (cleared after FLASH_MS).
+  const activeIdx = activeClusterIndex(clusters, currentTime)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [flashClusterIdx, setFlashClusterIdx] = useState(-1)
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const [pillVisible, setPillVisible] = useState(false)
+
+  // Scroll a cluster's row into view by its data-cluster-index, then flash it.
+  // Why a selector (not refs): the row lives inside Rail; addressing it by a
+  // stable data attribute keeps Rail's prop surface minimal. CRITICAL: this is
+  // only ever called from explicit seek/follow — never from a scroll handler —
+  // so scrolling the list can never move playback.
+  const scrollClusterIntoView = useCallback((idx: number) => {
+    if (idx < 0) return
+    const el = scrollRef.current?.querySelector(`[data-cluster-index="${idx}"]`)
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    setFlashClusterIdx(idx)
+    clearTimeout(flashTimerRef.current)
+    flashTimerRef.current = setTimeout(() => setFlashClusterIdx(-1), FLASH_MS)
+  }, [])
+
+  // Follow auto-scroll: when follow is on and the active cluster changes, bring
+  // it into view + flash. Keyed on [activeIdx, followOn] so toggling follow ON
+  // re-syncs, and a playhead change with follow OFF does nothing.
+  useEffect(() => {
+    if (followOn && activeIdx >= 0) scrollClusterIntoView(activeIdx)
+  }, [activeIdx, followOn, scrollClusterIntoView])
+
+  // Jump-pill visibility: measure the active cluster's top vs the scroll
+  // container's rect (predicate is pure — jumpPillVisible). The row's viewport
+  // position only changes when the active cluster, sort/follow state, or the
+  // user's scroll changes — so this is keyed on those, plus the onScroll handler.
+  // Reading geometry here never seeks (no scroll→playback coupling).
+  const measurePill = useCallback(() => {
+    const container = scrollRef.current
+    const row = container?.querySelector(`[data-cluster-index="${activeIdx}"]`)
+    if (!container || !row) {
+      setPillVisible(false)
+      return
+    }
+    const view = container.getBoundingClientRect()
+    const playheadY = row.getBoundingClientRect().top
+    setPillVisible(
+      jumpPillVisible({
+        mode: sortMode,
+        followOn,
+        playheadY,
+        viewTop: view.top,
+        viewBottom: view.bottom,
+      }),
+    )
+  }, [activeIdx, sortMode, followOn])
+
+  // Re-measure when the measurement inputs (active cluster / sort / follow) change.
+  useEffect(() => {
+    measurePill()
+  }, [measurePill])
 
   // ── capture → pending frame → post comment-note (spec §298–315) ────────────
   // A single pending frame per composer; capturing again REPLACES it. The chip
@@ -287,35 +352,63 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
         </div>
       </div>
 
-      {/* ── 3. Scrollable content column ────────────────────────────────── */}
-      <div
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflowY: 'auto',
-          padding: '16px 24px 10px',
-          position: 'relative',
-        }}
-      >
-        <div style={{ maxWidth: COL, margin: '0 auto' }}>
-          {/* SortPill: toggles between video-time and capture-time order */}
-          <SortPill
-            sortMode={sortMode}
-            onToggle={() => setSortMode((m) => (m === 'video' ? 'capture' : 'video'))}
-          />
+      {/* ── 3. Scrollable content column (relative frame anchors the pill) ── */}
+      <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex' }}>
+        <div
+          ref={scrollRef}
+          onScroll={measurePill}
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            padding: '16px 24px 10px',
+          }}
+        >
+          <div style={{ maxWidth: COL, margin: '0 auto' }}>
+            {/* SortPill: toggles between video-time and capture-time order */}
+            <SortPill
+              sortMode={sortMode}
+              onToggle={() => setSortMode((m) => (m === 'video' ? 'capture' : 'video'))}
+            />
 
-          {/* The thread rendering: video-order rail (default) or capture feed. */}
-          <Rail
-            clusters={clusters}
-            anchorless={anchorless}
-            sorted={sorted}
-            mode={sortMode}
-            playheadT={currentTime}
-            onSeekNote={(t) => {
-              void player.seekTo(t)
-            }}
-          />
+            {/* The thread rendering: video-order rail (default) or capture feed. */}
+            <Rail
+              clusters={clusters}
+              anchorless={anchorless}
+              sorted={sorted}
+              mode={sortMode}
+              playheadT={currentTime}
+              flashClusterIdx={flashClusterIdx}
+              onSeekNote={(t) => {
+                // Explicit seek ONLY — dot/time click. Seeking is never wired from
+                // scroll, so scrolling the list cannot move playback.
+                void player.seekTo(t)
+                scrollClusterIntoView(activeClusterIndex(clusters, t))
+              }}
+            />
+          </div>
         </div>
+
+        {/* Jump-to-now pill — anchored to the outer (non-scrolling) frame so it
+            stays pinned above the composer. Shown only when the playhead is
+            off-screen with follow off (video mode); clicking re-syncs the view. */}
+        {pillVisible && (
+          <div
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              bottom: 14,
+              display: 'flex',
+              justifyContent: 'center',
+              pointerEvents: 'none',
+            }}
+          >
+            <span style={{ pointerEvents: 'auto' }}>
+              <JumpPill seconds={currentTime} onJump={() => scrollClusterIntoView(activeIdx)} />
+            </span>
+          </div>
+        )}
       </div>
 
       {/* ── 4. Pinned composer slot ─────────────────────────────────────── */}

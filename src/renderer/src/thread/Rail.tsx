@@ -32,7 +32,7 @@ import type { Attachment, Note } from '../../../shared/types'
 import { Markdown } from '../lib/markdown'
 import { mediaUrlFromPath } from '../lib/media-url'
 import { formatClock } from '../lib/time'
-import { logGapHeight } from './rail-layout'
+import { activeClusterIndex, logGapHeight } from './rail-layout'
 
 // ── layout constants (shared column + its left rail gutter) ─────────────────
 // Mirrors the design handoff: RAIL = rail-line x relative to the column's left
@@ -75,18 +75,11 @@ export interface RailProps {
   playheadT: number
   /** Called with a cluster's `t` when its dot/time is clicked. */
   onSeekNote: (t: number) => void
-}
-
-/**
- * Index of the active cluster: the greatest `t` that is `<= playheadT`. Returns
- * -1 when the playhead is before every cluster (playhead renders at the top).
- */
-function activeClusterIndex(clusters: RailCluster[], playheadT: number): number {
-  let idx = -1
-  for (let i = 0; i < clusters.length; i++) {
-    if ((clusters[i] as RailCluster).t <= playheadT) idx = i
-  }
-  return idx
+  /**
+   * Index of a cluster to flash with a transient accent ring (set by ThreadView
+   * on follow-scroll / click-to-seek, cleared after a short timeout). `-1` = none.
+   */
+  flashClusterIdx?: number
 }
 
 /** A neutral note bubble: screenshot frame (if any) fills the bubble, body below. */
@@ -135,15 +128,32 @@ const NOOP = (): void => {}
 /** One cluster: dot + time in the gutter; the cluster's notes stacked under it. */
 function ClusterRow({
   cluster,
+  index,
   active,
+  flash,
   onSeek,
 }: {
   cluster: RailCluster
+  index: number
   active: boolean
+  flash: boolean
   onSeek: (t: number) => void
 }) {
   return (
-    <div style={{ position: 'relative', marginBottom: 22 }}>
+    <div
+      // data-cluster-index lets ThreadView address this row for scrollIntoView
+      // without Rail holding refs. The flash ring is a transient accent outline
+      // (outline doesn't shift layout) applied while ThreadView marks it.
+      data-cluster-index={index}
+      style={{
+        position: 'relative',
+        marginBottom: 22,
+        borderRadius: 'var(--r-5)',
+        outline: flash ? '2px solid var(--accent)' : '2px solid transparent',
+        outlineOffset: 3,
+        transition: 'outline-color var(--dur-2) ease',
+      }}
+    >
       <button
         type="button"
         data-testid="rail-time"
@@ -283,7 +293,15 @@ function Playhead({ t }: { t: number }) {
 }
 
 /** @see RailProps */
-export function Rail({ clusters, anchorless, sorted, mode, playheadT, onSeekNote }: RailProps) {
+export function Rail({
+  clusters,
+  anchorless,
+  sorted,
+  mode,
+  playheadT,
+  onSeekNote,
+  flashClusterIdx = -1,
+}: RailProps) {
   if (mode === 'capture') {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -316,7 +334,13 @@ export function Rail({ clusters, anchorless, sorted, mode, playheadT, onSeekNote
         return (
           <div key={cluster.t}>
             {prev !== undefined && <Gap minutes={(cluster.t - prev.t) / 60} />}
-            <ClusterRow cluster={cluster} active={i === activeIdx} onSeek={onSeekNote} />
+            <ClusterRow
+              cluster={cluster}
+              index={i}
+              active={i === activeIdx}
+              flash={i === flashClusterIdx}
+              onSeek={onSeekNote}
+            />
             {i === activeIdx && <Playhead t={playheadT} />}
           </div>
         )

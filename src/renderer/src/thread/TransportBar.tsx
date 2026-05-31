@@ -157,25 +157,47 @@ export function TransportBar({
             borderRadius: 2,
           }}
         />
-        {/* marker ticks — only rendered when duration is known */}
+        {/* marker ticks — clickable; only rendered when duration is known */}
         {safeD > 0 &&
           markers.map((t) => (
-            <div
+            <button
               // Why seconds-as-key: marker positions are the stable identity at this layer;
               // no note IDs available here. Duplicates are screened out upstream.
               key={t}
+              type="button"
+              aria-label={`seek to ${formatClock(t)}`}
               data-testid="scrubber-marker"
+              // stopPropagation: a tick click must seek to its own t, not bubble to
+              // the track's general click-seek (which would resolve a different x).
+              onClick={(e) => {
+                e.stopPropagation()
+                onSeek(t)
+              }}
               style={{
                 position: 'absolute',
                 left: `${(t / safeD) * 100}%`,
-                top: -2,
-                width: 2,
-                height: 8,
+                top: -4,
+                width: 8,
+                height: 12,
+                padding: 0,
+                border: 0,
                 borderRadius: 1,
-                background: 'var(--fg-3)',
+                background: 'transparent',
+                cursor: 'pointer',
                 transform: 'translateX(-50%)',
               }}
-            />
+            >
+              <span
+                style={{
+                  display: 'block',
+                  width: 2,
+                  height: 8,
+                  margin: '2px auto 0',
+                  borderRadius: 1,
+                  background: 'var(--fg-3)',
+                }}
+              />
+            </button>
           ))}
       </div>
 

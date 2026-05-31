@@ -142,6 +142,24 @@ export function markerPositions(
 }
 
 /**
+ * Index of the active cluster: the greatest index whose `t` is `<= playheadT`.
+ * Returns `-1` when the playhead precedes every cluster (or the list is empty),
+ * in which case callers render the playhead above the first cluster.
+ *
+ * Match is inclusive on an exact timestamp. Clusters are assumed sorted by `t`
+ * ascending (as produced by {@link clusterByPause}).
+ *
+ * @see docs/specs/v0.2-youtube-annotation.md §ThreadView
+ */
+export function activeClusterIndex(clusters: { t: number }[], playheadT: number): number {
+  let idx = -1
+  for (let i = 0; i < clusters.length; i++) {
+    if ((clusters[i] as { t: number }).t <= playheadT) idx = i
+  }
+  return idx
+}
+
+/**
  * Returns `true` when the jump-to-playhead pill should be visible.
  *
  * Conditions (all must hold): `mode === 'video'`, `followOn === false`, and

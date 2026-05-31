@@ -96,4 +96,15 @@ describe('TransportBar', () => {
     fireEvent.click(track)
     expect(onSeek).toHaveBeenCalledOnce()
   })
+
+  it('clicking a marker tick seeks to that marker exactly once (stopPropagation)', () => {
+    const onSeek = vi.fn()
+    render(<TransportBar {...makeProps({ markers: [30, 90], onSeek })} />)
+    const ticks = screen.getAllByTestId('scrubber-marker')
+    // First tick carries t=30; click must seek to 30 AND not bubble to the
+    // track's general click-seek (so exactly one call, with the marker's t).
+    fireEvent.click(ticks[0] as Element)
+    expect(onSeek).toHaveBeenCalledTimes(1)
+    expect(onSeek).toHaveBeenCalledWith(30)
+  })
 })

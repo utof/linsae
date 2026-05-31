@@ -13,16 +13,22 @@
  * @see docs/specs/v0.2-youtube-annotation.md §ThreadView
  */
 
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
 
 // Mock usePlayer so tests never touch the player singleton / iframe.
+// `seekTo` is a shared spy and `currentTime` is read from a mutable holder so
+// follow-scroll tests can advance the playhead between renders.
+const seekTo = vi.fn()
+const player = { seekTo, play: vi.fn(), pause: vi.fn() }
+const playerState = { currentTime: 0 }
 vi.mock('../yt/usePlayer', () => ({
   usePlayer: () => ({
-    player: { seekTo: vi.fn(), play: vi.fn(), pause: vi.fn() },
-    currentTime: 0,
+    player,
+    currentTime: playerState.currentTime,
     state: 'paused',
     duration: 100,
   }),
@@ -91,7 +97,15 @@ const NOTE_B: Note = {
 
 let mockApi: MockApi
 
+// jsdom lacks Element.prototype.scrollIntoView entirely (not even a no-op), so
+// vi.spyOn can't attach to a missing property. Define it as a vi.fn() first so
+// the follow-scroll + click-to-seek effects can assert it fired.
+const scrollIntoView = vi.fn()
+Element.prototype.scrollIntoView = scrollIntoView
+
 beforeEach(() => {
+  scrollIntoView.mockClear()
+  playerState.currentTime = 0
   getIframeRect.mockReturnValue({ x: 0, y: 0, width: 480, height: 270 } as DOMRect)
   getCurrentTime.mockResolvedValue(42)
   mockApi = installMockApi()
@@ -172,6 +186,71 @@ describe('ThreadView', () => {
     // Switch to capture mode: note-A created_at=50 < note-B created_at=100 → note-A first
     fireEvent.click(screen.getByLabelText('sort mode'))
     expect(getOrder()).toEqual(['note at ten seconds', 'note at five seconds'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Follow auto-scroll + click-to-seek (no reverse coupling)
+// ---------------------------------------------------------------------------
+
+describe('ThreadView follow-scroll + click-to-seek', () => {
+  // Local render that keeps a stable QueryClient so `rerender` re-wraps in the
+  // SAME provider (renderWithProviders allocates a fresh client internally, so
+  // its `rerender` would drop the provider). Lets us advance the mocked
+  // currentTime + force a re-render without toggling sort/follow.
+  function renderThread() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    // Fresh element each render so React doesn't bail out on a referentially
+    // identical child; the mocked usePlayer re-reads playerState.currentTime.
+    const ui = () => (
+      <QueryClientProvider client={qc}>
+        <ThreadView noteId="v1" onClose={() => {}} />
+      </QueryClientProvider>
+    )
+    const result = render(ui())
+    return { ...result, rerenderThread: () => result.rerender(ui()) }
+  }
+
+  it('clicking a Rail dot seeks to that cluster t AND scrolls the note into view', async () => {
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('note at five seconds')).toBeInTheDocument())
+
+    scrollIntoView.mockClear()
+    // First cluster dot is t=5 (NOTE_B sorts before NOTE_A in video mode).
+    fireEvent.click(screen.getAllByTestId('rail-dot')[0] as Element)
+
+    expect(seekTo).toHaveBeenCalledWith(5)
+    expect(scrollIntoView).toHaveBeenCalled()
+  })
+
+  it('advancing currentTime past a cluster with followOn scrolls that cluster into view', async () => {
+    const { rerenderThread } = renderThread()
+    await waitFor(() => expect(screen.getByText('note at five seconds')).toBeInTheDocument())
+
+    scrollIntoView.mockClear()
+    // followOn defaults to true. Advance the playhead 0 → 7 so the active cluster
+    // becomes idx 0 (t=5) and re-render (same provider, still video mode) so the
+    // follow effect — keyed on [activeIdx, followOn] — fires scrollIntoView.
+    playerState.currentTime = 7
+    rerenderThread()
+
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
+  })
+
+  it('does NOT scroll on a currentTime change while followOn is false (no reverse coupling)', async () => {
+    const { rerenderThread } = renderThread()
+    await waitFor(() => expect(screen.getByText('note at five seconds')).toBeInTheDocument())
+
+    // Turn follow OFF, then clear any scroll triggered while it was on.
+    fireEvent.click(screen.getByRole('button', { name: /follow playback/i }))
+    scrollIntoView.mockClear()
+
+    // Advance the playhead past a cluster and re-render WITHOUT re-enabling
+    // follow. With follow off, the note list must NOT auto-scroll.
+    playerState.currentTime = 7
+    rerenderThread()
+
+    expect(scrollIntoView).not.toHaveBeenCalled()
   })
 })
 
