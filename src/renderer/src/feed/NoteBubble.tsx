@@ -2,6 +2,7 @@ import { ChevronDown, Link2, Pen, Trash2 } from 'lucide-react'
 import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { Markdown } from '../lib/markdown'
+import { MediaFeedNoteContainer } from './MediaFeedNote'
 
 interface ContextMenuPos {
   x: number
@@ -211,6 +212,8 @@ interface Props {
   onEdit: (id: string) => void
   onDelete: (id: string) => void
   onCopyLink: (id: string) => void
+  /** Called when the user clicks "open video notes" on a source-kind note. */
+  onOpenThread?: (id: string) => void
 }
 
 /**
@@ -251,6 +254,7 @@ export function NoteBubble({
   onEdit,
   onDelete,
   onCopyLink,
+  onOpenThread,
 }: Props) {
   const [hover, setHover] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
@@ -335,6 +339,22 @@ export function NoteBubble({
     },
     [],
   )
+
+  // Source-kind branch: render the MediaFeedNoteContainer card instead of a
+  // standard text bubble. Checked here (after all hooks) so the Rules of Hooks
+  // are satisfied. Requires type === 'source' to exclude comment-notes (type:
+  // 'claim'/'question') that also carry source_kind:'youtube' + source_locator.t
+  // — those must render as normal bubbles showing their markdown body/screenshot.
+  // Why: comment-notes created by ⌘⇧C have { type:'claim', source_kind:'youtube',
+  // source_locator:{ media:'youtube', video_id, t } }; without the type guard
+  // they incorrectly render as video cards in the main feed.
+  const isSource =
+    note.type === 'source' &&
+    note.source_kind === 'youtube' &&
+    note.source_locator?.video_id != null
+  if (isSource) {
+    return <MediaFeedNoteContainer note={note} {...(onOpenThread ? { onOpenThread } : {})} />
+  }
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: bubble is a click target for focus selection; keyboard nav lives on Composer / palette per spec.

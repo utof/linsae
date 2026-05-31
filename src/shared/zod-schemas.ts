@@ -32,6 +32,21 @@ import { z } from 'zod'
 const NoteTypeSchema = z.enum(['claim', 'question', 'source'])
 
 /**
+ * SourceLocator — what external thing a note is anchored to (JSON TEXT in
+ * notes.source_locator). Media-agnostic (spec §Forward direction); v0.2.0 =
+ * youtube only; `t` (sec) omitted for anchorless comment-notes.
+ * @see docs/specs/v0.2-youtube-annotation.md §Data model
+ * Why: not exported — its only current consumer is the Notes create/update
+ * schemas in this file. Re-export when a cross-file consumer lands (Plan 3 /
+ * reconcile validation) per the export-with-consumer (knip) discipline.
+ */
+const SourceLocatorSchema = z.object({
+  media: z.literal('youtube'),
+  video_id: z.string().min(1),
+  t: z.number().nonnegative().optional(),
+})
+
+/**
  * Input schema for the `notes:list` IPC channel.
  *
  * Why: `limit` caps the page size so the renderer cannot request an unbounded
@@ -47,27 +62,50 @@ export const NotesListInputSchema = z.object({
 /**
  * Input schema for the `notes:create` IPC channel.
  *
- * Why: body must be non-empty; type defaults to 'claim' so callers that omit
- * it (quick-capture flow) get a sensible default without an extra round-trip.
+ * Why: body must be non-empty for plain notes (no source_kind), but a
+ * video-anchored note (source_kind is set) may legitimately have an empty
+ * body — e.g. a source note created on URL-paste or a screenshot comment
+ * with no caption yet. Non-anchored notes still require a non-empty,
+ * non-whitespace body. type defaults to 'claim' so callers that omit it
+ * (quick-capture flow) get a sensible default without an extra round-trip.
  * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 6
  */
-export const NotesCreateInputSchema = z.object({
-  body: z.string().min(1),
-  type: NoteTypeSchema.default('claim'),
-})
+export const NotesCreateInputSchema = z
+  .object({
+    body: z.string(),
+    type: NoteTypeSchema.default('claim'),
+    source_kind: z.literal('youtube').optional(),
+    source_locator: SourceLocatorSchema.optional(),
+    commentOn: z.string().min(1).optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (!v.source_kind && v.body.trim().length === 0) {
+      ctx.addIssue({ code: 'custom', path: ['body'], message: 'body required' })
+    }
+  })
 
 /**
  * Input schema for the `notes:update` IPC channel.
  *
- * Why: all three fields are required — the renderer must always supply the
- * full updated note to avoid partial-update confusion.
+ * Why: all fields are required — the renderer must always supply the full
+ * updated note to avoid partial-update confusion. body may be empty only
+ * when source_kind is set (video-anchored note); non-anchored notes still
+ * require a non-empty, non-whitespace body.
  * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 6
  */
-export const NotesUpdateInputSchema = z.object({
-  id: z.string().min(1),
-  body: z.string().min(1),
-  type: NoteTypeSchema,
-})
+export const NotesUpdateInputSchema = z
+  .object({
+    id: z.string().min(1),
+    body: z.string(),
+    type: NoteTypeSchema,
+    source_kind: z.literal('youtube').optional(),
+    source_locator: SourceLocatorSchema.optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (!v.source_kind && v.body.trim().length === 0) {
+      ctx.addIssue({ code: 'custom', path: ['body'], message: 'body required' })
+    }
+  })
 
 /**
  * Minimal schema for channels that operate on a single note by ID.
@@ -108,3 +146,61 @@ export const BacklinksInputSchema = z.object({ noteId: z.string().min(1) })
  * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 20 (handler registration)
  */
 export const ResolveInputSchema = z.object({ slug: z.string().min(1) })
+
+/** `youtube:capture` input. videoId/t give the orphan attachment its provenance. */
+export const CaptureInputSchema = z.object({
+  rect: z.object({
+    x: z.number(),
+    y: z.number(),
+    width: z.number().positive(),
+    height: z.number().positive(),
+  }),
+  videoId: z.string().min(1),
+  t: z.number().nonnegative(),
+})
+
+/** `youtube:fetchOEmbed` input. */
+export const FetchOEmbedInputSchema = z.object({ videoId: z.string().min(1) })
+
+/** `attachments:list` filter — every field optional (spec AttachmentsApi.list). */
+export const AttachmentsListInputSchema = z.object({
+  orphans: z.boolean().optional(),
+  videoId: z.string().min(1).optional(),
+  titleLike: z.string().min(1).optional(),
+  noteId: z.string().min(1).optional(),
+})
+
+/** `attachments:attachToNote` input. */
+export const AttachToNoteInputSchema = z.object({
+  attachmentId: z.string().min(1),
+  noteId: z.string().min(1),
+})
+
+/**
+ * `videoSources:upsert` input. sourceKind is typed for forward-compat but the
+ * v0.2.0 validator accepts only 'youtube' (spec line 350: widen when local ships).
+ */
+export const VideoSourcesUpsertInputSchema = z.object({
+  videoId: z.string().min(1),
+  sourceKind: z.literal('youtube'),
+  // oEmbed-derived metadata, all optional — the Plan 1 wrapper COALESCEs each, so
+  // a metadata-less re-upsert never wipes a cached title (spec §Add a video). The
+  // renderer fetches oEmbed then upserts with these set; Plan 3 needs no schema edit.
+  title: z.string().optional(),
+  channel: z.string().optional(),
+  thumbnailUrl: z.string().optional(),
+  durationSec: z.number().int().nonnegative().optional(),
+})
+
+/** `videoSources:get` input. */
+export const VideoSourcesGetInputSchema = z.object({ videoId: z.string().min(1) })
+
+/**
+ * Input schema for the `links:commentsOf` IPC channel.
+ *
+ * Why `noteId` (not `slug`): the renderer holds note ids (UUIDs), not slugs.
+ * Slug resolution happens in the handler after Zod parse, mirroring the
+ * `links:backlinks` pattern — see src/main/ipc/notes.ts.
+ * @issue utof/linsae#36
+ */
+export const CommentsOfInputSchema = z.object({ noteId: z.string().min(1) })

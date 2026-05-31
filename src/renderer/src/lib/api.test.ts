@@ -1,0 +1,73 @@
+/**
+ * Facade unit tests for api.youtube / api.attachments / api.videoSources
+ * and the extended api.notes.create / api.notes.update (source fields).
+ *
+ * Why: verifies that the ergonomic positional-arg wrappers forward the correct
+ * single-object payload to window.api.* as required by the preload contract.
+ *
+ * @see src/renderer/src/lib/api.ts
+ * @see src/preload/index.ts (window.api surface)
+ */
+import { describe, expect, it, vi } from 'vitest'
+import { api } from './api'
+
+describe('api.youtube/attachments/videoSources facade', () => {
+  it('capture forwards positional args as the channel payload', async () => {
+    const capture = vi.fn().mockResolvedValue({
+      id: 'a1',
+      path: '/x.png',
+      sha256: 's',
+      width: 2,
+      height: 1,
+      devicePixelRatio: 2,
+    })
+    // @ts-expect-error test stub
+    window.api = {
+      youtube: { capture, fetchOEmbed: vi.fn() },
+      attachments: { list: vi.fn(), attachToNote: vi.fn() },
+      videoSources: { upsert: vi.fn(), get: vi.fn() },
+    }
+    const r = await api.youtube.capture({ x: 0, y: 0, width: 200, height: 120 }, 'vid', 83)
+    expect(capture).toHaveBeenCalledWith({
+      rect: { x: 0, y: 0, width: 200, height: 120 },
+      videoId: 'vid',
+      t: 83,
+    })
+    expect(r.id).toBe('a1')
+  })
+
+  it('videoSources.upsert spreads optional oEmbed metadata', async () => {
+    const upsert = vi.fn().mockResolvedValue(undefined)
+    // @ts-expect-error test stub
+    window.api = {
+      youtube: { capture: vi.fn(), fetchOEmbed: vi.fn() },
+      attachments: { list: vi.fn(), attachToNote: vi.fn() },
+      videoSources: { upsert, get: vi.fn() },
+    }
+    await api.videoSources.upsert('vid', { title: 'T', channel: 'C' })
+    expect(upsert).toHaveBeenCalledWith({
+      videoId: 'vid',
+      sourceKind: 'youtube',
+      title: 'T',
+      channel: 'C',
+    })
+  })
+
+  it('notes.create forwards source_kind/source_locator/commentOn when given', async () => {
+    const create = vi.fn().mockResolvedValue({ id: 'n1' })
+    // @ts-expect-error test stub
+    window.api = { notes: { create }, youtube: {}, attachments: {}, videoSources: {} }
+    await api.notes.create('body', 'claim', {
+      source_kind: 'youtube',
+      source_locator: { media: 'youtube', video_id: 'v', t: 5 },
+      commentOn: 'video-slug',
+    })
+    expect(create).toHaveBeenCalledWith({
+      body: 'body',
+      type: 'claim',
+      source_kind: 'youtube',
+      source_locator: { media: 'youtube', video_id: 'v', t: 5 },
+      commentOn: 'video-slug',
+    })
+  })
+})

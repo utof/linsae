@@ -4,17 +4,37 @@ import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import { remarkWikilinks } from './remark-wikilinks'
+import { remarkYtTimestamps } from './remark-yt-timestamps'
 
 interface Props {
   body: string
   onWikilinkClick: (slug: string) => void
   resolveSlug?: (slug: string) => boolean
+  /**
+   * Called with the timestamp's offset in seconds when the user clicks an
+   * `<a class="yt-ts">` anchor emitted by `remarkYtTimestamps`.
+   *
+   * When omitted the handler falls back to `getPlayer().seekTo(seconds)` so
+   * the component works standalone (e.g. in the feed) without requiring a
+   * parent to thread the callback down.
+   *
+   * Why lazy import for the default path: importing `playerSingleton` at
+   * module top-level would construct the YouTube IFrame player in any test
+   * environment that renders `<Markdown>`, even when `onYtSeek` is supplied.
+   * Loading lazily (inside the handler) means the singleton is only touched
+   * when the prop is absent AND the user actually clicks — safe in tests.
+   *
+   * @see src/renderer/src/yt/playerSingleton.ts
+   */
+  onYtSeek?: (seconds: number) => void
 }
 
 /**
- * Renders a markdown `body` with GFM, math (KaTeX), and our custom wikilinks
- * plugin. Wikilinks emit `<a class="wikilink" data-slug="…">` anchors; clicks
- * are intercepted by `onWikilinkClick(slug)` (no navigation).
+ * Renders a markdown `body` with GFM, math (KaTeX), wikilinks, and YouTube
+ * timestamp plugins. Wikilinks emit `<a class="wikilink" data-slug="…">`
+ * anchors; clicks are intercepted by `onWikilinkClick(slug)` (no navigation).
+ * Timestamps emit `<a class="yt-ts" data-seconds="N">` anchors; clicks call
+ * `onYtSeek(seconds)` or fall back to `getPlayer().seekTo(seconds)`.
  *
  * When `resolveSlug` is supplied, each rendered wikilink is post-processed to
  * toggle a `.dangling` class + tooltip when `resolveSlug(slug)` returns false,
@@ -34,19 +54,43 @@ interface Props {
  * caused by sibling-bubble scroll.
  *
  * @see src/renderer/src/lib/remark-wikilinks.ts
+ * @see src/renderer/src/lib/remark-yt-timestamps.ts
  * @see docs/specs/v0.1-rolling-feed-and-search.md §Markdown rendering
+ * @see docs/specs/v0.2-youtube-annotation.md §timestamp syntax
  */
-export const Markdown = memo(function Markdown({ body, onWikilinkClick, resolveSlug }: Props) {
+export const Markdown = memo(function Markdown({
+  body,
+  onWikilinkClick,
+  resolveSlug,
+  onYtSeek,
+}: Props) {
   const handleClick = useCallback(
     (e: MouseEvent) => {
       const target = e.target as HTMLElement
+      // Walk up to the nearest anchor — handles clicks on child elements of <a>.
+      const anchor = target.closest('a') as HTMLAnchorElement | null
+      if (anchor?.classList.contains('yt-ts')) {
+        e.preventDefault()
+        const seconds = Number(anchor.dataset.seconds)
+        if (onYtSeek) {
+          onYtSeek(seconds)
+        } else {
+          // Lazy import: avoids constructing the YouTube IFrame player in test
+          // environments where `onYtSeek` is always supplied. Only reached at
+          // runtime when the caller omits the prop (e.g. feed bubbles).
+          import('../yt/playerSingleton').then(({ getPlayer }) => {
+            getPlayer().seekTo(seconds)
+          })
+        }
+        return
+      }
       if (target.classList.contains('wikilink')) {
         e.preventDefault()
         const slug = target.dataset.slug
         if (slug) onWikilinkClick(slug)
       }
     },
-    [onWikilinkClick],
+    [onWikilinkClick, onYtSeek],
   )
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: `body` is depended on so the ref-callback re-fires after ReactMarkdown emits new anchors; keeps `resolveSlug` out of the plugin array to avoid busting the mdast/hast cache.
@@ -70,7 +114,7 @@ export const Markdown = memo(function Markdown({ body, onWikilinkClick, resolveS
     // biome-ignore lint/a11y/useKeyWithClickEvents: anchors handle keyboard activation (Enter dispatches click on focused <a>); no key handler needed on the delegating wrapper.
     <div ref={containerRef} className="markdown-root" onClick={handleClick}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath, remarkWikilinks]}
+        remarkPlugins={[remarkGfm, remarkMath, remarkWikilinks, remarkYtTimestamps]}
         rehypePlugins={[rehypeKatex]}
       >
         {body}

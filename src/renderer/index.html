@@ -3,8 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <title>linsae</title>
+    <!-- _media images are same-origin (relative /_media/<yyyy>/<mm>/<sha>.png):
+         in prod the loopback HTTP shell serves both the renderer bundle and /_media/
+         on the same http://127.0.0.1:<port> origin; in dev the Vite server proxies
+         /_media/ to the loopback shell's fixed port. 'self' covers all three cases;
+         the former app: token is removed as app:// is no longer the document origin. -->
+    <!-- script-src includes both www.youtube.com tokens: the loopback shell
+         (and Vite dev) are http origins, so youtube-player's loadYouTubeIframeApi.js
+         builds http://www.youtube.com/iframe_api — HSTS-preload upgrades that URL
+         to https before any socket opens (see ADR 0008); the https token covers any
+         future https document origin. -->
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:;" />
+          content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https://i.ytimg.com https://*.ytimg.com; frame-src https://www.youtube-nocookie.com; script-src 'self' https://www.youtube.com http://www.youtube.com;" />
   </head>
 
   <body>

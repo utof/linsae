@@ -1,5 +1,5 @@
 import yaml from 'js-yaml'
-import type { NoteType } from '../../shared/types'
+import type { NoteType, SourceLocator } from '../../shared/types'
 
 /**
  * The structured YAML frontmatter block that opens every note file.
@@ -19,6 +19,8 @@ export interface NoteFrontmatter {
   updated_at: number
   deleted_at?: number
   aliases?: string[]
+  source_kind?: string
+  source_locator?: SourceLocator
 }
 
 /**

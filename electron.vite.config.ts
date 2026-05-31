@@ -1,6 +1,7 @@
 import { resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
+import { DEV_MEDIA_PORT } from './src/main/http-shell'
 
 export default defineConfig({
   main: {
@@ -37,5 +38,16 @@ export default defineConfig({
       // @see https://react.dev/learn/react-compiler/installation
       react({ babel: { plugins: ['babel-plugin-react-compiler'] } }),
     ],
+    server: {
+      // Proxy /_media/ to the loopback shell's fixed dev port so attachment
+      // images are same-origin (relative /_media/<tail>) in the dev renderer.
+      // In prod the loopback shell serves both the renderer bundle and /_media/
+      // on the same http://127.0.0.1:<port>; the proxy makes dev match prod.
+      // @see src/main/http-shell.ts (DEV_MEDIA_PORT, startLoopbackShell)
+      // @see docs/specs/v0.2-localhost-shell.md §7 B1
+      proxy: {
+        '/_media': { target: `http://127.0.0.1:${DEV_MEDIA_PORT}` },
+      },
+    },
   },
 })

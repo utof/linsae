@@ -6,7 +6,9 @@ import { BacklinksPane } from './backlinks/BacklinksPane'
 import { Composer } from './composer/Composer'
 import { Feed } from './feed/Feed'
 import { api } from './lib/api'
+import { parseYouTubeUrl } from './lib/parse-youtube-url'
 import { CommandPalette } from './palette/CommandPalette'
+import { ThreadView } from './thread/ThreadView'
 import { WindowFrame } from './topbar/WindowFrame'
 
 /**
@@ -60,6 +62,11 @@ export function App() {
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null)
   const [draftBody, setDraftBody] = useState<string | null>(null)
   const [skipBannerDismissed, setSkipBannerDismissed] = useState(false)
+  // threadNoteId: when non-null, the full-screen ThreadView replaces the feed+composer.
+  // Mutual exclusivity: opening a thread clears focusedId so BacklinksPane doesn't
+  // linger behind ThreadView; the key={threadNoteId} on ThreadView forces a remount on
+  // each navigation so the player singleton and duration write-back state reset per video.
+  const [threadNoteId, setThreadNoteId] = useState<string | null>(null)
   // submitError surfaces a user-facing message from the last failed
   // create/update mutation (e.g. duplicate-slug). The Composer renders it
   // inline; the next keystroke clears it via onClearError. See issue #23.
@@ -90,6 +97,61 @@ export function App() {
   const resolveSlug = (slug: string) => slugSet.has(slug.toLowerCase().trim())
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['notes'] })
+
+  /**
+   * Paste interceptor for the create-mode composer. Called with the raw
+   * clipboard text; returns true (handled) if the text contains a YouTube URL
+   * so the Composer prevents the default textarea insertion.
+   *
+   * Flow: create source note immediately (feeds the card into the list),
+   * then fetch oEmbed metadata and upsert the video_sources row. The oEmbed
+   * step is fail-soft — if fetchOEmbed returns null the note still exists and
+   * the card shows the raw video id as its title.
+   *
+   * Why the oEmbed + upsert are awaited sequentially (not parallel): upsert
+   * depends on the oEmbed result, so they must be ordered. The create is
+   * awaited first so the feed card appears immediately.
+   *
+   * @see docs/specs/v0.2-youtube-annotation.md §Add a video
+   */
+  const handlePasteText = (text: string): boolean => {
+    const videoId = parseYouTubeUrl(text)
+    if (!videoId) return false
+    void (async () => {
+      try {
+        await api.notes.create('', 'source', {
+          source_kind: 'youtube',
+          source_locator: { media: 'youtube', video_id: videoId },
+        })
+        // Tick successCount so the create-mode Composer remounts clean (clears
+        // question mode) exactly as createMut.onSuccess does. Runs on create
+        // success before the fail-soft oEmbed step. Why: a failed create must
+        // surface the error (see catch below); a succeeded create must reset
+        // the composer regardless of whether oEmbed succeeds.
+        setSuccessCount((c) => c + 1)
+        void queryClient.invalidateQueries({ queryKey: ['notes'] })
+        // oEmbed + upsert are fail-soft: if either rejects the note still exists
+        // and the card shows the raw video id as its title.
+        const o = await api.youtube.fetchOEmbed(videoId)
+        if (o) {
+          await api.videoSources.upsert(videoId, {
+            title: o.title,
+            channel: o.author_name,
+            thumbnailUrl: o.thumbnail_url,
+          })
+          void queryClient.invalidateQueries({ queryKey: ['videoSource', videoId] })
+        }
+      } catch (err) {
+        // Surface create failures the same way createMut.onError does so the
+        // user knows the paste failed and their text is already gone
+        // (preventDefault was called before this async block started). The
+        // oEmbed/upsert portion is intentionally outside the catch — it is
+        // fail-soft and must not change the error state on its own.
+        setSubmitError(err instanceof Error ? err.message : String(err))
+      }
+    })()
+    return true
+  }
 
   const createMut = useMutation({
     mutationFn: ({ body, type }: { body: string; type: NoteType }) => api.notes.create(body, type),
@@ -146,6 +208,20 @@ export function App() {
     [paletteOpen, focusedId],
   )
 
+  /**
+   * Opens the ThreadView for a source note, clearing focusedId so the
+   * BacklinksPane doesn't linger while the thread is open, and clearing
+   * editingNoteId so a stale edit-mode Composer cannot reappear when the
+   * thread is later closed.
+   * Mutual exclusivity: when threadNoteId is non-null, the feed+composer
+   * branch is not rendered (see JSX below).
+   */
+  const openThread = (id: string) => {
+    setFocusedId(null)
+    setEditingNoteId(null)
+    setThreadNoteId(id)
+  }
+
   const onWikilinkClick = async (slug: string) => {
     const match = await api.links.resolve(slug)
     if (match) {
@@ -182,7 +258,11 @@ export function App() {
          it without pushing the feed left when the pane opens (the previous
          flex-sibling layout shifted the entire feed; user feedback called
          that "annoying and too much for such a small action"). The pane
-         covers the feed area only — WindowFrame stays visible above. */}
+         covers the feed area only — WindowFrame stays visible above.
+         When threadNoteId is non-null, ThreadView replaces the feed+composer
+         and BacklinksPane entirely (they are mutually exclusive UI modes).
+         key={threadNoteId} forces a remount when switching threads so the
+         player singleton and duration write-back state reset per video. */}
       <div
         style={{
           display: 'flex',
@@ -191,127 +271,141 @@ export function App() {
           position: 'relative',
         }}
       >
-        <main
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            flex: 1,
-            minWidth: 0,
-            minHeight: 0,
-          }}
-        >
-          {skipped > 0 && !skipBannerDismissed && (
-            <div
-              style={{
-                padding: '8px 16px',
-                background: '#FDECEC',
-                borderBottom: '1px solid #FAEAC2',
-                fontSize: 13,
-                color: 'var(--fg-1)',
-                display: 'flex',
-                gap: 12,
-                alignItems: 'center',
-              }}
-            >
-              <span>{skipped} notes had unreadable frontmatter and were skipped.</span>
-              <button
-                type="button"
-                onClick={() => {
-                  void api.system.openLogsFolder()
-                }}
-                style={{
-                  border: 0,
-                  background: 'transparent',
-                  color: 'var(--accent)',
-                  cursor: 'pointer',
-                  textDecoration: 'underline',
-                }}
-              >
-                view log.
-              </button>
-              <div style={{ flex: 1 }} />
-              <button
-                type="button"
-                onClick={() => setSkipBannerDismissed(true)}
-                style={{
-                  border: 0,
-                  background: 'transparent',
-                  cursor: 'pointer',
-                  color: 'var(--fg-2)',
-                }}
-              >
-                dismiss
-              </button>
-            </div>
-          )}
-          {notes.length === 0 ? (
-            <div
-              style={{
-                flex: 1,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: 'var(--fg-3)',
-                fontFamily: 'var(--font-sans)',
-                fontSize: 14,
-              }}
-            >
-              nothing yet. start anywhere.
-            </div>
-          ) : (
-            <Feed
-              notes={notes}
-              focusedId={focusedId}
-              // Toggle behaviour: clicking an unfocused bubble focuses it (opens
-              // BacklinksPane); clicking the already-focused bubble unfocuses it
-              // (closes the pane). Wikilink / palette / pane-jump callbacks set
-              // focus directly without toggling — those are navigation gestures.
-              onFocus={(id) => setFocusedId((cur) => (cur === id ? null : id))}
-              onWikilinkClick={onWikilinkClick}
-              resolveSlug={resolveSlug}
-              onEdit={setEditingNoteId}
-              onDelete={(id) => {
-                deleteMut.mutate(id)
-                if (focusedId === id) setFocusedId(null)
-              }}
-              onCopyLink={(id) => {
-                void navigator.clipboard.writeText(`linsae://note/${id}`)
-              }}
-            />
-          )}
-          {editingNote ? (
-            <Composer
-              key={editingNote.id}
-              initialBody={editingNote.body}
-              initialMode={editingNote.type}
-              editMode
-              error={submitError}
-              onClearError={() => setSubmitError(null)}
-              onSubmit={({ body, type }) => updateMut.mutate({ id: editingNote.id, body, type })}
-              onCancel={() => setEditingNoteId(null)}
-            />
-          ) : (
-            // Composite key: `draftBody ?? 'fresh'` handles the dangling-wikilink
-            // prefill remount; `successCount` ticks on successful create to
-            // force a remount → fresh empty textarea. Failed creates leave the
-            // key unchanged so the user's text + cursor survive.
-            <Composer
-              key={`${draftBody ?? 'fresh'}-${successCount}`}
-              initialBody={draftBody ?? ''}
-              initialMode="claim"
-              error={submitError}
-              onClearError={() => setSubmitError(null)}
-              onSubmit={({ body, type }) => createMut.mutate({ body, type })}
-              onCancel={() => setDraftBody(null)}
-            />
-          )}
-        </main>
-        {focusedId && (
-          <BacklinksPane
-            focusedNoteId={focusedId}
-            onClose={() => setFocusedId(null)}
-            onJump={setFocusedId}
+        {threadNoteId ? (
+          <ThreadView
+            key={threadNoteId}
+            noteId={threadNoteId}
+            onClose={() => setThreadNoteId(null)}
           />
+        ) : (
+          <>
+            <main
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                flex: 1,
+                minWidth: 0,
+                minHeight: 0,
+              }}
+            >
+              {skipped > 0 && !skipBannerDismissed && (
+                <div
+                  style={{
+                    padding: '8px 16px',
+                    background: '#FDECEC',
+                    borderBottom: '1px solid #FAEAC2',
+                    fontSize: 13,
+                    color: 'var(--fg-1)',
+                    display: 'flex',
+                    gap: 12,
+                    alignItems: 'center',
+                  }}
+                >
+                  <span>{skipped} notes had unreadable frontmatter and were skipped.</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void api.system.openLogsFolder()
+                    }}
+                    style={{
+                      border: 0,
+                      background: 'transparent',
+                      color: 'var(--accent)',
+                      cursor: 'pointer',
+                      textDecoration: 'underline',
+                    }}
+                  >
+                    view log.
+                  </button>
+                  <div style={{ flex: 1 }} />
+                  <button
+                    type="button"
+                    onClick={() => setSkipBannerDismissed(true)}
+                    style={{
+                      border: 0,
+                      background: 'transparent',
+                      cursor: 'pointer',
+                      color: 'var(--fg-2)',
+                    }}
+                  >
+                    dismiss
+                  </button>
+                </div>
+              )}
+              {notes.length === 0 ? (
+                <div
+                  style={{
+                    flex: 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: 'var(--fg-3)',
+                    fontFamily: 'var(--font-sans)',
+                    fontSize: 14,
+                  }}
+                >
+                  nothing yet. start anywhere.
+                </div>
+              ) : (
+                <Feed
+                  notes={notes}
+                  focusedId={focusedId}
+                  // Toggle behaviour: clicking an unfocused bubble focuses it (opens
+                  // BacklinksPane); clicking the already-focused bubble unfocuses it
+                  // (closes the pane). Wikilink / palette / pane-jump callbacks set
+                  // focus directly without toggling — those are navigation gestures.
+                  onFocus={(id) => setFocusedId((cur) => (cur === id ? null : id))}
+                  onWikilinkClick={onWikilinkClick}
+                  resolveSlug={resolveSlug}
+                  onEdit={setEditingNoteId}
+                  onDelete={(id) => {
+                    deleteMut.mutate(id)
+                    if (focusedId === id) setFocusedId(null)
+                  }}
+                  onCopyLink={(id) => {
+                    void navigator.clipboard.writeText(`linsae://note/${id}`)
+                  }}
+                  onOpenThread={openThread}
+                />
+              )}
+              {editingNote ? (
+                <Composer
+                  key={editingNote.id}
+                  initialBody={editingNote.body}
+                  initialMode={editingNote.type}
+                  editMode
+                  error={submitError}
+                  onClearError={() => setSubmitError(null)}
+                  onSubmit={({ body, type }) =>
+                    updateMut.mutate({ id: editingNote.id, body, type })
+                  }
+                  onCancel={() => setEditingNoteId(null)}
+                />
+              ) : (
+                // Composite key: `draftBody ?? 'fresh'` handles the dangling-wikilink
+                // prefill remount; `successCount` ticks on successful create to
+                // force a remount → fresh empty textarea. Failed creates leave the
+                // key unchanged so the user's text + cursor survive.
+                <Composer
+                  key={`${draftBody ?? 'fresh'}-${successCount}`}
+                  initialBody={draftBody ?? ''}
+                  initialMode="claim"
+                  error={submitError}
+                  onClearError={() => setSubmitError(null)}
+                  onSubmit={({ body, type }) => createMut.mutate({ body, type })}
+                  onCancel={() => setDraftBody(null)}
+                  onPasteText={handlePasteText}
+                />
+              )}
+            </main>
+            {focusedId && (
+              <BacklinksPane
+                focusedNoteId={focusedId}
+                onClose={() => setFocusedId(null)}
+                onJump={setFocusedId}
+              />
+            )}
+          </>
         )}
       </div>
       <CommandPalette

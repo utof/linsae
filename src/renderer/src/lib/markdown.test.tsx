@@ -9,6 +9,58 @@ describe('Markdown', () => {
     expect(container.innerHTML).toContain('<strong>world</strong>')
   })
 
+  describe('yt-timestamps', () => {
+    it('renders @1:23 as an a.yt-ts anchor with data-seconds="83"', () => {
+      const { container } = render(
+        <Markdown body="see @1:23" onWikilinkClick={() => {}} onYtSeek={() => {}} />,
+      )
+      const link = container.querySelector('a.yt-ts') as HTMLAnchorElement
+      expect(link).toBeTruthy()
+      expect(link.dataset.seconds).toBe('83')
+    })
+
+    it('click on a.yt-ts calls onYtSeek(83) and prevents default', () => {
+      const onYtSeek = vi.fn()
+      const { container } = render(
+        <Markdown body="see @1:23" onWikilinkClick={() => {}} onYtSeek={onYtSeek} />,
+      )
+      const link = container.querySelector('a.yt-ts') as HTMLAnchorElement
+      const ev = new MouseEvent('click', { bubbles: true, cancelable: true })
+      link.dispatchEvent(ev)
+      expect(onYtSeek).toHaveBeenCalledExactlyOnceWith(83)
+      expect(ev.defaultPrevented).toBe(true)
+    })
+
+    it('click on a.yt-ts does NOT call onWikilinkClick', () => {
+      const onWikilinkClick = vi.fn()
+      const onYtSeek = vi.fn()
+      const { container } = render(
+        <Markdown body="see @1:23" onWikilinkClick={onWikilinkClick} onYtSeek={onYtSeek} />,
+      )
+      const link = container.querySelector('a.yt-ts') as HTMLAnchorElement
+      const ev = new MouseEvent('click', { bubbles: true, cancelable: true })
+      link.dispatchEvent(ev)
+      expect(onWikilinkClick).not.toHaveBeenCalled()
+    })
+
+    it('wikilink click still works when yt-ts is also present (no regression)', () => {
+      const onWikilinkClick = vi.fn()
+      const onYtSeek = vi.fn()
+      const { container } = render(
+        <Markdown
+          body="see [[target]] at @0:42"
+          onWikilinkClick={onWikilinkClick}
+          onYtSeek={onYtSeek}
+        />,
+      )
+      const wikilink = container.querySelector('a.wikilink') as HTMLAnchorElement
+      const ev = new MouseEvent('click', { bubbles: true, cancelable: true })
+      wikilink.dispatchEvent(ev)
+      expect(onWikilinkClick).toHaveBeenCalledExactlyOnceWith('target')
+      expect(onYtSeek).not.toHaveBeenCalled()
+    })
+  })
+
   it('renders [[wikilink]] as a clickable element with data-slug', () => {
     const { container } = render(<Markdown body="see [[target]]" onWikilinkClick={() => {}} />)
     const link = container.querySelector('a.wikilink') as HTMLAnchorElement

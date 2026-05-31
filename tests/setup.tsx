@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, type RenderOptions, type RenderResult, render } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, vi } from 'vitest'
-import type { Note, SearchHit } from '../src/shared/types'
+import type { Attachment, Note, SearchHit } from '../src/shared/types'
 
 // jsdom lacks ResizeObserver, but @radix-ui/react-dialog (transitively used by
 // cmdk's Command.Dialog) calls `new ResizeObserver(...)` during mount. A no-op
@@ -35,7 +35,11 @@ export function renderWithProviders(ui: ReactNode, opts?: RenderOptions): Render
 
 /**
  * Shape of the mocked window.api injected by installMockApi.
- * Mirrors the IPC surface defined in src/preload/index.ts (Task 5).
+ * Mirrors the IPC surface defined in src/preload/index.ts.
+ *
+ * Why: keep in sync with preload; add namespaces here when their
+ * IPC handlers land so component tests can use installMockApi overrides
+ * without casting.
  */
 export interface MockApi {
   notes: {
@@ -46,7 +50,27 @@ export interface MockApi {
     delete: ReturnType<typeof vi.fn>
   }
   search: { run: ReturnType<typeof vi.fn> }
-  links: { backlinks: ReturnType<typeof vi.fn>; resolve: ReturnType<typeof vi.fn> }
+  links: {
+    backlinks: ReturnType<typeof vi.fn>
+    resolve: ReturnType<typeof vi.fn>
+    /** commentsOf mock — added in v0.2 for useThreadNotes. @issue utof/linsae#36 */
+    commentsOf: ReturnType<typeof vi.fn>
+  }
+  /** YouTube IPC mocks — added in v0.2. @see src/preload/index.ts */
+  youtube: {
+    capture: ReturnType<typeof vi.fn>
+    fetchOEmbed: ReturnType<typeof vi.fn>
+  }
+  /** Attachments IPC mocks — added in v0.2. @see src/preload/index.ts */
+  attachments: {
+    list: ReturnType<typeof vi.fn>
+    attachToNote: ReturnType<typeof vi.fn>
+  }
+  /** VideoSources IPC mocks — added in v0.2. @see src/preload/index.ts */
+  videoSources: {
+    upsert: ReturnType<typeof vi.fn>
+    get: ReturnType<typeof vi.fn>
+  }
   system: {
     revealNotesFolder: ReturnType<typeof vi.fn>
     openLogsFolder: ReturnType<typeof vi.fn>
@@ -79,6 +103,26 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
     links: {
       backlinks: vi.fn(async (): Promise<Note[]> => []),
       resolve: vi.fn(async () => null),
+      commentsOf: vi.fn(async (): Promise<Array<{ note: Note; attachment: null }>> => []),
+    },
+    youtube: {
+      capture: vi.fn(async () => ({
+        id: '',
+        path: '',
+        sha256: '',
+        width: 0,
+        height: 0,
+        devicePixelRatio: 1,
+      })),
+      fetchOEmbed: vi.fn(async () => null),
+    },
+    attachments: {
+      list: vi.fn(async (): Promise<Attachment[]> => []),
+      attachToNote: vi.fn(async (): Promise<void> => undefined),
+    },
+    videoSources: {
+      upsert: vi.fn(async (): Promise<void> => undefined),
+      get: vi.fn(async () => null),
     },
     system: {
       revealNotesFolder: vi.fn(async () => ({ ok: true })),
