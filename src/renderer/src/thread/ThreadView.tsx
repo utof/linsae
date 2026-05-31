@@ -1,7 +1,10 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, Clock, Film } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { useHotkeys } from 'react-hotkeys-hook'
 import { api } from '../lib/api'
+import { mediaUrlFromPath } from '../lib/media-url'
+import { getPlayer } from '../yt/playerSingleton'
 import { usePlayer } from '../yt/usePlayer'
 import { Rail } from './Rail'
 import { markerPositions } from './rail-layout'
@@ -97,6 +100,65 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   // ── follow state ──────────────────────────────────────────────────────────
 
   const [followOn, setFollowOn] = useState(true)
+
+  // ── capture → pending frame → post comment-note (spec §298–315) ────────────
+  // A single pending frame per composer; capturing again REPLACES it. The chip
+  // (and post anchor) use the captured moment's `t`, not the live playhead.
+  const queryClient = useQueryClient()
+  const [pendingFrame, setPendingFrame] = useState<{
+    attachmentId: string
+    thumbnailUrl: string
+    t: number
+  } | null>(null)
+
+  // ⌘⇧C / camera button: screenshot the live iframe rect at the current time.
+  // No-op when no player is mounted (getIframeRect → null). On failure (e.g. the
+  // main-process 0-area guard, #34) we leave pendingFrame untouched so no junk
+  // chip appears. Why enableOnFormTags is OMITTED: the hotkey must NOT fire while
+  // the composer textarea is focused (contrast App.tsx's mod+k which opts in).
+  // @issue utof/linsae#34
+  const onCapture = async () => {
+    const player = getPlayer()
+    const rect = player.getIframeRect()
+    if (!rect) return
+    try {
+      const t = await player.getCurrentTime()
+      const att = await api.youtube.capture(
+        { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        videoId,
+        t,
+      )
+      setPendingFrame({ attachmentId: att.id, thumbnailUrl: mediaUrlFromPath(att.path), t })
+    } catch (err) {
+      console.error('frame capture failed', err)
+    }
+  }
+  useHotkeys('mod+shift+c', () => {
+    void onCapture()
+  })
+
+  // Post a comment-note anchored to the captured `t` (capture-t wins over the
+  // live chip when a frame is pending). The comment-on edge points at the video
+  // note's SLUG. source_kind:'youtube' lets an empty-caption screenshot post
+  // pass the empty-body Zod gate (NotesCreateInputSchema superRefine, A3). After
+  // create, the pending attachment is linked to the new note.
+  const post = useMutation({
+    mutationFn: async ({ body, t }: { body: string; t: number }) => {
+      const tAnchor = pendingFrame ? pendingFrame.t : t
+      const created = await api.notes.create(body, 'claim', {
+        source_kind: 'youtube',
+        source_locator: { media: 'youtube', video_id: videoId, t: tAnchor },
+        commentOn: note?.slug ?? '',
+      })
+      if (pendingFrame) await api.attachments.attachToNote(pendingFrame.attachmentId, created.id)
+      return created
+    },
+    onSuccess: () => {
+      setPendingFrame(null)
+      void queryClient.invalidateQueries({ queryKey: ['notes'] })
+      void queryClient.invalidateQueries({ queryKey: ['thread', noteId] })
+    },
+  })
 
   // ── derived transport values ──────────────────────────────────────────────
 
@@ -259,11 +321,14 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
         <div style={{ maxWidth: COL, margin: '0 auto' }}>
           <ThreadComposer
             livePlayhead={currentTime}
+            pendingFrame={
+              pendingFrame ? { thumbnailUrl: pendingFrame.thumbnailUrl, t: pendingFrame.t } : null
+            }
+            onCapture={() => {
+              void onCapture()
+            }}
             onPost={({ body, t }) => {
-              // E4 wires the real api.notes.create + commentOn here.
-              // For now this is a no-op shell so ThreadView compiles.
-              void body
-              void t
+              post.mutate({ body, t })
             }}
             onManualSeekEntry={(s) => {
               void player.seekTo(s)

@@ -28,6 +28,17 @@ vi.mock('../yt/usePlayer', () => ({
   }),
 }))
 
+// Mock the player singleton so the capture handler reads a deterministic rect +
+// time without a real iframe. `getIframeRect` and `getCurrentTime` are reassigned
+// per-test (the null-rect no-op case overrides getIframeRect).
+const getIframeRect = vi.fn<() => DOMRect | null>(
+  () => ({ x: 0, y: 0, width: 480, height: 270 }) as DOMRect,
+)
+const getCurrentTime = vi.fn<() => Promise<number>>(async () => 42)
+vi.mock('../yt/playerSingleton', () => ({
+  getPlayer: () => ({ getIframeRect, getCurrentTime, videoId: 'abc' }),
+}))
+
 // Import under test AFTER vi.mock so the hoisted mock applies.
 import { ThreadView } from './ThreadView'
 
@@ -81,6 +92,8 @@ const NOTE_B: Note = {
 let mockApi: MockApi
 
 beforeEach(() => {
+  getIframeRect.mockReturnValue({ x: 0, y: 0, width: 480, height: 270 } as DOMRect)
+  getCurrentTime.mockResolvedValue(42)
   mockApi = installMockApi()
   mockApi.notes.get.mockResolvedValue(SOURCE_NOTE)
   mockApi.links.commentsOf.mockResolvedValue([
@@ -159,5 +172,115 @@ describe('ThreadView', () => {
     // Switch to capture mode: note-A created_at=50 < note-B created_at=100 → note-A first
     fireEvent.click(screen.getByLabelText('sort mode'))
     expect(getOrder()).toEqual(['note at ten seconds', 'note at five seconds'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Capture → pending chip → post comment-note + attachToNote
+// ---------------------------------------------------------------------------
+
+describe('ThreadView capture flow', () => {
+  it('captures a frame, shows a pending chip, posts a comment-note anchored to the capture-t, then attaches', async () => {
+    mockApi.youtube.capture.mockResolvedValue({
+      id: 'att1',
+      path: '/store/2026/05/sha.png',
+      sha256: 'sha',
+      width: 480,
+      height: 270,
+      devicePixelRatio: 1,
+    })
+    mockApi.notes.create.mockResolvedValue({ ...SOURCE_NOTE, id: 'n1', type: 'claim' })
+
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    // Wait for the source note to resolve so videoId/slug are populated.
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    // (1) Camera button → capture called with the rect + videoId + t=42
+    fireEvent.click(screen.getByLabelText('capture frame'))
+    await waitFor(() => expect(mockApi.youtube.capture).toHaveBeenCalledOnce())
+    expect(mockApi.youtube.capture).toHaveBeenCalledWith({
+      rect: { x: 0, y: 0, width: 480, height: 270 },
+      videoId: 'abc',
+      t: 42,
+    })
+
+    // (2) the pending thumbnail chip appears with the derived _media URL
+    await waitFor(() =>
+      expect(screen.getByRole('img', { name: /frame/i })).toHaveAttribute(
+        'src',
+        '/_media/2026/05/sha.png',
+      ),
+    )
+
+    // (3) type a caption + submit → notes.create with capture-t + commentOn slug
+    //     + source_kind, THEN attachToNote('att1','n1') in that order.
+    const textarea = screen.getByRole('textbox')
+    fireEvent.change(textarea, { target: { value: 'look here' } })
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+
+    await waitFor(() => expect(mockApi.notes.create).toHaveBeenCalledOnce())
+    expect(mockApi.notes.create).toHaveBeenCalledWith({
+      body: 'look here',
+      type: 'claim',
+      source_kind: 'youtube',
+      source_locator: { media: 'youtube', video_id: 'abc', t: 42 },
+      commentOn: 'vid',
+    })
+    await waitFor(() => expect(mockApi.attachments.attachToNote).toHaveBeenCalledOnce())
+    expect(mockApi.attachments.attachToNote).toHaveBeenCalledWith({
+      attachmentId: 'att1',
+      noteId: 'n1',
+    })
+    // create resolves before attach is invoked
+    const createOrder = mockApi.notes.create.mock.invocationCallOrder[0] ?? Infinity
+    const attachOrder = mockApi.attachments.attachToNote.mock.invocationCallOrder[0] ?? -Infinity
+    expect(createOrder).toBeLessThan(attachOrder)
+
+    // (4) after success the pending chip is gone
+    await waitFor(() => expect(screen.queryByRole('img', { name: /frame/i })).toBeNull())
+  })
+
+  it('⌘⇧C hotkey fires capture when no form tag is focused', async () => {
+    mockApi.youtube.capture.mockResolvedValue({
+      id: 'att2',
+      path: '/store/2026/05/x.png',
+      sha256: 'x',
+      width: 480,
+      height: 270,
+      devicePixelRatio: 1,
+    })
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    // activeElement is body (no form tag) → enableOnFormTags omitted means the
+    // hook is enabled here.
+    fireEvent.keyDown(document.body, { key: 'c', code: 'KeyC', metaKey: true, shiftKey: true })
+    fireEvent.keyDown(document.body, { key: 'c', code: 'KeyC', ctrlKey: true, shiftKey: true })
+    await waitFor(() => expect(mockApi.youtube.capture).toHaveBeenCalled())
+  })
+
+  it('⌘⇧C hotkey does NOT fire while the composer textarea is focused (enableOnFormTags omitted)', async () => {
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    const textarea = screen.getByRole('textbox')
+    textarea.focus()
+    fireEvent.keyDown(textarea, { key: 'c', code: 'KeyC', metaKey: true, shiftKey: true })
+    fireEvent.keyDown(textarea, { key: 'c', code: 'KeyC', ctrlKey: true, shiftKey: true })
+
+    // The hotkey is suppressed inside form tags → no capture.
+    expect(mockApi.youtube.capture).not.toHaveBeenCalled()
+  })
+
+  it('is a no-op when getIframeRect() returns null (no crash, no capture call)', async () => {
+    getIframeRect.mockReturnValue(null)
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByLabelText('capture frame'))
+
+    // No capture, no pending chip.
+    expect(mockApi.youtube.capture).not.toHaveBeenCalled()
+    expect(screen.queryByRole('img', { name: /frame/i })).toBeNull()
   })
 })
