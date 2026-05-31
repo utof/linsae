@@ -5,6 +5,7 @@ import { api } from '../lib/api'
 import { usePlayer } from '../yt/usePlayer'
 import { Rail } from './Rail'
 import { markerPositions } from './rail-layout'
+import { ThreadComposer } from './ThreadComposer'
 import { TransportBar } from './TransportBar'
 import { useThreadNotes } from './useThreadNotes'
 
@@ -255,20 +256,19 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
           background: 'var(--bg-0)',
         }}
       >
-        <div
-          style={{
-            maxWidth: COL,
-            margin: '0 auto',
-            background: '#fff',
-            border: '1px solid var(--border-1)',
-            borderRadius: 'var(--r-4)',
-            padding: '7px 9px',
-            color: 'var(--fg-3)',
-            fontSize: 13,
-          }}
-        >
-          {/* ThreadComposer mounts here (next task) */}
-          note at this frame…
+        <div style={{ maxWidth: COL, margin: '0 auto' }}>
+          <ThreadComposer
+            livePlayhead={currentTime}
+            onPost={({ body, t }) => {
+              // E4 wires the real api.notes.create + commentOn here.
+              // For now this is a no-op shell so ThreadView compiles.
+              void body
+              void t
+            }}
+            onManualSeekEntry={(s) => {
+              void player.seekTo(s)
+            }}
+          />
         </div>
       </div>
     </div>
