@@ -45,5 +45,9 @@ export function secureWebPreferences(preloadPath: string): WebPreferences {
     nodeIntegration: false,
     sandbox: true,
     preload: preloadPath,
+    // Why: webviewTag must be explicitly enabled for the <webview> element to
+    // function. The will-attach-webview handler in index.ts enforces the same
+    // hardened flags on every guest (spec §9 / ADR 0016).
+    webviewTag: true,
   }
 }
