@@ -70,12 +70,12 @@ export function guestRuntime(nonce: string): string {
   }
 
   /** Build flags snapshot from the video element. */
-  function flags(v, started) {
+  function flags(v, started, waiting) {
     return {
       ready: true,
       ended: v.ended,
       paused: v.paused,
-      waiting: false,
+      waiting: waiting,
       started: started,
       currentTime: v.currentTime,
       duration: isFinite(v.duration) ? v.duration : 0
@@ -86,6 +86,7 @@ export function guestRuntime(nonce: string): string {
   var rafId = 0;
   var videoEl = null;
   var startedFlag = false;
+  var waitingFlag = false;
   var observerActive = false;
 
   function stopRaf() {
@@ -109,21 +110,26 @@ export function guestRuntime(nonce: string): string {
   }
 
   function attachVideo(v) {
+    // Guard against double-attach if re-hook fires while the same <video> is still connected.
+    if (v === videoEl) return;
     videoEl = v;
     startedFlag = v.currentTime > 0 || !v.paused;
+    waitingFlag = false;
 
     /** Post state event with current snapshot. */
     function emitState() {
       if (rpc) {
         startedFlag = startedFlag || (!v.paused);
-        rpc.send('state', flags(v, startedFlag));
+        rpc.send('state', flags(v, startedFlag, waitingFlag));
       }
     }
 
-    var mediaEvents = ['play', 'pause', 'playing', 'waiting', 'seeked', 'durationchange', 'ended', 'loadedmetadata', 'error'];
+    var mediaEvents = ['play', 'pause', 'playing', 'waiting', 'canplay', 'seeked', 'durationchange', 'ended', 'loadedmetadata', 'error', 'timeupdate'];
     mediaEvents.forEach(function(evt) {
       v.addEventListener(evt, function() {
-        if (evt === 'playing') { startedFlag = true; startRaf(v); }
+        if (evt === 'playing') { startedFlag = true; waitingFlag = false; startRaf(v); }
+        if (evt === 'waiting') { waitingFlag = true; }
+        if (evt === 'canplay' || evt === 'timeupdate') { waitingFlag = false; }
         if (evt === 'pause' || evt === 'ended') { stopRaf(); }
         emitState();
       });
@@ -156,7 +162,8 @@ export function guestRuntime(nonce: string): string {
     return false;
   }
 
-  /** MutationObserver re-hook across SPA navigation. YouTube recreates <video>. */
+  /** MutationObserver re-hook across SPA navigation. YouTube recreates <video>.
+   *  Stays connected for the page lifetime so a second swap is also caught. */
   function setupObserver() {
     if (observerActive) return;
     observerActive = true;
@@ -164,8 +171,10 @@ export function guestRuntime(nonce: string): string {
     var obs = new MutationObserver(function() {
       if (!videoEl || !videoEl.isConnected) {
         videoEl = null;
+        waitingFlag = false;
         stopRaf();
-        if (findVideo()) { obs.disconnect(); }
+        // Do NOT disconnect — keep watching for the next SPA swap.
+        findVideo();
       }
     });
     obs.observe(target, { childList: true, subtree: true });
@@ -185,17 +194,17 @@ export function guestRuntime(nonce: string): string {
     // This listener runs in the guest document and does NOT affect the host frame.
     document.addEventListener('keydown', function(e) { e.stopPropagation(); }, true);
 
-    // Poll for consent popup — emit once if found
-    var consentSent = false;
+    // Track consent/sign-in wall transitions — emit on change, keep observer alive.
+    var lastConsentActive = false;
     function checkConsent() {
-      if (consentSent) return;
-      if (document.querySelector('ytd-consent-bump-v2-lightbox')) {
-        consentSent = true;
-        rpc.send('needs-interaction', null);
+      var active = !!document.querySelector('ytd-consent-bump-v2-lightbox');
+      if (active !== lastConsentActive) {
+        lastConsentActive = active;
+        rpc.send('needs-interaction', { active: active });
       }
     }
 
-    // Try immediately, then re-check when DOM settles
+    // Try immediately, then re-check on every DOM mutation for the page lifetime.
     checkConsent();
     var consentObs = new MutationObserver(function() { checkConsent(); });
     consentObs.observe(document.body || document.documentElement, { childList: true, subtree: true });

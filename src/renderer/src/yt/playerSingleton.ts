@@ -31,7 +31,6 @@ interface WebviewElement extends HTMLElement {
   executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>
   insertCSS(css: string): Promise<string>
   setUserAgent(ua: string): void
-  getWebContentsId(): number
   contentWindow: Window
 }
 
@@ -109,8 +108,11 @@ async function onDomReady(): Promise<void> {
     cache.currentTime = o.currentTime
     if (o.duration > 0) cache.duration = o.duration
   })
-  rpc.on('needs-interaction', () => {
-    if (clickCatcher) clickCatcher.style.pointerEvents = 'none'
+  rpc.on('needs-interaction', (payload) => {
+    // When the consent/sign-in wall is active, let clicks reach the webview.
+    // When cleared, the overlay reclaims clicks + keyboard focus (spec §8).
+    if (clickCatcher)
+      clickCatcher.style.pointerEvents = (payload as { active: boolean }).active ? 'none' : 'auto'
   })
 
   await wv.executeJavaScript(guestRuntime(NONCE))

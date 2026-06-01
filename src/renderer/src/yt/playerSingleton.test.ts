@@ -7,7 +7,6 @@ function stubWebview(el: HTMLElement) {
     executeJavaScript: ex,
     insertCSS: vi.fn(async () => 'key'),
     setUserAgent: vi.fn(),
-    getWebContentsId: vi.fn(() => 7),
   })
   el.getBoundingClientRect = () =>
     ({
