@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, Clock, Film } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
+import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { api } from '../lib/api'
 import { mediaUrlFromPath } from '../lib/media-url'
 import { getPlayer } from '../yt/playerSingleton'
@@ -127,6 +128,21 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   // ring on a cluster after follow-scroll / click-to-seek (cleared after FLASH_MS).
   const activeIdx = activeClusterIndex(clusters, currentTime)
   const scrollRef = useRef<HTMLDivElement>(null)
+  // The notes scroller, captured as state so the custom-scrollbar driver can
+  // attach to it. The ref mirror (scrollRef) stays for scrollIntoView/measure.
+  // The scroller is full-width (so the rail gutter's negative offsets aren't
+  // clipped); the native bar is hidden and the custom thumb is drawn over the
+  // centered column instead — matching the feed's center-only scrollbar.
+  const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null)
+  const setScroller = useCallback((el: HTMLDivElement | null) => {
+    scrollRef.current = el
+    setScrollerEl(el)
+    if (el) {
+      el.classList.add('scroll-area-inner')
+      el.style.scrollbarWidth = 'none'
+    }
+  }, [])
+  const thumb = useScrollThumb(scrollerEl)
   const [flashClusterIdx, setFlashClusterIdx] = useState(-1)
   const flashTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   // null = hidden; 'up'/'down' = playhead is above/below the viewport.
@@ -294,50 +310,62 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
       }}
     >
       {/* ── 1. Slim top bar ─────────────────────────────────────────────── */}
+      {/* Inner content shares the centered COL column with the player, notes,
+          and composer so the whole view reads as one column instead of a
+          left-floating title beside a centered body. */}
       <header
         style={{
           flex: '0 0 auto',
           height: 46,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 10,
-          padding: '0 16px',
+          padding: '0 24px',
           borderBottom: '1px solid var(--border-0)',
         }}
       >
-        <button
-          type="button"
-          aria-label="back"
-          onClick={onClose}
+        <div
           style={{
-            display: 'inline-flex',
+            maxWidth: COL,
+            margin: '0 auto',
+            height: '100%',
+            display: 'flex',
             alignItems: 'center',
-            justifyContent: 'center',
-            width: 28,
-            height: 28,
-            border: 0,
-            background: 'transparent',
-            cursor: 'pointer',
-            borderRadius: 'var(--r-2)',
-            color: 'var(--fg-2)',
-            padding: 0,
-            flexShrink: 0,
+            gap: 10,
           }}
         >
-          <ChevronLeft size={17} />
-        </button>
-        <div style={{ minWidth: 0 }}>
-          <div
+          <button
+            type="button"
+            aria-label="back"
+            onClick={onClose}
             style={{
-              fontSize: 13,
-              fontWeight: 500,
-              color: 'var(--fg-0)',
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 28,
+              height: 28,
+              border: 0,
+              background: 'transparent',
+              cursor: 'pointer',
+              borderRadius: 'var(--r-2)',
+              color: 'var(--fg-2)',
+              padding: 0,
+              flexShrink: 0,
+              marginLeft: -8,
             }}
           >
-            {title}
+            <ChevronLeft size={17} />
+          </button>
+          <div style={{ minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 500,
+                color: 'var(--fg-0)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {title}
+            </div>
           </div>
         </div>
       </header>
@@ -397,26 +425,35 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
         </div>
       </div>
 
-      {/* ── 3. Scrollable content column (relative frame anchors the pill) ── */}
-      <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex' }}>
+      {/* ── 3. Sort row (always visible) + scrollable notes ────────────────── */}
+      {/* SortPill lives OUTSIDE the scroller so changing sort never requires
+          scrolling back to the top. Centered to the same COL column. */}
+      <div style={{ flex: '0 0 auto', padding: '12px 24px 8px' }}>
+        <div style={{ maxWidth: COL, margin: '0 auto' }}>
+          <SortPill
+            sortMode={sortMode}
+            onToggle={() => setSortMode((m) => (m === 'video' ? 'capture' : 'video'))}
+          />
+        </div>
+      </div>
+
+      <div
+        style={{ flex: 1, minHeight: 0, position: 'relative' }}
+        onPointerEnter={thumb.onAreaEnter}
+        onPointerLeave={thumb.onAreaLeave}
+        onPointerMove={thumb.onAreaPointerMove}
+      >
         <div
-          ref={scrollRef}
+          ref={setScroller}
           data-testid="thread-scroll"
           onScroll={measurePill}
           style={{
-            flex: 1,
-            minHeight: 0,
+            height: '100%',
             overflowY: 'auto',
-            padding: '16px 24px 10px',
+            padding: '4px 24px 10px',
           }}
         >
           <div style={{ maxWidth: COL, margin: '0 auto' }}>
-            {/* SortPill: toggles between video-time and capture-time order */}
-            <SortPill
-              sortMode={sortMode}
-              onToggle={() => setSortMode((m) => (m === 'video' ? 'capture' : 'video'))}
-            />
-
             {/* The thread rendering: video-order rail (default) or capture feed. */}
             <Rail
               clusters={clusters}
@@ -431,6 +468,32 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
                 void player.seekTo(t)
                 scrollClusterIntoView(activeClusterIndex(clusters, t))
               }}
+            />
+          </div>
+        </div>
+
+        {/* Custom scrollbar, constrained to the centered COL column (not the
+            full window) so it matches the main feed. The overlay centers a
+            COL-wide box; the thumb sits at that box's right edge. */}
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            justifyContent: 'center',
+            pointerEvents: 'none',
+          }}
+        >
+          <div style={{ position: 'relative', width: '100%', maxWidth: COL, height: '100%' }}>
+            <ScrollThumb
+              geometry={thumb.geometry}
+              thumbHovered={thumb.thumbHovered}
+              areaHovered={thumb.areaHovered}
+              pointerNear={thumb.pointerNear}
+              resizing={thumb.resizing}
+              dragging={thumb.dragging}
+              setThumbHovered={thumb.setThumbHovered}
+              onPointerDown={thumb.onThumbPointerDown}
             />
           </div>
         </div>
