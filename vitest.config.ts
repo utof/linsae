@@ -3,14 +3,34 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   test: {
-    // happy-dom over jsdom: jsdom's environment construction measured ~4s per
-    // component file and dominated the suite (~100s → ~70s on the switch). DB and
-    // integration tests pin `// @vitest-environment node` per-file. See ADR 0014.
-    environment: 'happy-dom',
     globals: false,
     passWithNoTests: true,
-    setupFiles: ['./tests/setup.tsx'],
-    include: ['src/**/*.test.{ts,tsx}', 'tests/**/*.test.{ts,tsx}'],
+    // Two projects so pure-logic tests skip the DOM env AND the RTL/jest-dom setup
+    // file. Measured: node-env files were paying ~4.3s each loading setup.tsx for
+    // nothing (~95s aggregate). happy-dom over jsdom — see ADR 0014.
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'node',
+          environment: 'node',
+          include: [
+            'src/main/**/*.test.{ts,tsx}',
+            'src/shared/**/*.test.{ts,tsx}',
+            'tests/integration/**/*.test.{ts,tsx}',
+          ],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'dom',
+          environment: 'happy-dom',
+          setupFiles: ['./tests/setup.tsx'],
+          include: ['src/renderer/**/*.test.{ts,tsx}'],
+        },
+      },
+    ],
     coverage: {
       reporter: ['text', 'html'],
       // vitest v4: coverage.all removed; include drives both covered + uncovered files.
