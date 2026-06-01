@@ -3,7 +3,10 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   test: {
-    environment: 'jsdom',
+    // happy-dom over jsdom: jsdom's environment construction measured ~4s per
+    // component file and dominated the suite (~100s → ~70s on the switch). DB and
+    // integration tests pin `// @vitest-environment node` per-file. See ADR 0014.
+    environment: 'happy-dom',
     globals: false,
     passWithNoTests: true,
     setupFiles: ['./tests/setup.tsx'],

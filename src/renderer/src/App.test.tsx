@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 /**
  * Component tests for App — paste-to-source-note flow and ThreadView nav.
  *

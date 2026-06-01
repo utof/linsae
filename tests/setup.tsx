@@ -5,12 +5,21 @@ import type { ReactNode } from 'react'
 import { afterEach, vi } from 'vitest'
 import type { Attachment, Note, SearchHit } from '../src/shared/types'
 
-// jsdom lacks ResizeObserver, but @radix-ui/react-dialog (transitively used by
-// cmdk's Command.Dialog) calls `new ResizeObserver(...)` during mount. A no-op
-// stub is sufficient for component tests that don't assert on resize behaviour.
-// Why a stub (not a real impl): jsdom never lays out, so observed sizes would
-// always be 0 — tests that actually care about size mock per-test instead.
-// @see https://github.com/jsdom/jsdom/issues/3368
+// happy-dom defaults the document to quirks mode, but KaTeX (react-markdown +
+// rehype-katex) throws "KaTeX doesn't work in quirks mode" unless
+// document.compatMode === 'CSS1Compat'. jsdom reported standards mode, so force
+// it here for parity. @see ADR 0014 · https://github.com/KaTeX/KaTeX (quirks-mode guard)
+// Guarded: setup.tsx also runs for `// @vitest-environment node` tests (DB/media/
+// integration) where `document` is undefined.
+if (typeof document !== 'undefined') {
+  Object.defineProperty(document, 'compatMode', { value: 'CSS1Compat', configurable: true })
+}
+
+// happy-dom (like jsdom) lacks a laying-out ResizeObserver; @radix-ui/react-dialog
+// (transitively used by cmdk's Command.Dialog) calls `new ResizeObserver(...)` during
+// mount. happy-dom DOES ship one, so this guarded stub only applies if it's ever
+// absent. Why a stub: no layout engine → observed sizes are 0; tests that care mock
+// per-test instead. @see https://github.com/jsdom/jsdom/issues/3368
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class ResizeObserverStub {
     observe(): void {}
