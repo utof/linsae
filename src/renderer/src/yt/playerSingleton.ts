@@ -145,8 +145,12 @@ export function getPlayer(): Player & {
   webview = document.createElement('webview') as unknown as WebviewElement
   webview.setAttribute('partition', 'persist:yt-player')
   webview.setAttribute('webpreferences', 'autoplayPolicy=user-gesture-required')
+  // Why: use the `useragent` attribute (not setUserAgent()) — setUserAgent() requires
+  // the webview to be attached to the DOM and dom-ready fired (it calls getWebContentsId
+  // internally). The attribute is read by Electron at WebContents creation time and
+  // does not require attachment. (bug found by T7 smoke)
+  webview.setAttribute('useragent', youtubeUserAgent())
   webview.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;'
-  webview.setUserAgent(youtubeUserAgent())
 
   cover = document.createElement('div')
   cover.style.cssText = 'position:absolute;inset:0;background:#000;z-index:2;pointer-events:none;'
