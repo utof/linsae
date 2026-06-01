@@ -17,6 +17,7 @@ function makeProps(overrides: Partial<Parameters<typeof TransportBar>[0]> = {}) 
     onSeek: vi.fn(),
     onRate: vi.fn(),
     onToggleFollow: vi.fn(),
+    onFullscreen: vi.fn(),
     ...overrides,
   }
 }
@@ -85,6 +86,13 @@ describe('TransportBar', () => {
     expect(speedBtn.textContent).toContain('1.5')
     fireEvent.click(speedBtn)
     expect(onRate).toHaveBeenCalledOnce()
+  })
+
+  it('clicking fullscreen calls onFullscreen', () => {
+    const onFullscreen = vi.fn()
+    render(<TransportBar {...makeProps({ onFullscreen })} />)
+    fireEvent.click(screen.getByRole('button', { name: /fullscreen/i }))
+    expect(onFullscreen).toHaveBeenCalledOnce()
   })
 
   it('scrubber track wires onSeek (click handler is attached)', () => {

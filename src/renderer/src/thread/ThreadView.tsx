@@ -16,6 +16,9 @@ import { useThreadNotes } from './useThreadNotes'
 /** ms the accent flash ring stays on a cluster after follow-scroll / click-to-seek. */
 const FLASH_MS = 600
 
+/** Playback-rate cycle for the transport speed badge. */
+const RATES = [1, 1.25, 1.5, 1.75, 2]
+
 /**
  * Centered content column width — matches ThreadView.jsx in the design-system
  * handoff (v21-design-system/v21-youtube-view-handoff/ThreadView.jsx line 51).
@@ -104,6 +107,19 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   // ── follow state ──────────────────────────────────────────────────────────
 
   const [followOn, setFollowOn] = useState(true)
+
+  // ── playback rate (F1) ──────────────────────────────────────────────────────
+  // Cycle through a fixed sequence on each speed-badge click and push the new
+  // rate to the player. Kept here (not in TransportBar) so the badge stays a
+  // pure presentational readout.
+  const [rate, setRate] = useState(1)
+  const cycleRate = useCallback(() => {
+    setRate((r) => {
+      const next = RATES[(RATES.indexOf(r) + 1) % RATES.length] ?? 1
+      void player.setPlaybackRate(next)
+      return next
+    })
+  }, [player])
 
   // ── follow auto-scroll · jump-pill · flash (spec §319–322) ──────────────────
   // The active cluster is the one the playhead currently sits in. `scrollRef`
@@ -347,7 +363,7 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
             state={state}
             currentTime={currentTime}
             duration={duration}
-            rate={1}
+            rate={rate}
             markers={markers}
             followOn={followOn}
             onPlayPause={() => {
@@ -360,11 +376,14 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
             onSeek={(s) => {
               void player.seekTo(s)
             }}
-            onRate={() => {
-              // Rate cycling deferred to F1; no-op shell here.
-            }}
+            onRate={cycleRate}
             onToggleFollow={() => {
               setFollowOn((v) => !v)
+            }}
+            onFullscreen={() => {
+              // Fullscreen the singleton's wrapper (the iframe fills it). Guarded
+              // because requestFullscreen can be absent/rejected in some contexts.
+              void player.wrapper?.requestFullscreen?.()
             }}
           />
         </div>

@@ -43,11 +43,27 @@ export function getPlayer() {
   // `host` is included in @types/youtube-player Options; `playerVars.enablejsapi` is typed as 0|1.
   raw = YouTubePlayer(target, {
     host: 'https://www.youtube-nocookie.com',
-    playerVars: { enablejsapi: 1, controls: 0, rel: 0, playsinline: 1 },
+    // controls:0 already hides YouTube's own control bar (we draw TransportBar).
+    // iv_load_policy:3 hides video annotations; modestbranding:1 trims the logo;
+    // fs:1 permits fullscreen. NOTE: the pause/end-screen overlay ("More videos",
+    // channel watermark, watch-on-YouTube) is rendered by YouTube inside the
+    // embed and is NOT removable via the IFrame API (embed ToS); its fade timing
+    // isn't controllable either. These vars are the most we can reduce.
+    playerVars: {
+      enablejsapi: 1,
+      controls: 0,
+      rel: 0,
+      playsinline: 1,
+      iv_load_policy: 3,
+      modestbranding: 1,
+      fs: 1,
+    },
   })
   raw.getIframe().then((f: HTMLIFrameElement) => {
     if (!f) return
     f.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin')
+    f.setAttribute('allow', 'fullscreen; encrypted-media; picture-in-picture')
+    f.setAttribute('allowfullscreen', 'true')
     // youtube-player stamps the iframe with fixed 640×390 attributes; the host
     // box is smaller with overflow:hidden, so without these it clips to the
     // top-left corner. Force the iframe to fill its 16:9 host.
