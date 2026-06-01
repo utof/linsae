@@ -65,6 +65,14 @@ export interface ThreadComposerProps {
    * Present in the prop bag now so E4 can pass it without a signature change.
    */
   onCapture?: () => void
+  /**
+   * User-facing error from the last post attempt (e.g. duplicate-slug). When
+   * set, the card border turns red and the message renders below; the draft is
+   * preserved so the user can edit + retry. Mirrors the feed Composer's UX.
+   */
+  error?: string | null
+  /** Called on the next keystroke when `error` is set, so the parent clears it. */
+  onClearError?: () => void
 }
 
 /** @see ThreadComposerProps */
@@ -75,6 +83,8 @@ export function ThreadComposer({
   onPost,
   onManualSeekEntry,
   onCapture,
+  error = null,
+  onClearError,
 }: ThreadComposerProps) {
   // ── local state ────────────────────────────────────────────────────────────
   const [draft, setDraft] = useState('')
@@ -242,7 +252,7 @@ export function ThreadComposer({
     <div
       style={{
         background: '#fff',
-        border: '1px solid var(--border-1)',
+        border: `1px solid ${error ? 'var(--status-wtf)' : 'var(--border-1)'}`,
         borderRadius: 'var(--r-4)',
         boxShadow: 'var(--shadow-2)',
         padding: '7px 9px',
@@ -277,8 +287,16 @@ export function ThreadComposer({
             inputMode="numeric"
             value={chipInputDisplay}
             // Digit-only: strip everything but 0-9 (the colon is auto-inserted by
-            // formatClock for display) and cap at 6 digits → H:MM:SS.
-            onChange={(e) => setChipInputValue(e.target.value.replace(/\D/g, '').slice(0, 6))}
+            // formatClock for display) and cap at 6 digits → H:MM:SS. Live-clamp
+            // to the video length AS you type: once entry exceeds the end we store
+            // the clamped value's digits, so hammering 9999 freezes at the duration
+            // (e.g. 3:24 video → 3:24) instead of silently overshooting.
+            onChange={(e) => {
+              const digits = e.target.value.replace(/\D/g, '').slice(0, 6)
+              const secs = parseTimeDigits(digits)
+              const clamped = clampSeconds(secs, duration)
+              setChipInputValue(clamped < secs ? formatClock(clamped).replace(/\D/g, '') : digits)
+            }}
             onKeyDown={onChipInputKeyDown}
             onBlur={commitChipInput}
             // biome-ignore lint/a11y/noAutofocus: small inline input shown by user action
@@ -310,7 +328,10 @@ export function ThreadComposer({
           ref={textareaRef}
           rows={1}
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            if (error) onClearError?.()
+            setDraft(e.target.value)
+          }}
           onFocus={() => setFocused(true)}
           onBlur={() => {
             setFocused(false)
@@ -388,6 +409,20 @@ export function ThreadComposer({
           <Send size={15} />
         </button>
       </div>
+
+      {error && (
+        <div
+          role="alert"
+          style={{
+            marginTop: 6,
+            color: 'var(--status-wtf)',
+            fontSize: 12,
+            lineHeight: 1.4,
+          }}
+        >
+          {error}
+        </div>
+      )}
     </div>
   )
 }

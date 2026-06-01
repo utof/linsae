@@ -199,6 +199,9 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     thumbnailUrl: string
     t: number
   } | null>(null)
+  // Surfaces the last failed post (e.g. duplicate-slug) in the composer, mirroring
+  // the feed's inline error UX. Cleared on the next keystroke via onClearError.
+  const [postError, setPostError] = useState<string | null>(null)
 
   // ⌘⇧C / camera button: screenshot the live iframe rect at the current time.
   // No-op when no player is mounted (getIframeRect → null). On failure (e.g. the
@@ -253,9 +256,13 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     },
     onSuccess: () => {
       setPendingFrame(null)
+      setPostError(null)
       void queryClient.invalidateQueries({ queryKey: ['notes'] })
       void queryClient.invalidateQueries({ queryKey: ['thread', noteId] })
     },
+    // Surface failures (duplicate slug, empty-body gate, etc.) inline in the
+    // composer instead of failing silently — same contract as the feed.
+    onError: (err: Error) => setPostError(err.message),
   })
 
   // ── derived transport values ──────────────────────────────────────────────
@@ -469,6 +476,8 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
           <ThreadComposer
             livePlayhead={currentTime}
             duration={duration}
+            error={postError}
+            onClearError={() => setPostError(null)}
             pendingFrame={
               pendingFrame ? { thumbnailUrl: pendingFrame.thumbnailUrl, t: pendingFrame.t } : null
             }
