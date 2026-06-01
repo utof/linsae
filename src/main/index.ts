@@ -230,17 +230,24 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-// Minimal clamp: every webview guest is forced to contextIsolation+sandbox with
-// no nodeIntegration, regardless of what the renderer requests. The full guard
-// (URL allowlist + navigation confinement) lands in Task 5 / ADR 0016.
+// Full webview security guard (ADR 0016): clamp guest webPreferences, reject
+// non-YouTube attaches, confine guest navigation, and deny all popups.
 // Why here (not in createWindow): web-contents-created fires for ALL windows
 // and guest webviews alike, so this is the correct attachment point per the
 // Electron security docs.
 // @see https://www.electronjs.org/docs/latest/tutorial/security#12-verify-webview-options-before-creation
-app.on('web-contents-created', (_e, wc) =>
-  wc.on('will-attach-webview', (_ev, prefs) => {
+app.on('web-contents-created', (_e, contents) => {
+  contents.on('will-attach-webview', (event, prefs, params) => {
+    delete prefs.preload
     prefs.nodeIntegration = false
     prefs.contextIsolation = true
     prefs.sandbox = true
-  }),
-)
+    if (!/^https:\/\/(www\.)?youtube\.com\//.test(params.src ?? '')) event.preventDefault()
+  })
+  if (contents.getType() === 'webview') {
+    contents.on('will-navigate', (event, url) => {
+      if (!/youtube\.com/.test(url)) event.preventDefault()
+    })
+    contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  }
+})
