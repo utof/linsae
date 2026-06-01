@@ -28,7 +28,7 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
-import { app, BrowserWindow, Menu, shell } from 'electron'
+import { app, BrowserWindow, Menu, screen, shell } from 'electron'
 import { openDb } from './db/client'
 import { runMigrations } from './db/migrate'
 import { reconcile } from './db/reconcile'
@@ -87,9 +87,22 @@ app.on('second-instance', () => {
  * @see src/main/http-shell.ts (startLoopbackShell)
  */
 function createWindow(origin: string): BrowserWindow {
+  // Open on whatever monitor the cursor is on, not the primary display.
+  // Electron can't know which terminal launched it, but the cursor is a reliable
+  // proxy for "the screen I'm working on". Without an explicit x/y the window
+  // centers on the primary display regardless of launch context.
+  // @see https://www.electronjs.org/docs/latest/api/screen
+  const width = 1280
+  const height = 800
+  const cursorDisplay = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const area = cursorDisplay.workArea
+  const x = Math.round(area.x + (area.width - width) / 2)
+  const y = Math.round(area.y + (area.height - height) / 2)
   const win = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    width,
+    height,
+    x,
+    y,
     minWidth: 720,
     minHeight: 400,
     show: false,
