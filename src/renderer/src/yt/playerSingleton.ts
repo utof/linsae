@@ -1,19 +1,60 @@
 /**
- * Module-level YouTube player singleton. The IFrame API REPLACES its target
- * element, so we hold a STABLE wrapper <div> at module scope and create a
- * disposable inner child as the YT target — the wrapper (and the iframe inside
- * it) survives React 19 StrictMode's double-mount because it lives outside the
- * React tree (the `instance` guard returns the existing player). usePlayer
- * re-parents the wrapper into the ThreadView DOM on mount.
+ * Module-level Vidstack player singleton. Replaces the previous youtube-player
+ * (sister.js) engine. See adrs/0015-youtube-embed-vidstack.md.
  *
- * @see docs/specs/v0.2-youtube-annotation.md §Player subsystem (singleton, ADR 0008)
+ * WHY a singleton + detached wrapper (unchanged from the youtube-player design):
+ *   React 19 StrictMode double-invokes mount effects (mount -> unmount -> mount) in
+ *   dev. A player owned by the React tree would be torn down and rebuilt on that
+ *   cycle, reloading the YouTube iframe. We keep the player OUTSIDE React: a stable
+ *   wrapper <div> lives at module scope, the Vidstack player is created into it once
+ *   (the `instance` guard returns the existing player), and usePlayer only re-parents
+ *   the wrapper into the ThreadView DOM on mount.
+ *
+ * WHY Vidstack via `VidstackPlayer.create` and NOT the React <MediaPlayer> component:
+ *   <MediaPlayer> is a React component -> lives in the tree -> reintroduces the
+ *   StrictMode teardown above. The vanilla constructor lets us own the element
+ *   imperatively, matching the proven pattern.
+ *     - create() + import path: https://github.com/vidstack/player/discussions/1220
+ *     - instance API (play/pause/subscribe/state/currentTime/playbackRate/src):
+ *       https://vidstack.io/docs/player/components/core/player/
+ *     - subscribe without renders:
+ *       https://vidstack.io/docs/player/core-concepts/state-management/
+ *
+ * WHY this does NOT remove YouTube's chrome (title bar, "more videos", watermark):
+ *   Vidstack's YouTube provider uses the YouTube IFrame API, which by contract cannot
+ *   remove that chrome (https://vidstack.io/docs/player/api/providers/youtube/). We do
+ *   not try. The injected CSS sets the iframe to pointer-events:none so the hover chrome
+ *   never triggers; pause/end overlays are state-driven and sit behind our controls.
+ *   This keeps us off the fragile DOM-selector + UA-spoof + CSP-bypass path
+ *   media-extended v3 uses (ADR 0015 §Alternatives). The provider also hides the
+ *   recommendations popup when custom controls are used.
  */
-import YouTubePlayer from 'youtube-player'
+import { VidstackPlayer } from 'vidstack/global/player'
 
 import type { Player, PlayerState } from '../../../shared/player'
 
+// Derive the exact instance type from the constructor's return value instead of
+// importing a type name that might move between Vidstack versions.
+type VidstackInstance = Awaited<ReturnType<typeof VidstackPlayer.create>>
+
+// The Vidstack state object passed to `player.subscribe`. We only read a handful of
+// fields; this loose shape documents which ones (full list in the Player State docs).
+interface MediaState {
+  ended: boolean
+  playing: boolean
+  waiting: boolean
+  started: boolean
+  canPlay: boolean
+  paused: boolean
+  currentTime: number
+  duration: number
+}
+
 let wrapper: HTMLDivElement | null = null
-let raw: ReturnType<typeof YouTubePlayer> | null = null
+let styleEl: HTMLStyleElement | null = null
+let createPromise: Promise<VidstackInstance> | null = null
+let player: VidstackInstance | null = null
+let videoId: string | null = null
 let instance:
   | (Player & {
       wrapper: HTMLDivElement
@@ -22,99 +63,151 @@ let instance:
     })
   | null = null
 
-const STATE: Record<number, PlayerState> = {
-  '-1': 'unstarted',
-  0: 'ended',
-  1: 'playing',
-  2: 'paused',
-  3: 'buffering',
-  5: 'cued',
+/**
+ * Maps Vidstack's boolean state to the legacy YouTube-style PlayerState union the rest
+ * of the app consumes. Order matters. The unstarted/cued/buffering boundaries are an
+ * approximation of YouTube's discrete codes (-1 unstarted, 3 buffering, 5 cued).
+ */
+function deriveState(s: MediaState): PlayerState {
+  if (s.ended) return 'ended'
+  if (s.playing) return 'playing'
+  if (s.waiting) return 'buffering'
+  if (s.started) return 'paused' // started, not playing, not ended
+  if (s.canPlay) return 'cued' // loaded & ready, never played
+  return 'unstarted' // nothing loaded / not ready yet
+}
+
+/** Resolves once the async-created Vidstack player exists. */
+function ready(): Promise<VidstackInstance> {
+  if (player) return Promise.resolve(player)
+  if (createPromise) return createPromise
+  throw new Error('getPlayer() must be called before using the player')
+}
+
+/** Injects the (one-time) CSS that sizes the iframe and disables its pointer events. */
+function injectStyleOnce() {
+  if (styleEl) return
+  styleEl = document.createElement('style')
+  styleEl.id = 'yt-player-wrapper-style'
+  // Scoped by the wrapper id so we don't need a CSS framework (no Tailwind dep) and
+  // don't have to observe the iframe's async creation. pointer-events:none is the key
+  // line: YouTube receives no hover/click, so its hover chrome (top title+share bar,
+  // related-on-hover) never appears; our overlay owns all input. See ADR 0015.
+  styleEl.textContent = [
+    '#yt-player-wrapper, #yt-player-wrapper media-player { width: 100%; height: 100%; }',
+    '#yt-player-wrapper iframe { width: 100% !important; height: 100% !important; pointer-events: none; border: 0; }',
+  ].join('\n')
+  document.head.appendChild(styleEl)
 }
 
 /** Returns the singleton, constructing the detached wrapper + player on first call. */
 export function getPlayer() {
   if (instance) return instance
+
+  injectStyleOnce()
+
   wrapper = document.createElement('div')
   wrapper.id = 'yt-player-wrapper'
-  wrapper.style.width = '100%'
-  wrapper.style.height = '100%'
-  const target = document.createElement('div') // youtube-player replaces THIS with the iframe
-  wrapper.appendChild(target)
-  // `host` is included in @types/youtube-player Options; `playerVars.enablejsapi` is typed as 0|1.
-  raw = YouTubePlayer(target, {
-    host: 'https://www.youtube-nocookie.com',
-    // controls:0 already hides YouTube's own control bar (we draw TransportBar).
-    // iv_load_policy:3 hides video annotations; modestbranding:1 trims the logo;
-    // fs:1 permits fullscreen. NOTE: the pause/end-screen overlay ("More videos",
-    // channel watermark, watch-on-YouTube) is rendered by YouTube inside the
-    // embed and is NOT removable via the IFrame API (embed ToS); its fade timing
-    // isn't controllable either. These vars are the most we can reduce.
-    playerVars: {
-      enablejsapi: 1,
-      controls: 0,
-      rel: 0,
-      playsinline: 1,
-      iv_load_policy: 3,
-      modestbranding: 1,
-      fs: 1,
-    },
+  const wrapperEl = wrapper // non-null capture for closures below
+
+  // Kick off async creation. We pass the ELEMENT as target (a selector wouldn't
+  // resolve while the wrapper is still detached). No `layout` -> no Vidstack default
+  // UI (ThreadView draws our own TransportBar). `load: 'eager'` because the wrapper
+  // starts detached and is re-parented into a custom scroll container, where the
+  // default 'visible' IntersectionObserver strategy may never fire. See ADR 0015 §6.
+  createPromise = VidstackPlayer.create({
+    target: wrapperEl,
+    load: 'eager',
+    playsInline: true,
+  }).then((p) => {
+    player = p
+    return p
   })
-  raw.getIframe().then((f: HTMLIFrameElement) => {
-    if (!f) return
-    f.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin')
-    f.setAttribute('allow', 'fullscreen; encrypted-media; picture-in-picture')
-    f.setAttribute('allowfullscreen', 'true')
-    // youtube-player stamps the iframe with fixed 640×390 attributes; the host
-    // box is smaller with overflow:hidden, so without these it clips to the
-    // top-left corner. Force the iframe to fill its 16:9 host.
-    f.style.width = '100%'
-    f.style.height = '100%'
-  })
-  let videoId: string | null = null
+
   instance = {
-    wrapper,
+    wrapper: wrapperEl,
     get videoId() {
       return videoId
     },
     async load(id) {
       videoId = id
-      await raw!.loadVideoById(id)
+      const p = await ready()
+      // `youtube/<id>` is the shorthand Vidstack's YouTube provider expects; a full
+      // watch URL also works, so accept either.
+      p.src = /^https?:\/\//.test(id) ? id : `youtube/${id}`
     },
-    play: () => raw!.playVideo(),
-    pause: () => raw!.pauseVideo(),
-    seekTo: (s) => raw!.seekTo(s, true),
-    getCurrentTime: () => raw!.getCurrentTime(),
+    async play() {
+      const p = await ready()
+      await p.play()
+    },
+    async pause() {
+      const p = await ready()
+      await p.pause()
+    },
+    async seekTo(seconds) {
+      const p = await ready()
+      p.currentTime = seconds // setter performs the seek
+    },
+    async getCurrentTime() {
+      const p = await ready()
+      return p.state.currentTime ?? 0
+    },
     async getDuration() {
-      const d = await raw!.getDuration()
-      return d > 0 ? d : null
+      const p = await ready()
+      const d = p.state.duration
+      return d && d > 0 ? d : null
     },
-    setPlaybackRate: (r) => raw!.setPlaybackRate(r),
+    async setPlaybackRate(rate) {
+      const p = await ready()
+      p.playbackRate = rate
+    },
     onStateChange(cb) {
-      // sister.on returns a listener token; sister.off takes that same token.
-      // @types/youtube-player types `on` as returning void, but at runtime it returns
-      // the sister listener object — cast to unknown to thread through the token.
-      // Why: sister@3.x API — see node_modules/.pnpm/sister@3.0.2/.../sister.js
-      const listener = (
-        raw!.on as (event: 'stateChange', handler: (e: { data: number }) => void) => unknown
-      )('stateChange', (e: { data: number }) => cb(STATE[e.data] ?? 'unstarted'))
-      return () => (raw as unknown as { off(l: unknown): void })!.off(listener)
+      // `subscribe` fires on any state change and returns its own unsubscribe fn;
+      // it does NOT trigger React renders. We dedupe so cb only fires on derived-state
+      // transitions, matching the old per-YT-event behavior.
+      let unsubscribe: (() => void) | null = null
+      let cancelled = false
+      ready().then((p) => {
+        if (cancelled) return
+        let last: PlayerState | null = null
+        unsubscribe = p.subscribe((state: MediaState) => {
+          const next = deriveState(state)
+          if (next !== last) {
+            last = next
+            cb(next)
+          }
+        })
+      })
+      return () => {
+        cancelled = true
+        unsubscribe?.()
+      }
     },
     getIframeRect() {
-      const f = wrapper!.querySelector('iframe')
+      const f = wrapperEl.querySelector('iframe')
       return f ? f.getBoundingClientRect() : null
     },
     destroy() {
       destroyPlayer()
     },
   }
+
   return instance
 }
 
 /** Tears down the singleton (test cleanup + app teardown). */
 export function destroyPlayer(): void {
-  raw?.destroy()
+  try {
+    player?.destroy()
+  } catch {
+    // ignore teardown races
+  }
   wrapper?.remove()
-  raw = null
+  styleEl?.remove()
+  player = null
+  createPromise = null
   wrapper = null
+  styleEl = null
+  videoId = null
   instance = null
 }

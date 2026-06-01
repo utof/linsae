@@ -88,10 +88,13 @@ try {
   }
 
   // ── 4. Error-153 gate ──────────────────────────────────────────────────────
-  // Wait for the real player iframe (singleton, mounted by usePlayer via the
-  // youtube-player library which calls YT.Player). The YT IFrame API needs to
-  // load from youtube.com, which may take a few seconds. Poll the DOM state
-  // every 2s, logging progress.
+  // Wait for the real player iframe (singleton, mounted by usePlayer via
+  // Vidstack's YouTube provider — see adrs/0015). Vidstack drives the embed over
+  // postMessage and does NOT load the global YT IFrame API, so `ytAvailable` is
+  // expected to be false here; the probe below loads its OWN copy of the API on a
+  // throwaway div to test the embed origin independently of the app's engine. The
+  // embed iframe loads from youtube(-nocookie).com, which may take a few seconds.
+  // Poll the DOM state every 2s, logging progress.
   let iframePresent = false
   let iframeSelector = 'iframe[src*="youtube-nocookie.com"]'
 
