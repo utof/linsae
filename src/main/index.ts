@@ -236,17 +236,35 @@ app.on('window-all-closed', () => {
 // and guest webviews alike, so this is the correct attachment point per the
 // Electron security docs.
 // @see https://www.electronjs.org/docs/latest/tutorial/security#12-verify-webview-options-before-creation
+// Hostname-suffix allowlist for guest navigation. Anchored to the END of the
+// hostname so `evil-youtube.com.attacker.net` is rejected (a bare substring match
+// would let it through). Includes the Google sign-in/consent domains so the manual
+// consent / login flow (spec §8 — not automated) can complete inside the webview.
+const GUEST_HOST_ALLOW =
+  /(?:^|\.)(?:youtube\.com|youtube-nocookie\.com|youtu\.be|google\.com|googleapis\.com|gstatic\.com|ggpht\.com|googleusercontent\.com)$/
+
 app.on('web-contents-created', (_e, contents) => {
   contents.on('will-attach-webview', (event, prefs, params) => {
     delete prefs.preload
     prefs.nodeIntegration = false
     prefs.contextIsolation = true
     prefs.sandbox = true
-    if (!/^https:\/\/(www\.)?youtube\.com\//.test(params.src ?? '')) event.preventDefault()
+    // The player webview is created src-less and navigated via load() afterwards,
+    // so an empty src at attach time is legitimate — only block a NON-empty src
+    // that isn't YouTube. Runtime navigation is confined by will-navigate below.
+    const src = params.src ?? ''
+    if (src && !/^https:\/\/(www\.)?youtube\.com\//.test(src)) event.preventDefault()
   })
   if (contents.getType() === 'webview') {
     contents.on('will-navigate', (event, url) => {
-      if (!/youtube\.com/.test(url)) event.preventDefault()
+      let host = ''
+      try {
+        host = new URL(url).hostname
+      } catch {
+        event.preventDefault()
+        return
+      }
+      if (!GUEST_HOST_ALLOW.test(host)) event.preventDefault()
     })
     contents.setWindowOpenHandler(() => ({ action: 'deny' }))
   }
