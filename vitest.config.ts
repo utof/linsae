@@ -27,6 +27,12 @@ export default defineConfig({
           name: 'dom',
           environment: 'happy-dom',
           setupFiles: ['./tests/setup.tsx'],
+          // isolate:false reuses one happy-dom context per worker instead of
+          // tearing it down per file (34s→17s for this project). Safe here: RTL
+          // auto-cleanup() resets the DOM per test, and component tests use
+          // renderWithProviders' fresh QueryClient (not the module singleton).
+          // node project keeps isolation (real SQLite). See ADR 0014 follow-up.
+          isolate: false,
           include: ['src/renderer/**/*.test.{ts,tsx}'],
         },
       },

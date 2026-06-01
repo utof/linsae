@@ -71,6 +71,16 @@ where `document` is undefined (an unguarded version crashed every node test).
   real `ResizeObserver`, so the `typeof … === 'undefined'` guard no longer fires.
   Left in place as a harmless fallback.
 
+## Follow-up: `isolate: false` on the dom project
+
+Profiling showed the dom project paid env+setup re-init **per file** (53× teardown/
+rebuild). Setting `isolate: false` on the dom project reuses one happy-dom context
+per worker: dom project 34s→17s, full suite ~38s→~20s, stable across repeated and
+`--sequence.shuffle` runs (223/223). Safe because RTL `cleanup()` resets the DOM per
+test and component tests use `renderWithProviders`' fresh QueryClient, not the
+module-level `queryClient` singleton. The **node** project keeps isolation (real
+better-sqlite3 + tmpdir DBs must not share state). Reversible: drop the one flag.
+
 ## Sources
 
 - Vitest test environment: https://vitest.dev/guide/environment · https://vitest.dev/config/environment
