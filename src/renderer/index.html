@@ -8,15 +8,14 @@
          on the same http://127.0.0.1:<port> origin; in dev the Vite server proxies
          /_media/ to the loopback shell's fixed port. 'self' covers all three cases;
          the former app: token is removed as app:// is no longer the document origin. -->
-    <!-- frame-src lists BOTH YouTube embed hosts: Vidstack's YouTube provider
-         (ADR 0015) embeds www.youtube.com by default (cookies on) and
-         www.youtube-nocookie.com when no-cookie is requested — allow either so the
-         embed iframe is never CSP-blocked. The provider talks to that iframe over
-         postMessage and is bundled into our renderer, so it loads NO external script;
-         the legacy www.youtube.com script-src tokens (kept for the loopback shell's
-         http origin + HSTS upgrade, see ADR 0008) are now belt-and-suspenders. -->
+    <!-- The YouTube player is now an Electron <webview> (ADR 0016), not an iframe.
+         The webview runs in a separate browsing context governed by will-attach-webview
+         and will-navigate guards in the main process — the renderer CSP does NOT apply
+         to its frame or scripts. The former frame-src and script-src YouTube tokens are
+         therefore dead and have been removed. img-src keeps the ytimg.com thumbnail
+         hosts because those images are fetched by the renderer itself (not the webview). -->
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https://i.ytimg.com https://*.ytimg.com; frame-src https://www.youtube-nocookie.com https://www.youtube.com; script-src 'self' https://www.youtube.com http://www.youtube.com;" />
+          content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https://i.ytimg.com https://*.ytimg.com; script-src 'self';" />
     <!-- Boot splash: a zero-JS skeleton painted on the FIRST frame so the window
          (show:false → ready-to-show) appears immediately instead of waiting for
          the whole JS module graph (React + markdown + KaTeX) to load and mount.
