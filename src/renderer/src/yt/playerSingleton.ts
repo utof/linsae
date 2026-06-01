@@ -59,7 +59,6 @@ const timeout = (ms: number) => new Promise<'timeout'>((r) => setTimeout(() => r
 let wrapper: HTMLDivElement | null = null
 let webview: WebviewElement | null = null
 let cover: HTMLDivElement | null = null
-let clickCatcher: HTMLDivElement | null = null
 let rpc: Rpc | null = null
 let videoId: string | null = null
 let cache: { currentTime: number; duration: number | null; last: PlayerState } = {
@@ -68,7 +67,6 @@ let cache: { currentTime: number; duration: number | null; last: PlayerState } =
   last: 'unstarted',
 }
 const stateCbs = new Set<(s: PlayerState) => void>()
-let isPlaying = false
 // Position-sync state: `host` is the ThreadView placeholder the fixed wrapper tracks.
 let host: HTMLElement | null = null
 let syncRaf = 0
@@ -87,11 +85,26 @@ async function safeExec(code: string, gesture?: boolean): Promise<unknown> {
   }
 }
 
+/**
+ * Guarded insertCSS. insertCSS calls getWebContentsId internally, which THROWS
+ * synchronously unless the webview is attached AND dom-ready has fired — so a plain
+ * .catch() isn't enough; we must try/catch the synchronous throw too. Only call this
+ * from the 'dom-ready' handler (never 'did-start-loading', which fires too early).
+ */
+function safeInsertCSS(): void {
+  try {
+    void webview?.insertCSS(CLEAN_CSS).catch((e) => {
+      console.warn('[player] insertCSS failed', e)
+    })
+  } catch (e) {
+    console.warn('[player] insertCSS threw', e)
+  }
+}
+
 function applyState(f: VideoFlags & { currentTime: number; duration: number }): void {
   cache.currentTime = f.currentTime
   if (f.duration > 0) cache.duration = f.duration
   const s = deriveState(f)
-  isPlaying = s === 'playing'
   if (s !== cache.last) {
     cache.last = s
     stateCbs.forEach((cb) => {
@@ -149,12 +162,6 @@ async function onDomReady(): Promise<void> {
     cache.currentTime = o.currentTime
     if (o.duration > 0) cache.duration = o.duration
   })
-  rpc.on('needs-interaction', (payload) => {
-    // When the consent/sign-in wall is active, let clicks reach the webview.
-    // When cleared, the overlay reclaims clicks + keyboard focus (spec §8).
-    if (clickCatcher)
-      clickCatcher.style.pointerEvents = (payload as { active: boolean }).active ? 'none' : 'auto'
-  })
 
   await safeExec(guestRuntime(NONCE))
   try {
@@ -166,7 +173,6 @@ async function onDomReady(): Promise<void> {
   await Promise.race([rpc.whenReady(), timeout(10000)])
 
   if (cover) cover.style.display = 'none'
-  if (clickCatcher) clickCatcher.style.pointerEvents = 'auto'
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
@@ -202,31 +208,20 @@ export function getPlayer(): PlayerInstance {
   cover = document.createElement('div')
   cover.style.cssText = 'position:absolute;inset:0;background:#000;z-index:2;pointer-events:none;'
 
-  clickCatcher = document.createElement('div')
-  clickCatcher.style.cssText =
-    'position:absolute;inset:0;z-index:3;cursor:pointer;pointer-events:auto;'
-  clickCatcher.onclick = () => {
-    if (isPlaying) {
-      void rpc?.invoke('pause')
-    } else {
-      void userGesture().then(() => rpc?.invoke('play'))
-    }
-  }
-
-  // Re-inject the chrome-hiding CSS each time the page (re)loads. insertCSS is
-  // guarded — a teardown/navigation race must never crash the main process.
-  webview.addEventListener('did-start-loading', () => {
-    void webview?.insertCSS(CLEAN_CSS).catch((e) => {
-      console.warn('[player] insertCSS failed', e)
-    })
-  })
+  // No click-catcher overlay: the webview stays fully interactive so the user can
+  // dismiss YouTube's consent / sign-in walls and use native click-to-toggle. The
+  // TransportBar drives play/pause/seek over the RPC. Trade-off: a focused webview
+  // can swallow host hotkeys — accepted for v1 (spec §8 follow-up).
   webview.addEventListener('dom-ready', () => {
+    // insertCSS must wait for dom-ready (it calls getWebContentsId, which throws
+    // synchronously before then — that was the 'did-start-loading' crash). Re-applies
+    // on every (re)load; the black cover hides any pre-CSS flash.
+    safeInsertCSS()
     void onDomReady()
   })
 
   wrapper.appendChild(webview)
   wrapper.appendChild(cover)
-  wrapper.appendChild(clickCatcher)
   // Attach ONCE to <body> and never move it again (see header / electron#9529).
   document.body.appendChild(wrapper)
 
@@ -329,12 +324,10 @@ export function destroyPlayer(): void {
   wrapper = null
   webview = null
   cover = null
-  clickCatcher = null
   videoId = null
   host = null
   lastRectKey = ''
   cache = { currentTime: 0, duration: null, last: 'unstarted' }
-  isPlaying = false
   stateCbs.clear()
   instance = null
 }
