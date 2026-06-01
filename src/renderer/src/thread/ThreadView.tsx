@@ -256,6 +256,11 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   return (
     <div
       style={{
+        // flex:1 + minWidth:0 so ThreadView fills the body row in App.tsx — without
+        // it the root shrinks to content width and pins left, leaving the centered
+        // (margin:0 auto) columns hugging the left edge with dead space at right.
+        flex: 1,
+        minWidth: 0,
         height: '100%',
         minHeight: 0,
         display: 'flex',
@@ -437,6 +442,7 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
         <div style={{ maxWidth: COL, margin: '0 auto' }}>
           <ThreadComposer
             livePlayhead={currentTime}
+            duration={duration}
             pendingFrame={
               pendingFrame ? { thumbnailUrl: pendingFrame.thumbnailUrl, t: pendingFrame.t } : null
             }

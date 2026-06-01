@@ -45,11 +45,15 @@ export function getPlayer() {
     host: 'https://www.youtube-nocookie.com',
     playerVars: { enablejsapi: 1, controls: 0, rel: 0, playsinline: 1 },
   })
-  raw
-    .getIframe()
-    .then((f: HTMLIFrameElement) =>
-      f?.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin'),
-    )
+  raw.getIframe().then((f: HTMLIFrameElement) => {
+    if (!f) return
+    f.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin')
+    // youtube-player stamps the iframe with fixed 640×390 attributes; the host
+    // box is smaller with overflow:hidden, so without these it clips to the
+    // top-left corner. Force the iframe to fill its 16:9 host.
+    f.style.width = '100%'
+    f.style.height = '100%'
+  })
   let videoId: string | null = null
   instance = {
     wrapper,

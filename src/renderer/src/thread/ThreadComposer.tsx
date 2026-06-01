@@ -24,9 +24,16 @@
  * @see docs/specs/v0.2-youtube-annotation.md §Composer
  */
 
-import { Camera, CornerDownLeft } from 'lucide-react'
-import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { formatClock, parseClock } from '../lib/time'
+import { Camera, Send } from 'lucide-react'
+import {
+  type CSSProperties,
+  type KeyboardEvent,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
+import { clampSeconds, formatClock, parseTimeDigits } from '../lib/time'
 import { chipTime, nextFrozenAt } from './composer-chip'
 
 /** Cap on auto-grown textarea height — mirrors the main Composer's ceiling. */
@@ -35,6 +42,12 @@ const TEXTAREA_MAX_HEIGHT_PX = 220
 export interface ThreadComposerProps {
   /** Current playback time in seconds, live from usePlayer.currentTime. */
   livePlayhead: number
+  /**
+   * Total video length in seconds (null until the player reports it). Used to
+   * clamp manual chip entry to the video's end and to pick the m:ss vs h:mm:ss
+   * input hint. When null, no upper clamp is applied.
+   */
+  duration?: number | null
   /**
    * A pending captured frame chip (⌘⇧C). E4 wires the actual capture;
    * when present a small thumbnail renders above the textarea.
@@ -57,6 +70,7 @@ export interface ThreadComposerProps {
 /** @see ThreadComposerProps */
 export function ThreadComposer({
   livePlayhead,
+  duration = null,
   pendingFrame = null,
   onPost,
   onManualSeekEntry,
@@ -157,19 +171,21 @@ export function ThreadComposer({
   }
 
   // ── chip manual-entry ─────────────────────────────────────────────────────
+  // chipInputValue holds RAW DIGITS only (no colon). It's parsed right-to-left
+  // (parseTimeDigits) and clamped to the video duration on every keystroke for
+  // the live display, and again on commit. Starting empty lets the user type a
+  // fresh time; the placeholder shows the current anchor.
   const openChipInput = () => {
     setChipEditing(true)
-    setChipInputValue(
-      formatClock(chipTime({ focused: effectiveFocused, hasDraft, livePlayhead, frozenAt })),
-    )
+    setChipInputValue('')
   }
 
   const commitChipInput = () => {
-    const parsed = parseClock(chipInputValue)
-    if (parsed !== null) {
-      setFrozenAt(parsed)
+    if (chipInputValue !== '') {
+      const secs = clampSeconds(parseTimeDigits(chipInputValue), duration)
+      setFrozenAt(secs)
       setManuallyFrozen(true)
-      onManualSeekEntry?.(parsed)
+      onManualSeekEntry?.(secs)
     }
     setChipEditing(false)
   }
@@ -197,6 +213,29 @@ export function ThreadComposer({
     ? pendingFrame.t
     : chipTime({ focused: effectiveFocused, hasDraft, livePlayhead, frozenAt })
   const displayTime = formatClock(displaySeconds)
+
+  // Live preview of the digit entry: parsed right-to-left and clamped to the
+  // video end. Empty while no digits are typed so the placeholder shows.
+  const chipInputDisplay =
+    chipInputValue === ''
+      ? ''
+      : formatClock(clampSeconds(parseTimeDigits(chipInputValue), duration))
+  // m:ss for short videos, h:mm:ss once the video is an hour or longer.
+  const chipInputHint = duration != null && duration >= 3600 ? 'h:mm:ss' : 'm:ss'
+
+  // Shared style for the time pill + its edit input: deliberately matches the
+  // textarea's font (sans, 13px, 1.5 line-height) so the highlighted timestamp
+  // reads as part of the note text, just tinted — per the design call.
+  const inlineTimeStyle: CSSProperties = {
+    flexShrink: 0,
+    fontFamily: 'var(--font-sans)',
+    fontSize: 13,
+    lineHeight: 1.5,
+    padding: '0 6px',
+    borderRadius: 'var(--r-1)',
+    background: 'var(--accent-tint)',
+    color: 'var(--accent-press)',
+  }
 
   // ── render ────────────────────────────────────────────────────────────────
   return (
@@ -227,55 +266,29 @@ export function ThreadComposer({
         </div>
       )}
 
-      {/* Row: camera · chip · textarea · submit */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
-        {/* Camera button — E4 wires onCapture */}
-        <button
-          type="button"
-          title="capture frame ⌘⇧C"
-          aria-label="capture frame"
-          onClick={onCapture}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0,
-            width: 28,
-            height: 28,
-            borderRadius: 'var(--r-2)',
-            border: '1px solid var(--border-0)',
-            background: 'var(--bg-1)',
-            color: 'var(--fg-2)',
-            cursor: 'pointer',
-          }}
-        >
-          <Camera size={15} />
-        </button>
-
-        {/* Time chip — frozen or live; click opens manual entry */}
+      {/* Text row: leading inline time-pill + auto-grow textarea. The pill
+          sits at the start of the first line at text size, so the anchor reads
+          as part of the note (tinted, click to edit). */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
         {chipEditing ? (
           <input
             data-testid="chip-time-input"
             type="text"
-            value={chipInputValue}
-            onChange={(e) => setChipInputValue(e.target.value)}
+            inputMode="numeric"
+            value={chipInputDisplay}
+            // Digit-only: strip everything but 0-9 (the colon is auto-inserted by
+            // formatClock for display) and cap at 6 digits → H:MM:SS.
+            onChange={(e) => setChipInputValue(e.target.value.replace(/\D/g, '').slice(0, 6))}
             onKeyDown={onChipInputKeyDown}
             onBlur={commitChipInput}
             // biome-ignore lint/a11y/noAutofocus: small inline input shown by user action
             autoFocus
-            placeholder="m:ss"
+            placeholder={chipInputHint}
             aria-label="edit chip time"
             style={{
-              flexShrink: 0,
-              width: 52,
-              height: 18,
-              fontFamily: 'var(--font-mono)',
-              fontSize: 11,
-              color: 'var(--accent-press)',
-              background: 'var(--accent-tint)',
+              ...inlineTimeStyle,
+              width: 68,
               border: '1px solid var(--accent)',
-              borderRadius: 'var(--r-1)',
-              padding: '0 5px',
               outline: 'none',
             }}
           />
@@ -283,31 +296,19 @@ export function ThreadComposer({
           <button
             type="button"
             data-testid="composer-chip"
-            title="click to edit anchor time"
+            title="click to edit anchor time — type digits, e.g. 1234 → 12:34"
             aria-label="anchor time"
             onClick={openChipInput}
-            style={{
-              flexShrink: 0,
-              display: 'inline-flex',
-              alignItems: 'center',
-              height: 18,
-              padding: '0 6px',
-              borderRadius: 'var(--r-1)',
-              background: 'var(--accent-tint)',
-              color: 'var(--accent-press)',
-              fontFamily: 'var(--font-mono)',
-              fontSize: 11,
-              border: 0,
-              cursor: 'pointer',
-            }}
+            style={{ ...inlineTimeStyle, border: 0, cursor: 'pointer' }}
           >
             {displayTime}
           </button>
         )}
 
-        {/* Auto-grow textarea */}
+        {/* Auto-grow textarea — starts at one line, grows as you type */}
         <textarea
           ref={textareaRef}
+          rows={1}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onFocus={() => setFocused(true)}
@@ -333,10 +334,38 @@ export function ThreadComposer({
             lineHeight: 1.5,
             color: 'var(--fg-0)',
             background: 'transparent',
+            padding: 0,
           }}
         />
+      </div>
 
-        {/* Submit button */}
+      {/* Bottom toolbar (Telegram-style): capture on the left, bare send arrow
+          on the right. No "note" label — the arrow is the affordance. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+        <button
+          type="button"
+          title="capture frame ⌘⇧C"
+          aria-label="capture frame"
+          onClick={onCapture}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
+            width: 28,
+            height: 28,
+            borderRadius: 'var(--r-2)',
+            border: 0,
+            background: 'transparent',
+            color: 'var(--fg-2)',
+            cursor: 'pointer',
+          }}
+        >
+          <Camera size={16} />
+        </button>
+
+        <div style={{ flex: 1 }} />
+
         <button
           type="button"
           title="post note ↵"
@@ -346,19 +375,17 @@ export function ThreadComposer({
             flexShrink: 0,
             display: 'inline-flex',
             alignItems: 'center',
-            gap: 5,
-            height: 28,
-            padding: '0 12px',
-            borderRadius: 'var(--r-2)',
+            justifyContent: 'center',
+            width: 30,
+            height: 30,
+            borderRadius: 'var(--r-pill)',
             border: 0,
             background: 'var(--accent)',
             color: '#fff',
-            fontSize: 13,
-            fontWeight: 500,
             cursor: 'pointer',
           }}
         >
-          note <CornerDownLeft size={13} />
+          <Send size={15} />
         </button>
       </div>
     </div>

@@ -175,6 +175,47 @@ describe('ThreadComposer', () => {
     expect(screen.queryByRole('img', { name: /frame/i })).toBeNull()
   })
 
+  it('(e) bare digits resolve right-to-left (1234 → 12:34)', () => {
+    const onManualSeekEntry = vi.fn()
+    render(<ThreadComposer {...makeProps({ livePlayhead: 30, onManualSeekEntry })} />)
+
+    fireEvent.click(screen.getByTestId('composer-chip'))
+    const input = screen.getByTestId('chip-time-input')
+    fireEvent.change(input, { target: { value: '1234' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('12:34')
+    expect(onManualSeekEntry).toHaveBeenCalledWith(12 * 60 + 34)
+  })
+
+  it('(e) entry beyond the video duration is clamped to the end', () => {
+    const onManualSeekEntry = vi.fn()
+    // 8:21 video (501 s); entering 9:00 (540 s) must clamp to 8:21.
+    render(
+      <ThreadComposer {...makeProps({ livePlayhead: 30, duration: 501, onManualSeekEntry })} />,
+    )
+
+    fireEvent.click(screen.getByTestId('composer-chip'))
+    const input = screen.getByTestId('chip-time-input')
+    fireEvent.change(input, { target: { value: '900' } }) // 9:00
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('8:21')
+    expect(onManualSeekEntry).toHaveBeenCalledWith(501)
+  })
+
+  it('(e) non-digit characters are ignored in the input', () => {
+    render(<ThreadComposer {...makeProps({ livePlayhead: 30 })} />)
+
+    fireEvent.click(screen.getByTestId('composer-chip'))
+    const input = screen.getByTestId('chip-time-input')
+    // letters interleaved with digits → only the digits survive (1, 1, 5 → 1:15)
+    fireEvent.change(input, { target: { value: 'a1b1c5' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:15')
+  })
+
   it('onManualSeekEntry called when chip time is updated via the input', () => {
     const onManualSeekEntry = vi.fn()
     render(<ThreadComposer {...makeProps({ livePlayhead: 30, onManualSeekEntry })} />)
