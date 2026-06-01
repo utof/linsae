@@ -1,6 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, Clock, Film } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { api } from '../lib/api'
@@ -28,6 +35,9 @@ const RATES = [1, 1.25, 1.5, 1.75, 2]
  * align correctly when the Rail lands in D4.
  */
 const COL = 520
+
+/** Smallest the player unit (video + transport) can be dragged down to. */
+const MIN_VIDEO_W = 240
 
 /**
  * ThreadView — shell for a single video-annotation thread.
@@ -108,6 +118,33 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   // ── follow state ──────────────────────────────────────────────────────────
 
   const [followOn, setFollowOn] = useState(true)
+
+  // ── resizable player ────────────────────────────────────────────────────────
+  // Drag the handle below the player to scale the whole player unit (video +
+  // transport) between MIN_VIDEO_W and COL. The video keeps 16:9, so a narrower
+  // unit is also shorter — that frees vertical space the notes column (flex:1)
+  // immediately absorbs. Width-based (not height-based) keeps the image whole
+  // and the transport bar aligned to the video. Drag DOWN = grow, UP = shrink.
+  const [videoW, setVideoW] = useState<number | null>(null)
+  const videoWidth = videoW ?? COL
+  const onResizeStart = useCallback(
+    (e: ReactPointerEvent) => {
+      e.preventDefault()
+      const startY = e.clientY
+      const startW = videoW ?? COL
+      const onMove = (ev: PointerEvent) => {
+        const dy = ev.clientY - startY
+        setVideoW(Math.max(MIN_VIDEO_W, Math.min(COL, startW + dy * (16 / 9))))
+      }
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+      }
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+    },
+    [videoW],
+  )
 
   // ── playback rate (F1) ──────────────────────────────────────────────────────
   // Cycle through a fixed sequence on each speed-badge click and push the new
@@ -375,10 +412,9 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
         style={{
           flex: '0 0 auto',
           padding: '14px 24px 12px',
-          borderBottom: '1px solid var(--border-0)',
         }}
       >
-        <div style={{ maxWidth: COL, margin: '0 auto' }}>
+        <div style={{ maxWidth: videoWidth, margin: '0 auto' }}>
           {/* 16:9 container — the singleton's iframe re-parents into hostRef */}
           <div
             style={{
@@ -423,6 +459,25 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
             }}
           />
         </div>
+      </div>
+
+      {/* Resize handle — drag to scale the player; notes take the freed space. */}
+      <div
+        onPointerDown={onResizeStart}
+        title="drag to resize the player"
+        aria-hidden
+        data-testid="player-resize"
+        style={{
+          flex: '0 0 auto',
+          height: 11,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'row-resize',
+          borderBottom: '1px solid var(--border-0)',
+        }}
+      >
+        <span style={{ width: 36, height: 3, borderRadius: 2, background: 'var(--border-2)' }} />
       </div>
 
       {/* ── 3. Sort row (always visible) + scrollable notes ────────────────── */}
