@@ -160,14 +160,34 @@ export function activeClusterIndex(clusters: { t: number }[], playheadT: number)
 }
 
 /**
- * Returns `true` when the jump-to-playhead pill should be visible.
+ * Direction the jump-to-playhead pill should point (and where it sits), or
+ * `null` when it should be hidden.
  *
- * Conditions (all must hold): `mode === 'video'`, `followOn === false`, and
- * the playhead pixel position is outside the visible viewport by more than 8 px.
+ * - `'up'`   — the playhead ("now") is ABOVE the viewport: the user scrolled
+ *   down past it, so the pill sits at the TOP of the notes and points up.
+ * - `'down'` — the playhead is BELOW the viewport: pill sits at the bottom,
+ *   points down.
+ * - `null`   — playhead is in view, or follow is on, or not in video mode.
+ *
+ * Conditions to show (all must hold): `mode === 'video'`, `followOn === false`,
+ * and the playhead pixel position is outside the viewport by more than 8 px.
+ *
+ * @see docs/specs/v0.2-youtube-annotation.md §ThreadView
+ */
+export function jumpPillDirection(input: JumpPillInput): 'up' | 'down' | null {
+  const { mode, followOn, playheadY, viewTop, viewBottom } = input
+  if (mode !== 'video' || followOn) return null
+  if (playheadY < viewTop + 8) return 'up'
+  if (playheadY > viewBottom - 8) return 'down'
+  return null
+}
+
+/**
+ * Returns `true` when the jump-to-playhead pill should be visible.
+ * Thin wrapper over {@link jumpPillDirection}.
  *
  * @see docs/specs/v0.2-youtube-annotation.md §ThreadView
  */
 export function jumpPillVisible(input: JumpPillInput): boolean {
-  const { mode, followOn, playheadY, viewTop, viewBottom } = input
-  return mode === 'video' && !followOn && (playheadY < viewTop + 8 || playheadY > viewBottom - 8)
+  return jumpPillDirection(input) !== null
 }

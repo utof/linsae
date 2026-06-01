@@ -8,7 +8,7 @@ import { getPlayer } from '../yt/playerSingleton'
 import { usePlayer } from '../yt/usePlayer'
 import { JumpPill } from './JumpPill'
 import { Rail } from './Rail'
-import { activeClusterIndex, jumpPillVisible, markerPositions } from './rail-layout'
+import { activeClusterIndex, jumpPillDirection, markerPositions } from './rail-layout'
 import { ThreadComposer } from './ThreadComposer'
 import { TransportBar } from './TransportBar'
 import { useThreadNotes } from './useThreadNotes'
@@ -129,7 +129,8 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [flashClusterIdx, setFlashClusterIdx] = useState(-1)
   const flashTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const [pillVisible, setPillVisible] = useState(false)
+  // null = hidden; 'up'/'down' = playhead is above/below the viewport.
+  const [pillDir, setPillDir] = useState<'up' | 'down' | null>(null)
 
   // Scroll a cluster's row into view by its data-cluster-index, then flash it.
   // Why a selector (not refs): the row lives inside Rail; addressing it by a
@@ -161,13 +162,13 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     const container = scrollRef.current
     const row = container?.querySelector(`[data-cluster-index="${activeIdx}"]`)
     if (!container || !row) {
-      setPillVisible(false)
+      setPillDir(null)
       return
     }
     const view = container.getBoundingClientRect()
     const playheadY = row.getBoundingClientRect().top
-    setPillVisible(
-      jumpPillVisible({
+    setPillDir(
+      jumpPillDirection({
         mode: sortMode,
         followOn,
         playheadY,
@@ -427,23 +428,29 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
           </div>
         </div>
 
-        {/* Jump-to-now pill — anchored to the outer (non-scrolling) frame so it
-            stays pinned above the composer. Shown only when the playhead is
-            off-screen with follow off (video mode); clicking re-syncs the view. */}
-        {pillVisible && (
+        {/* Jump-to-now pill — anchored to the outer (non-scrolling) frame.
+            Sits at the TOP (arrow up) when the playhead is above the viewport
+            (user scrolled down past "now"), at the BOTTOM (arrow down) when
+            below. Shown only off-screen with follow off (video mode); clicking
+            re-syncs the view. */}
+        {pillDir && (
           <div
             style={{
               position: 'absolute',
               left: 0,
               right: 0,
-              bottom: 14,
+              ...(pillDir === 'up' ? { top: 14 } : { bottom: 14 }),
               display: 'flex',
               justifyContent: 'center',
               pointerEvents: 'none',
             }}
           >
             <span style={{ pointerEvents: 'auto' }}>
-              <JumpPill seconds={currentTime} onJump={() => scrollClusterIntoView(activeIdx)} />
+              <JumpPill
+                seconds={currentTime}
+                direction={pillDir}
+                onJump={() => scrollClusterIntoView(activeIdx)}
+              />
             </span>
           </div>
         )}

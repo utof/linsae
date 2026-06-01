@@ -1,4 +1,4 @@
-import { ArrowDown } from 'lucide-react'
+import { ArrowDown, ArrowUp } from 'lucide-react'
 import { formatClock } from '../lib/time'
 
 /**
@@ -16,10 +16,16 @@ export interface JumpPillProps {
   seconds: number
   /** Invoked when the pill is clicked — scrolls the playhead cluster into view. */
   onJump: () => void
+  /**
+   * Which way "now" is from the current scroll position: `'up'` when the
+   * playhead is above the viewport (arrow points up), `'down'` when below.
+   * Defaults to `'down'` for back-compat.
+   */
+  direction?: 'up' | 'down'
 }
 
 /** @see JumpPillProps */
-export function JumpPill({ seconds, onJump }: JumpPillProps) {
+export function JumpPill({ seconds, onJump, direction = 'down' }: JumpPillProps) {
   return (
     <button
       type="button"
@@ -44,7 +50,7 @@ export function JumpPill({ seconds, onJump }: JumpPillProps) {
         boxShadow: 'var(--shadow-2)',
       }}
     >
-      <ArrowDown size={14} />
+      {direction === 'up' ? <ArrowUp size={14} /> : <ArrowDown size={14} />}
       jump to now
       <span style={{ fontFamily: 'var(--font-mono)', opacity: 0.85 }}>{formatClock(seconds)}</span>
     </button>

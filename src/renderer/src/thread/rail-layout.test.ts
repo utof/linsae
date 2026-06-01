@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   activeClusterIndex,
   clusterByPause,
+  jumpPillDirection,
   jumpPillVisible,
   logGapHeight,
   markerPositions,
@@ -147,5 +148,22 @@ describe('jumpPillVisible', () => {
     expect(jumpPillVisible({ ...base, playheadY: 8 })).toBe(false)
     expect(jumpPillVisible({ ...base, playheadY: 492 })).toBe(false)
     expect(jumpPillVisible({ ...base, playheadY: 493 })).toBe(true)
+  })
+})
+
+describe('jumpPillDirection', () => {
+  const base = { mode: 'video' as const, followOn: false, viewTop: 0, viewBottom: 500 }
+  it("returns 'up' when the playhead is above the viewport", () => {
+    expect(jumpPillDirection({ ...base, playheadY: -10 })).toBe('up')
+    expect(jumpPillDirection({ ...base, playheadY: 7 })).toBe('up')
+  })
+  it("returns 'down' when the playhead is below the viewport", () => {
+    expect(jumpPillDirection({ ...base, playheadY: 600 })).toBe('down')
+    expect(jumpPillDirection({ ...base, playheadY: 493 })).toBe('down')
+  })
+  it('returns null when in view, follow on, or capture mode', () => {
+    expect(jumpPillDirection({ ...base, playheadY: 250 })).toBeNull()
+    expect(jumpPillDirection({ ...base, followOn: true, playheadY: -10 })).toBeNull()
+    expect(jumpPillDirection({ ...base, mode: 'capture', playheadY: -10 })).toBeNull()
   })
 })
