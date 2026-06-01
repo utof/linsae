@@ -298,15 +298,15 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   // the feed's inline error UX. Cleared on the next keystroke via onClearError.
   const [postError, setPostError] = useState<string | null>(null)
 
-  // ⌘⇧C / camera button: screenshot the live iframe rect at the current time.
-  // No-op when no player is mounted (getIframeRect → null). On failure (e.g. the
+  // ⌘⇧C / camera button: screenshot the live webview rect at the current time.
+  // No-op when no player is mounted (getMediaRect → null). On failure (e.g. the
   // main-process 0-area guard, #34) we leave pendingFrame untouched so no junk
   // chip appears. Why enableOnFormTags is OMITTED: the hotkey must NOT fire while
   // the composer textarea is focused (contrast App.tsx's mod+k which opts in).
   // @issue utof/linsae#34
   const onCapture = async () => {
     const player = getPlayer()
-    const rect = player.getIframeRect()
+    const rect = player.getMediaRect()
     if (!rect) return
     try {
       const t = await player.getCurrentTime()

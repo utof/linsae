@@ -1,192 +1,233 @@
 /**
- * Module-level Vidstack player singleton. Replaces the previous youtube-player
- * (sister.js) engine. See adrs/0015-youtube-embed-vidstack.md.
+ * Module-level webview player singleton. Replaces the Vidstack engine (ADR 0016 / spec §4.1).
  *
- * WHY a singleton + detached wrapper (unchanged from the youtube-player design):
- *   React 19 StrictMode double-invokes mount effects (mount -> unmount -> mount) in
- *   dev. A player owned by the React tree would be torn down and rebuilt on that
- *   cycle, reloading the YouTube iframe. We keep the player OUTSIDE React: a stable
- *   wrapper <div> lives at module scope, the Vidstack player is created into it once
- *   (the `instance` guard returns the existing player), and usePlayer only re-parents
- *   the wrapper into the ThreadView DOM on mount.
+ * WHY singleton + detached wrapper (unchanged from the Vidstack design):
+ *   React 19 StrictMode double-invokes mount effects (mount → unmount → mount) in dev.
+ *   A player owned by the React tree would be torn down and rebuilt on that cycle,
+ *   reloading the YouTube page. We keep the player OUTSIDE React: a stable wrapper <div>
+ *   lives at module scope, the <webview> is created into it once (the `instance` guard
+ *   returns the existing player), and usePlayer only re-parents the wrapper into the
+ *   ThreadView DOM on mount. (ADR 0012)
  *
- * WHY Vidstack via `VidstackPlayer.create` and NOT the React <MediaPlayer> component:
- *   <MediaPlayer> is a React component -> lives in the tree -> reintroduces the
- *   StrictMode teardown above. The vanilla constructor lets us own the element
- *   imperatively, matching the proven pattern.
- *     - create() + import path: https://github.com/vidstack/player/discussions/1220
- *     - instance API (play/pause/subscribe/state/currentTime/playbackRate/src):
- *       https://vidstack.io/docs/player/components/core/player/
- *     - subscribe without renders:
- *       https://vidstack.io/docs/player/core-concepts/state-management/
- *
- * WHY this does NOT remove YouTube's chrome (title bar, "more videos", watermark):
- *   Vidstack's YouTube provider uses the YouTube IFrame API, which by contract cannot
- *   remove that chrome (https://vidstack.io/docs/player/api/providers/youtube/). We do
- *   not try. The injected CSS sets the iframe to pointer-events:none so the hover chrome
- *   never triggers; pause/end overlays are state-driven and sit behind our controls.
- *   This keeps us off the fragile DOM-selector + UA-spoof + CSP-bypass path
- *   media-extended v3 uses (ADR 0015 §Alternatives). The provider also hides the
- *   recommendations popup when custom controls are used.
+ * WHY <webview> not <iframe>:
+ *   <iframe> with the YouTube IFrame API cannot remove YouTube's chrome by contract.
+ *   <webview> loads the full youtube.com/watch page; we inject a guest runtime via
+ *   executeJavaScript + a MessagePort RPC to control the in-page <video> directly and
+ *   hide chrome via insertCSS. This lets the Skip-Ad button remain interactive (spec §4.4).
+ *   (ADR 0016 / spec §4 rationale)
  */
-import { VidstackPlayer } from 'vidstack/global/player'
 
 import type { Player, PlayerState } from '../../../shared/player'
+import { CLEAN_CSS } from './inject/clean-css'
+import { guestRuntime } from './inject/youtube-guest'
+import { deriveState, type VideoFlags } from './player-state'
+import { createRpc, type Rpc } from './rpc'
+import { youtubeUserAgent } from './ua'
+import { watchUrl } from './watch-url'
 
-// Derive the exact instance type from the constructor's return value instead of
-// importing a type name that might move between Vidstack versions.
-type VidstackInstance = Awaited<ReturnType<typeof VidstackPlayer.create>>
-
-// The Vidstack state object passed to `player.subscribe`. We only read a handful of
-// fields; this loose shape documents which ones (full list in the Player State docs).
-interface MediaState {
-  ended: boolean
-  playing: boolean
-  waiting: boolean
-  started: boolean
-  canPlay: boolean
-  paused: boolean
-  currentTime: number
-  duration: number
+/** Typed shape of the Electron <webview> element (not in lib.dom.d.ts). */
+interface WebviewElement extends HTMLElement {
+  src: string
+  executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>
+  insertCSS(css: string): Promise<string>
+  setUserAgent(ua: string): void
+  getWebContentsId(): number
+  contentWindow: Window
 }
 
+/** Fixed nonce for the host→guest port transfer (spec §4.1). Not secret; just unique. */
+const NONCE = 'mx-port-7f3a9'
+
+const timeout = (ms: number) => new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), ms))
+
+// ── module-level singletons ──────────────────────────────────────────────────
+
 let wrapper: HTMLDivElement | null = null
-let styleEl: HTMLStyleElement | null = null
-let createPromise: Promise<VidstackInstance> | null = null
-let player: VidstackInstance | null = null
+let webview: WebviewElement | null = null
+let cover: HTMLDivElement | null = null
+let clickCatcher: HTMLDivElement | null = null
+let rpc: Rpc | null = null
 let videoId: string | null = null
+let cache: { currentTime: number; duration: number | null; last: PlayerState } = {
+  currentTime: 0,
+  duration: null,
+  last: 'unstarted',
+}
+const stateCbs = new Set<(s: PlayerState) => void>()
+let isPlaying = false
 let instance:
   | (Player & {
       wrapper: HTMLDivElement
-      getIframeRect(): DOMRect | null
       videoId: string | null
+      getMediaRect(): DOMRect | null
     })
   | null = null
 
+// ── internal helpers ─────────────────────────────────────────────────────────
+
+function applyState(f: VideoFlags & { currentTime: number; duration: number }): void {
+  cache.currentTime = f.currentTime
+  if (f.duration > 0) cache.duration = f.duration
+  const s = deriveState(f)
+  isPlaying = s === 'playing'
+  if (s !== cache.last) {
+    cache.last = s
+    stateCbs.forEach((cb) => {
+      cb(s)
+    })
+  }
+}
+
 /**
- * Maps Vidstack's boolean state to the legacy YouTube-style PlayerState union the rest
- * of the app consumes. Order matters. The unstarted/cued/buffering boundaries are an
- * approximation of YouTube's discrete codes (-1 unstarted, 3 buffering, 5 cued).
+ * Grant a user gesture so the renderer allows autoplay (spec §D6).
+ * Why: Electron's autoplayPolicy=user-gesture-required blocks video.play() unless
+ * the call originates from a user gesture. executeJavaScript(..., true) injects
+ * the gesture flag into the webview's renderer process.
  */
-function deriveState(s: MediaState): PlayerState {
-  if (s.ended) return 'ended'
-  if (s.playing) return 'playing'
-  if (s.waiting) return 'buffering'
-  if (s.started) return 'paused' // started, not playing, not ended
-  if (s.canPlay) return 'cued' // loaded & ready, never played
-  return 'unstarted' // nothing loaded / not ready yet
+function userGesture(): Promise<unknown> {
+  return webview!.executeJavaScript('1', true)
 }
 
-/** Resolves once the async-created Vidstack player exists. */
-function ready(): Promise<VidstackInstance> {
-  if (player) return Promise.resolve(player)
-  if (createPromise) return createPromise
-  throw new Error('getPlayer() must be called before using the player')
+/**
+ * Called on 'dom-ready': inject the guest runtime and transfer the port.
+ * Guard: if rpc is already live (dom-ready can fire more than once across SPA nav),
+ * skip re-initialisation to avoid double-hooking.
+ */
+async function onDomReady(): Promise<void> {
+  if (rpc) return
+  const wv = webview
+  if (!wv) return
+
+  const { port1, port2 } = new MessageChannel()
+  rpc = createRpc(port1)
+
+  rpc.on('state', (f) => {
+    applyState(f as VideoFlags & { currentTime: number; duration: number })
+  })
+  rpc.on('time', (t) => {
+    const o = t as { currentTime: number; duration: number }
+    cache.currentTime = o.currentTime
+    if (o.duration > 0) cache.duration = o.duration
+  })
+  rpc.on('needs-interaction', () => {
+    if (clickCatcher) clickCatcher.style.pointerEvents = 'none'
+  })
+
+  await wv.executeJavaScript(guestRuntime(NONCE))
+  wv.contentWindow.postMessage(NONCE, '*', [port2])
+
+  await Promise.race([rpc.whenReady(), timeout(10000)])
+
+  if (cover) cover.style.display = 'none'
+  if (clickCatcher) clickCatcher.style.pointerEvents = 'auto'
 }
 
-/** Injects the (one-time) CSS that sizes the iframe and disables its pointer events. */
-function injectStyleOnce() {
-  if (styleEl) return
-  styleEl = document.createElement('style')
-  styleEl.id = 'yt-player-wrapper-style'
-  // Scoped by the wrapper id so we don't need a CSS framework (no Tailwind dep) and
-  // don't have to observe the iframe's async creation. pointer-events:none is the key
-  // line: YouTube receives no hover/click, so its hover chrome (top title+share bar,
-  // related-on-hover) never appears; our overlay owns all input. See ADR 0015.
-  styleEl.textContent = [
-    '#yt-player-wrapper, #yt-player-wrapper media-player { width: 100%; height: 100%; }',
-    '#yt-player-wrapper iframe { width: 100% !important; height: 100% !important; pointer-events: none; border: 0; }',
-  ].join('\n')
-  document.head.appendChild(styleEl)
-}
+// ── public API ────────────────────────────────────────────────────────────────
 
-/** Returns the singleton, constructing the detached wrapper + player on first call. */
-export function getPlayer() {
+/**
+ * Returns the singleton player, constructing the detached wrapper + webview on first call.
+ * @see src/renderer/src/yt/usePlayer.ts (re-parents the wrapper into the ThreadView DOM)
+ * Why: ADR 0012 + ADR 0016
+ */
+export function getPlayer(): Player & {
+  wrapper: HTMLDivElement
+  videoId: string | null
+  getMediaRect(): DOMRect | null
+} {
   if (instance) return instance
-
-  injectStyleOnce()
 
   wrapper = document.createElement('div')
   wrapper.id = 'yt-player-wrapper'
-  const wrapperEl = wrapper // non-null capture for closures below
+  wrapper.style.cssText = 'width:100%;height:100%;position:relative;'
 
-  // Kick off async creation. We pass the ELEMENT as target (a selector wouldn't
-  // resolve while the wrapper is still detached). No `layout` -> no Vidstack default
-  // UI (ThreadView draws our own TransportBar). `load: 'eager'` because the wrapper
-  // starts detached and is re-parented into a custom scroll container, where the
-  // default 'visible' IntersectionObserver strategy may never fire. See ADR 0015 §6.
-  createPromise = VidstackPlayer.create({
-    target: wrapperEl,
-    load: 'eager',
-    playsInline: true,
-  }).then((p) => {
-    player = p
-    return p
+  webview = document.createElement('webview') as unknown as WebviewElement
+  webview.setAttribute('partition', 'persist:yt-player')
+  webview.setAttribute('webpreferences', 'autoplayPolicy=user-gesture-required')
+  webview.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;'
+  webview.setUserAgent(youtubeUserAgent())
+
+  cover = document.createElement('div')
+  cover.style.cssText = 'position:absolute;inset:0;background:#000;z-index:2;pointer-events:none;'
+
+  clickCatcher = document.createElement('div')
+  clickCatcher.style.cssText =
+    'position:absolute;inset:0;z-index:3;cursor:pointer;pointer-events:auto;'
+  clickCatcher.onclick = () => {
+    if (isPlaying) {
+      void rpc?.invoke('pause')
+    } else {
+      void userGesture().then(() => rpc?.invoke('play'))
+    }
+  }
+
+  webview.addEventListener('did-start-loading', () => {
+    void webview!.insertCSS(CLEAN_CSS)
+  })
+  webview.addEventListener('dom-ready', () => {
+    void onDomReady()
   })
 
+  wrapper.appendChild(webview)
+  wrapper.appendChild(cover)
+  wrapper.appendChild(clickCatcher)
+
+  const wrapperEl = wrapper
+  const webviewEl = webview
+
   instance = {
-    wrapper: wrapperEl,
+    get wrapper() {
+      return wrapperEl
+    },
     get videoId() {
       return videoId
     },
-    async load(id) {
+
+    async load(id: string): Promise<void> {
+      if (id === videoId) return
       videoId = id
-      const p = await ready()
-      // `youtube/<id>` is the shorthand Vidstack's YouTube provider expects; a full
-      // watch URL also works, so accept either.
-      p.src = /^https?:\/\//.test(id) ? id : `youtube/${id}`
+      rpc?.destroy()
+      rpc = null
+      if (cover) cover.style.display = 'block'
+      webviewEl.src = watchUrl(id)
     },
-    async play() {
-      const p = await ready()
-      await p.play()
+
+    async play(): Promise<void> {
+      await userGesture()
+      await rpc?.invoke('play')
     },
-    async pause() {
-      const p = await ready()
-      await p.pause()
+
+    async pause(): Promise<void> {
+      await userGesture()
+      await rpc?.invoke('pause')
     },
-    async seekTo(seconds) {
-      const p = await ready()
-      p.currentTime = seconds // setter performs the seek
+
+    async seekTo(s: number): Promise<void> {
+      await rpc?.invoke('seekTo', s)
     },
-    async getCurrentTime() {
-      const p = await ready()
-      return p.state.currentTime ?? 0
+
+    async getCurrentTime(): Promise<number> {
+      return cache.currentTime
     },
-    async getDuration() {
-      const p = await ready()
-      const d = p.state.duration
-      return d && d > 0 ? d : null
+
+    async getDuration(): Promise<number | null> {
+      return cache.duration
     },
-    async setPlaybackRate(rate) {
-      const p = await ready()
-      p.playbackRate = rate
+
+    async setPlaybackRate(r: number): Promise<void> {
+      await rpc?.invoke('setRate', r)
     },
-    onStateChange(cb) {
-      // `subscribe` fires on any state change and returns its own unsubscribe fn;
-      // it does NOT trigger React renders. We dedupe so cb only fires on derived-state
-      // transitions, matching the old per-YT-event behavior.
-      let unsubscribe: (() => void) | null = null
-      let cancelled = false
-      ready().then((p) => {
-        if (cancelled) return
-        let last: PlayerState | null = null
-        unsubscribe = p.subscribe((state: MediaState) => {
-          const next = deriveState(state)
-          if (next !== last) {
-            last = next
-            cb(next)
-          }
-        })
-      })
+
+    onStateChange(cb: (s: PlayerState) => void): () => void {
+      stateCbs.add(cb)
       return () => {
-        cancelled = true
-        unsubscribe?.()
+        stateCbs.delete(cb)
       }
     },
-    getIframeRect() {
-      const f = wrapperEl.querySelector('iframe')
-      return f ? f.getBoundingClientRect() : null
+
+    getMediaRect(): DOMRect | null {
+      return webviewEl ? webviewEl.getBoundingClientRect() : null
     },
+
     destroy() {
       destroyPlayer()
     },
@@ -195,19 +236,21 @@ export function getPlayer() {
   return instance
 }
 
-/** Tears down the singleton (test cleanup + app teardown). */
+/**
+ * Tears down the singleton (test cleanup + app teardown).
+ * Why: called by destroy() and by usePlayer cleanup on HMR / test afterEach.
+ */
 export function destroyPlayer(): void {
-  try {
-    player?.destroy()
-  } catch {
-    // ignore teardown races
-  }
+  rpc?.destroy()
+  rpc = null
   wrapper?.remove()
-  styleEl?.remove()
-  player = null
-  createPromise = null
   wrapper = null
-  styleEl = null
+  webview = null
+  cover = null
+  clickCatcher = null
   videoId = null
+  cache = { currentTime: 0, duration: null, last: 'unstarted' }
+  isPlaying = false
+  stateCbs.clear()
   instance = null
 }

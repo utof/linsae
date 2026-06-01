@@ -38,7 +38,6 @@
     "unified": "^11.0.5",
     "unist-util-visit": "^5.1.0",
     "uuidv7": "^1.2.1",
-    "vidstack": "^1.15.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -16,7 +16,7 @@ vi.mock('./playerSingleton', () => ({
     getDuration: vi.fn().mockResolvedValue(100),
     setPlaybackRate: vi.fn(),
     onStateChange: onState,
-    getIframeRect: () => null,
+    getMediaRect: () => null,
     destroy: vi.fn(),
   }),
   destroyPlayer: vi.fn(),

@@ -35,14 +35,14 @@ vi.mock('../yt/usePlayer', () => ({
 }))
 
 // Mock the player singleton so the capture handler reads a deterministic rect +
-// time without a real iframe. `getIframeRect` and `getCurrentTime` are reassigned
-// per-test (the null-rect no-op case overrides getIframeRect).
-const getIframeRect = vi.fn<() => DOMRect | null>(
+// time without a real iframe. `getMediaRect` and `getCurrentTime` are reassigned
+// per-test (the null-rect no-op case overrides getMediaRect).
+const getMediaRect = vi.fn<() => DOMRect | null>(
   () => ({ x: 0, y: 0, width: 480, height: 270 }) as DOMRect,
 )
 const getCurrentTime = vi.fn<() => Promise<number>>(async () => 42)
 vi.mock('../yt/playerSingleton', () => ({
-  getPlayer: () => ({ getIframeRect, getCurrentTime, videoId: 'abc' }),
+  getPlayer: () => ({ getMediaRect, getCurrentTime, videoId: 'abc' }),
 }))
 
 // Import under test AFTER vi.mock so the hoisted mock applies.
@@ -106,7 +106,7 @@ Element.prototype.scrollIntoView = scrollIntoView
 beforeEach(() => {
   scrollIntoView.mockClear()
   playerState.currentTime = 0
-  getIframeRect.mockReturnValue({ x: 0, y: 0, width: 480, height: 270 } as DOMRect)
+  getMediaRect.mockReturnValue({ x: 0, y: 0, width: 480, height: 270 } as DOMRect)
   getCurrentTime.mockResolvedValue(42)
   mockApi = installMockApi()
   mockApi.notes.get.mockResolvedValue(SOURCE_NOTE)
@@ -363,8 +363,8 @@ describe('ThreadView capture flow', () => {
     expect(mockApi.youtube.capture).not.toHaveBeenCalled()
   })
 
-  it('is a no-op when getIframeRect() returns null (no crash, no capture call)', async () => {
-    getIframeRect.mockReturnValue(null)
+  it('is a no-op when getMediaRect() returns null (no crash, no capture call)', async () => {
+    getMediaRect.mockReturnValue(null)
     renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
     await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
 
