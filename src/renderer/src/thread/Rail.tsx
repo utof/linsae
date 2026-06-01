@@ -160,9 +160,12 @@ function ClusterRow({
         aria-label={`seek to ${formatClock(cluster.t)}`}
         onClick={() => onSeek(cluster.t)}
         style={{
+          // Aligned to the first note's first text line: bubble padding-top (9) +
+          // half a 1.5×14px line ≈ 19.5px center. The 11px mono label centers
+          // there at top 13; the dot below centers there at top 15.
           position: 'absolute',
           left: -76,
-          top: 11,
+          top: 13,
           width: 44,
           textAlign: 'right',
           border: 0,
@@ -183,9 +186,10 @@ function ClusterRow({
         aria-label={`seek to ${formatClock(cluster.t)}`}
         onClick={() => onSeek(cluster.t)}
         style={{
+          // top 15 → dot center 19.5 = first-line center (see rail-time above).
           position: 'absolute',
           left: DOTC - 4.5,
-          top: 13,
+          top: 15,
           width: 9,
           height: 9,
           borderRadius: '50%',
