@@ -23,7 +23,7 @@ import type { Note } from '../../../shared/types'
 // `seekTo` is a shared spy and `currentTime` is read from a mutable holder so
 // follow-scroll tests can advance the playhead between renders.
 const seekTo = vi.fn()
-const player = { seekTo, play: vi.fn(), pause: vi.fn() }
+const player = { seekTo, play: vi.fn(), pause: vi.fn(), mount: vi.fn(), unmount: vi.fn() }
 const playerState = { currentTime: 0 }
 vi.mock('../yt/usePlayer', () => ({
   usePlayer: () => ({

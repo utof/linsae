@@ -74,4 +74,15 @@ describe('playerSingleton (webview)', () => {
     destroyPlayer()
     expect(getPlayer()).not.toBe(a)
   })
+  it('mount/unmount keeps the wrapper attached to <body> (never re-parented)', () => {
+    const p = getPlayer()
+    expect(p.wrapper.parentElement).toBe(document.body)
+    const hostEl = document.createElement('div')
+    p.mount(hostEl)
+    // Positioned OVER the host, not moved into it (moving a <webview> destroys
+    // its guest — electron#9529).
+    expect(p.wrapper.parentElement).toBe(document.body)
+    p.unmount()
+    expect(p.wrapper.parentElement).toBe(document.body)
+  })
 })

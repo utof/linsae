@@ -1,20 +1,25 @@
 /**
  * Module-level webview player singleton. Replaces the Vidstack engine (ADR 0016 / spec §4.1).
  *
- * WHY singleton + detached wrapper (unchanged from the Vidstack design):
- *   React 19 StrictMode double-invokes mount effects (mount → unmount → mount) in dev.
- *   A player owned by the React tree would be torn down and rebuilt on that cycle,
- *   reloading the YouTube page. We keep the player OUTSIDE React: a stable wrapper <div>
- *   lives at module scope, the <webview> is created into it once (the `instance` guard
- *   returns the existing player), and usePlayer only re-parents the wrapper into the
- *   ThreadView DOM on mount. (ADR 0012)
+ * WHY the webview is mounted ONCE and never re-parented (changed from the iframe design):
+ *   Moving a <webview> in the DOM (re-parenting it, or unmounting/remounting an ancestor)
+ *   makes Electron DESTROY and recreate its guest WebContents — invalidating the
+ *   guestInstanceId (→ "Invalid guestInstanceId" in GUEST_VIEW_MANAGER_CALL) and reloading
+ *   the page (→ a fresh youtube.com/watch load that redirects through the consent wall to the
+ *   home page). See electron/electron#9529 and #7700. The old iframe singleton survived
+ *   re-parenting; a <webview> does not. So we attach the wrapper to <body> ONCE and POSITION
+ *   it (position:fixed, bounds synced each frame to the ThreadView host placeholder) instead
+ *   of moving it. media-extended v3 (our MIT reference) likewise never re-parents its webview.
+ *   StrictMode's mount→unmount→mount, the layout toggle, and (future) drag-to-move all just
+ *   re-point the sync at a placeholder / park the wrapper off-screen — the element is never
+ *   detached or display:none'd (both can destroy the guest, electron#7700), so the guest
+ *   persists and the page never reloads except on an actual videoId change. (ADR 0012 / 0016)
  *
  * WHY <webview> not <iframe>:
  *   <iframe> with the YouTube IFrame API cannot remove YouTube's chrome by contract.
  *   <webview> loads the full youtube.com/watch page; we inject a guest runtime via
  *   executeJavaScript + a MessagePort RPC to control the in-page <video> directly and
- *   hide chrome via insertCSS. This lets the Skip-Ad button remain interactive (spec §4.4).
- *   (ADR 0016 / spec §4 rationale)
+ *   hide chrome via insertCSS, keeping the Skip-Ad button interactive (spec §4.4). (ADR 0016)
  */
 
 import type { Player, PlayerState } from '../../../shared/player'
@@ -30,8 +35,18 @@ interface WebviewElement extends HTMLElement {
   src: string
   executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>
   insertCSS(css: string): Promise<string>
-  setUserAgent(ua: string): void
   contentWindow: Window
+}
+
+/** The extra (non-Player) members the singleton exposes. */
+type PlayerInstance = Player & {
+  wrapper: HTMLDivElement
+  videoId: string | null
+  getMediaRect(): DOMRect | null
+  /** Show the player and start syncing its bounds to `hostEl`. */
+  mount(hostEl: HTMLElement): void
+  /** Hide the player and stop syncing (the guest persists; no reload). */
+  unmount(): void
 }
 
 /** Fixed nonce for the host→guest port transfer (spec §4.1). Not secret; just unique. */
@@ -54,15 +69,23 @@ let cache: { currentTime: number; duration: number | null; last: PlayerState } =
 }
 const stateCbs = new Set<(s: PlayerState) => void>()
 let isPlaying = false
-let instance:
-  | (Player & {
-      wrapper: HTMLDivElement
-      videoId: string | null
-      getMediaRect(): DOMRect | null
-    })
-  | null = null
+// Position-sync state: `host` is the ThreadView placeholder the fixed wrapper tracks.
+let host: HTMLElement | null = null
+let syncRaf = 0
+let lastRectKey = ''
+let instance: PlayerInstance | null = null
 
 // ── internal helpers ─────────────────────────────────────────────────────────
+
+/** Guarded executeJavaScript — a teardown/navigation race must never crash the main process. */
+async function safeExec(code: string, gesture?: boolean): Promise<unknown> {
+  try {
+    return await webview?.executeJavaScript(code, gesture)
+  } catch (e) {
+    console.warn('[player] executeJavaScript failed', e)
+    return undefined
+  }
+}
 
 function applyState(f: VideoFlags & { currentTime: number; duration: number }): void {
   cache.currentTime = f.currentTime
@@ -79,12 +102,31 @@ function applyState(f: VideoFlags & { currentTime: number; duration: number }): 
 
 /**
  * Grant a user gesture so the renderer allows autoplay (spec §D6).
- * Why: Electron's autoplayPolicy=user-gesture-required blocks video.play() unless
- * the call originates from a user gesture. executeJavaScript(..., true) injects
- * the gesture flag into the webview's renderer process.
+ * Electron's autoplayPolicy=user-gesture-required blocks video.play() unless the call
+ * originates from a user gesture; executeJavaScript(..., true) injects the gesture flag.
  */
 function userGesture(): Promise<unknown> {
-  return webview!.executeJavaScript('1', true)
+  return safeExec('1', true)
+}
+
+/** rAF loop: keep the fixed wrapper exactly over the ThreadView host placeholder. */
+function syncBounds(): void {
+  if (!wrapper) {
+    syncRaf = 0
+    return
+  }
+  if (host?.isConnected) {
+    const r = host.getBoundingClientRect()
+    const key = `${r.left}|${r.top}|${r.width}|${r.height}`
+    if (key !== lastRectKey) {
+      lastRectKey = key
+      wrapper.style.left = `${r.left}px`
+      wrapper.style.top = `${r.top}px`
+      wrapper.style.width = `${r.width}px`
+      wrapper.style.height = `${r.height}px`
+    }
+  }
+  syncRaf = requestAnimationFrame(syncBounds)
 }
 
 /**
@@ -93,9 +135,8 @@ function userGesture(): Promise<unknown> {
  * skip re-initialisation to avoid double-hooking.
  */
 async function onDomReady(): Promise<void> {
-  if (rpc) return
   const wv = webview
-  if (!wv) return
+  if (rpc || !wv) return
 
   const { port1, port2 } = new MessageChannel()
   rpc = createRpc(port1)
@@ -115,8 +156,12 @@ async function onDomReady(): Promise<void> {
       clickCatcher.style.pointerEvents = (payload as { active: boolean }).active ? 'none' : 'auto'
   })
 
-  await wv.executeJavaScript(guestRuntime(NONCE))
-  wv.contentWindow.postMessage(NONCE, '*', [port2])
+  await safeExec(guestRuntime(NONCE))
+  try {
+    wv.contentWindow.postMessage(NONCE, '*', [port2])
+  } catch (e) {
+    console.warn('[player] port transfer failed', e)
+  }
 
   await Promise.race([rpc.whenReady(), timeout(10000)])
 
@@ -127,28 +172,30 @@ async function onDomReady(): Promise<void> {
 // ── public API ────────────────────────────────────────────────────────────────
 
 /**
- * Returns the singleton player, constructing the detached wrapper + webview on first call.
- * @see src/renderer/src/yt/usePlayer.ts (re-parents the wrapper into the ThreadView DOM)
+ * Returns the singleton player, constructing the wrapper + webview (attached to <body>
+ * ONCE) on first call. `usePlayer` calls mount()/unmount() to show/hide + position it.
+ * @see src/renderer/src/yt/usePlayer.ts
  * Why: ADR 0012 + ADR 0016
  */
-export function getPlayer(): Player & {
-  wrapper: HTMLDivElement
-  videoId: string | null
-  getMediaRect(): DOMRect | null
-} {
+export function getPlayer(): PlayerInstance {
   if (instance) return instance
 
   wrapper = document.createElement('div')
   wrapper.id = 'yt-player-wrapper'
-  wrapper.style.cssText = 'width:100%;height:100%;position:relative;'
+  // position:fixed + bounds synced to the host (syncBounds). z-index:1 sits above
+  // ThreadView's normal content but below every overlay (CommandPalette=100,
+  // BacklinksPane=10, modals/meters≥1000). Parked OFF-SCREEN (not display:none) until
+  // mounted — display/visibility changes can clear a <webview> guestInstanceId
+  // (electron#7700); off-screen keeps the guest alive.
+  wrapper.style.cssText =
+    'position:fixed;left:-99999px;top:0;width:640px;height:360px;z-index:1;overflow:hidden;background:#000;'
 
   webview = document.createElement('webview') as unknown as WebviewElement
   webview.setAttribute('partition', 'persist:yt-player')
   webview.setAttribute('webpreferences', 'autoplayPolicy=user-gesture-required')
-  // Why: use the `useragent` attribute (not setUserAgent()) — setUserAgent() requires
-  // the webview to be attached to the DOM and dom-ready fired (it calls getWebContentsId
-  // internally). The attribute is read by Electron at WebContents creation time and
-  // does not require attachment. (bug found by T7 smoke)
+  // Why the `useragent` attribute (not setUserAgent()): setUserAgent() requires the webview
+  // attached + dom-ready (it calls getWebContentsId internally); the attribute is read at
+  // WebContents creation time and needs no attachment. (bug found by T7 smoke)
   webview.setAttribute('useragent', youtubeUserAgent())
   webview.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;'
 
@@ -166,8 +213,12 @@ export function getPlayer(): Player & {
     }
   }
 
+  // Re-inject the chrome-hiding CSS each time the page (re)loads. insertCSS is
+  // guarded — a teardown/navigation race must never crash the main process.
   webview.addEventListener('did-start-loading', () => {
-    void webview!.insertCSS(CLEAN_CSS)
+    void webview?.insertCSS(CLEAN_CSS).catch((e) => {
+      console.warn('[player] insertCSS failed', e)
+    })
   })
   webview.addEventListener('dom-ready', () => {
     void onDomReady()
@@ -176,6 +227,8 @@ export function getPlayer(): Player & {
   wrapper.appendChild(webview)
   wrapper.appendChild(cover)
   wrapper.appendChild(clickCatcher)
+  // Attach ONCE to <body> and never move it again (see header / electron#9529).
+  document.body.appendChild(wrapper)
 
   const wrapperEl = wrapper
   const webviewEl = webview
@@ -186,6 +239,26 @@ export function getPlayer(): Player & {
     },
     get videoId() {
       return videoId
+    },
+
+    mount(hostEl: HTMLElement): void {
+      host = hostEl
+      lastRectKey = '' // force a reposition over the host on the next frame
+      if (!syncRaf) syncRaf = requestAnimationFrame(syncBounds)
+    },
+
+    unmount(): void {
+      host = null
+      if (syncRaf) {
+        cancelAnimationFrame(syncRaf)
+        syncRaf = 0
+      }
+      // Park off-screen rather than display:none — display/visibility changes can
+      // clear a <webview>'s guestInstanceId (electron#7700); off-screen keeps the
+      // guest alive. Pause so audio doesn't keep playing while the view is hidden.
+      wrapperEl.style.left = '-99999px'
+      wrapperEl.style.top = '0px'
+      void rpc?.invoke('pause')
     },
 
     async load(id: string): Promise<void> {
@@ -203,7 +276,6 @@ export function getPlayer(): Player & {
     },
 
     async pause(): Promise<void> {
-      await userGesture()
       await rpc?.invoke('pause')
     },
 
@@ -249,12 +321,18 @@ export function getPlayer(): Player & {
 export function destroyPlayer(): void {
   rpc?.destroy()
   rpc = null
+  if (syncRaf) {
+    cancelAnimationFrame(syncRaf)
+    syncRaf = 0
+  }
   wrapper?.remove()
   wrapper = null
   webview = null
   cover = null
   clickCatcher = null
   videoId = null
+  host = null
+  lastRectKey = ''
   cache = { currentTime: 0, duration: null, last: 'unstarted' }
   isPlaying = false
   stateCbs.clear()

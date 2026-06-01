@@ -154,18 +154,17 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   // ── layout: stacked (video over notes) vs split (video beside notes) ─────────
   // Split anticipates a future left sidebar — the player becomes a left pane the
   // user can size with a vertical divider, leaving the notes pane to flex. The
-  // player is a singleton DOM node, so toggling layout (which remounts hostRef)
-  // would orphan it; the effect below re-parents the wrapper after each switch.
+  // <webview> is pinned to <body> and NEVER re-parented (moving it destroys its
+  // guest — electron#9529); the toggle remounts the host placeholder, so we just
+  // re-point the position-sync at the new placeholder after each switch.
   const [layout, setLayout] = useState<'stacked' | 'split'>('stacked')
   const [splitW, setSplitW] = useState<number | null>(null)
   const splitWidth = splitW ?? DEFAULT_SPLIT_W
   const rowRef = useRef<HTMLDivElement>(null)
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: re-parent on layout switch; hostRef is stable
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-point sync on layout switch; hostRef is stable
   useEffect(() => {
-    const host = hostRef.current
-    const w = player.wrapper
-    if (host && w && w.parentElement !== host) host.appendChild(w)
+    if (hostRef.current) player.mount(hostRef.current)
   }, [layout])
 
   const onSplitResizeStart = useCallback(
