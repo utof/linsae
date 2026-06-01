@@ -138,6 +138,18 @@ describe('ThreadView', () => {
     await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
   })
 
+  it('toggles between stacked and split layouts', async () => {
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+    // Stacked by default: horizontal resize handle present, vertical absent.
+    expect(screen.getByTestId('player-resize')).toBeInTheDocument()
+    expect(screen.queryByTestId('player-resize-v')).toBeNull()
+    // Switch to split: vertical handle appears, horizontal goes away.
+    fireEvent.click(screen.getByLabelText('toggle layout'))
+    expect(screen.getByTestId('player-resize-v')).toBeInTheDocument()
+    expect(screen.queryByTestId('player-resize')).toBeNull()
+  })
+
   it('(c) SortPill toggles mode and re-orders notes', async () => {
     renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
 
