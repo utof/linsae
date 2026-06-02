@@ -103,14 +103,6 @@ function safeInsertCSS(): void {
       ?.insertCSS(CLEAN_CSS)
       .then((key) => {
         cssKey = key
-        // Reveal as soon as the chrome-hiding CSS is applied (next frame, so it has painted —
-        // no raw-page flash). Don't wait for the full guest RPC handshake (inject + port +
-        // find-video), which lags the video actually being visible by ~1s; the loading spinner
-        // covers any remaining buffering.
-        requestAnimationFrame(() => {
-          if (cover) cover.style.display = 'none'
-          refreshSpinner()
-        })
       })
       .catch((e) => {
         console.warn('[player] insertCSS failed', e)
@@ -204,6 +196,10 @@ async function onDomReady(): Promise<void> {
 
   await Promise.race([rpc.whenReady(), timeout(10000)])
 
+  // Drop the black cover only now, after the guest is ready — do NOT reveal at CSS-paint to
+  // shave the ~1s. That window deliberately masks YouTube's startup churn (muted-autoplay →
+  // forced-unmute pause → chrome settling); revealing early (commit 47a05f7) exposed it as a
+  // "muted, plays 1s, then stops" flash and was reverted. Fast+clean reveal is tracked in #65.
   if (cover) cover.style.display = 'none'
   refreshSpinner()
 }
@@ -256,15 +252,10 @@ export function getPlayer(): PlayerInstance {
   // can swallow host hotkeys — accepted for v1 (spec §8 follow-up).
   webview.addEventListener('dom-ready', () => {
     // insertCSS must wait for dom-ready (it calls getWebContentsId, which throws synchronously
-    // before then — that was the 'did-start-loading' crash). It also drops the black loading
-    // cover once the CSS has painted (see safeInsertCSS). In debug "show full UI" mode there's
-    // no chrome CSS to wait for, so reveal immediately.
-    if (isYoutubeChromeShown()) {
-      if (cover) cover.style.display = 'none'
-      refreshSpinner()
-    } else {
-      safeInsertCSS()
-    }
+    // before then — that was the 'did-start-loading' crash). Skipped when the "show full
+    // YouTube UI" debug toggle is on; re-applies on every (re)load otherwise. The cover is
+    // dropped later (onDomReady) — NOT here — on purpose; see the cover-hide note there.
+    if (!isYoutubeChromeShown()) safeInsertCSS()
     void onDomReady()
   })
 
