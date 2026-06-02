@@ -28,7 +28,7 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
-import { app, BrowserWindow, Menu, screen, shell } from 'electron'
+import { app, BrowserWindow, Menu, screen, session, shell } from 'electron'
 import { openDb } from './db/client'
 import { runMigrations } from './db/migrate'
 import { reconcile } from './db/reconcile'
@@ -218,6 +218,29 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([{ role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' }]),
   )
+
+  // YouTube consent bypass for the player webview (ADR 0016 follow-up). A cold
+  // `persist:yt-player` partition 302-redirects youtube.com/watch through
+  // consent.youtube.com to the home page, so the requested video never loads (the
+  // "it redirected me to the YouTube main page" symptom). Pre-seeding the accept-all
+  // SOCS cookie skips that wall. Value + rationale mirror yt-dlp's _initialize_consent
+  // ("accept all (required for mixes)"). Order-independent: runs once at boot, while the
+  // webview only navigates on thread-open, long after this.
+  // @see https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube/_base.py (SOCS)
+  void session
+    .fromPartition('persist:yt-player')
+    .cookies.set({
+      url: 'https://www.youtube.com',
+      name: 'SOCS',
+      value: 'CAI',
+      domain: '.youtube.com',
+      path: '/',
+      secure: true,
+      httpOnly: false,
+      expirationDate: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 395,
+    })
+    .catch((e) => console.warn('[main] SOCS consent cookie set failed', e))
+
   mainWindow = createWindow(shell.origin)
   // Reuse the same shell when macOS re-activates the app with no windows open.
   // Do NOT restart the shell — it's already bound and listening.
