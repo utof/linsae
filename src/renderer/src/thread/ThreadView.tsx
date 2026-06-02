@@ -112,7 +112,11 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   useEffect(() => {
     if (!videoId || duration == null || durationWrittenRef.current) return
     durationWrittenRef.current = true
-    void api.videoSources.upsert(videoId, { durationSec: duration })
+    // Round: the guest reports video.duration as a float (e.g. 213.04) but the
+    // VideoSourcesUpsertInput Zod schema requires an int (zod-schemas.ts §durationSec).
+    // The float is kept everywhere else (the scrubber needs sub-second precision); we
+    // only round at the persist boundary.
+    void api.videoSources.upsert(videoId, { durationSec: Math.round(duration) })
   }, [videoId, duration])
 
   // ── sort + thread notes ───────────────────────────────────────────────────
