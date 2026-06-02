@@ -243,6 +243,28 @@ export function guestRuntime(nonce: string): string {
       if (autoPlayHandled || ++apTries > 100) { clearInterval(apTimer); }
     }, 200);
 
+    // Force-unmute on load. YouTube persists volume/mute in localStorage; an autoplay-blocked
+    // session (our autoplayPolicy=user-gesture-required) makes its player save muted:true, and
+    // with the chrome hidden there's no volume control to undo it — so every later video loads
+    // silent. Unmuting the (paused) player is always allowed and re-saves muted:false, so audio
+    // is restored for both native click-to-play and the host play button. Volume UI is #63.
+    var unmuted = false;
+    function forceUnmute() {
+      if (unmuted) return;
+      var mp = document.getElementById('movie_player');
+      if (!mp || typeof mp.unMute !== 'function') return;
+      unmuted = true;
+      try {
+        mp.unMute();
+        if (typeof mp.getVolume === 'function' && mp.getVolume() === 0 && mp.setVolume) { mp.setVolume(100); }
+      } catch(e) { /* player API not ready yet */ }
+    }
+    var umTries = 0;
+    var umTimer = setInterval(function() {
+      forceUnmute();
+      if (unmuted || ++umTries > 100) { clearInterval(umTimer); }
+    }, 200);
+
     // Find or wait for the video
     if (!findVideo()) {
       setupObserver();

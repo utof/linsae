@@ -300,7 +300,7 @@ export function getPlayer(): PlayerInstance {
       // activation was gone and autoplayPolicy=user-gesture-required silently blocked it
       // (the play button looked dead). pause/seek/rate need no gesture, so they stay on RPC.
       await safeExec(
-        "var v=document.querySelector('#movie_player video');if(v)v.play().catch(function(){});",
+        "var p=document.getElementById('movie_player');if(p&&p.unMute){p.unMute();}var v=document.querySelector('#movie_player video');if(v){v.muted=false;v.play().catch(function(){});}",
         true,
       )
     },
