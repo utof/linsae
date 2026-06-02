@@ -15,6 +15,7 @@
 import { X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api'
+import { setClock24, useClock24 } from '../lib/clock-pref'
 import { isYoutubeChromeShown, setYoutubeChrome } from '../yt/playerSingleton'
 
 interface Props {
@@ -146,6 +147,32 @@ function YoutubeAccountSection() {
   )
 }
 
+/** Display preferences: 12h/24h wall-clock toggle (more to come — appearance, etc.). */
+function DisplaySection() {
+  const clock24 = useClock24()
+  return (
+    <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--fg-1)' }}>display</h3>
+      <label
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          fontSize: 13,
+          color: 'var(--fg-2)',
+          cursor: 'pointer',
+        }}
+      >
+        <input type="checkbox" checked={clock24} onChange={(e) => setClock24(e.target.checked)} />
+        24-hour time
+      </label>
+      <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: -4 }}>
+        show timestamps as 14:23 instead of 2:23 PM (feed + video cards).
+      </div>
+    </section>
+  )
+}
+
 export function SettingsPanel({ open, onClose }: Props) {
   // Reset the transient status message implicitly by remounting the section each open.
   if (!open) return null
@@ -207,8 +234,9 @@ export function SettingsPanel({ open, onClose }: Props) {
             <X size={16} />
           </button>
         </header>
-        <div style={{ padding: 16 }}>
+        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 20 }}>
           <YoutubeAccountSection />
+          <DisplaySection />
         </div>
       </div>
     </div>

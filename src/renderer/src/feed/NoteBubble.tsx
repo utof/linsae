@@ -2,6 +2,7 @@ import { ChevronDown, Link2, Pen, Trash2 } from 'lucide-react'
 import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { Note } from '../../../shared/types'
+import { useClock24 } from '../lib/clock-pref'
 import { Markdown } from '../lib/markdown'
 import { MediaFeedNoteContainer } from './MediaFeedNote'
 
@@ -183,7 +184,7 @@ const BODY_TRUNCATE_AT = 4096
  * row (unlike Telegram) so the bubble itself must carry the date for
  * non-today entries.
  */
-function formatTimestamp(ms: number): string {
+function formatTimestamp(ms: number, hour12: boolean): string {
   const d = new Date(ms)
   const now = new Date()
   const sameDay =
@@ -191,12 +192,13 @@ function formatTimestamp(ms: number): string {
     d.getMonth() === now.getMonth() &&
     d.getDate() === now.getDate()
   return sameDay
-    ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12 })
     : d.toLocaleString(undefined, {
         month: 'short',
         day: 'numeric',
         hour: 'numeric',
         minute: '2-digit',
+        hour12,
       })
 }
 
@@ -274,6 +276,8 @@ export function NoteBubble({
   // window.setTimeout returns number in renderer (DOM lib); Node's setTimeout
   // returns NodeJS.Timeout. Tests run in jsdom — the number variant is correct.
   const armTimer = useRef<number | null>(null)
+  // 12h/24h wall-clock pref — re-renders this bubble when toggled in Settings.
+  const clock24 = useClock24()
 
   // Bind the id-taking action callbacks to this bubble's id. These are single
   // component-body closures (not per-`.map()`-iteration), so the React
@@ -501,7 +505,7 @@ export function NoteBubble({
               </span>
             )}
             <span title={new Date(note.created_at).toLocaleString()}>
-              {formatTimestamp(note.created_at)}
+              {formatTimestamp(note.created_at, !clock24)}
             </span>
           </span>
         </div>
@@ -540,7 +544,7 @@ export function NoteBubble({
             </span>
           )}
           <span title={new Date(note.created_at).toLocaleString()}>
-            {formatTimestamp(note.created_at)}
+            {formatTimestamp(note.created_at, !clock24)}
           </span>
         </div>
       )}

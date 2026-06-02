@@ -3,6 +3,7 @@ import { ChevronRight, Link2, MessagesSquare, Trash2 } from 'lucide-react'
 import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { api } from '../lib/api'
+import { useClock24 } from '../lib/clock-pref'
 import { formatClock } from '../lib/time'
 import { useThreadNotes } from '../thread/useThreadNotes'
 
@@ -47,7 +48,7 @@ export interface MediaFeedNoteProps {
  * format is presentational preference, not a domain invariant; extracting would
  * violate the inline-fix gate (exported symbol change, >4 impl files).
  */
-function formatTimestamp(ms: number): string {
+function formatTimestamp(ms: number, hour12: boolean): string {
   const d = new Date(ms)
   const now = new Date()
   const sameDay =
@@ -55,12 +56,13 @@ function formatTimestamp(ms: number): string {
     d.getMonth() === now.getMonth() &&
     d.getDate() === now.getDate()
   return sameDay
-    ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12 })
     : d.toLocaleString(undefined, {
         month: 'short',
         day: 'numeric',
         hour: 'numeric',
         minute: '2-digit',
+        hour12,
       })
 }
 
@@ -123,6 +125,7 @@ export function MediaFeedNote({
   onDelete,
   onCopyLink,
 }: MediaFeedNoteProps) {
+  const clock24 = useClock24()
   const [hover, setHover] = useState(false)
   // Two-click delete arm, mirroring NoteBubble: deleting a video card removes the
   // whole source note, so a single misclick over the thumbnail shouldn't nuke it.
@@ -258,7 +261,7 @@ export function MediaFeedNote({
               whiteSpace: 'nowrap',
             }}
           >
-            {formatTimestamp(createdAt)}
+            {formatTimestamp(createdAt, !clock24)}
           </span>
         </div>
       </div>
