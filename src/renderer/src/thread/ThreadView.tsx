@@ -411,9 +411,11 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
           setFollowOn((v) => !v)
         }}
         onFullscreen={() => {
-          // Fullscreen the singleton's wrapper (the iframe fills it). Guarded
-          // because requestFullscreen can be absent/rejected in some contexts.
-          void player.wrapper?.requestFullscreen?.()
+          // Trigger YouTube's native fullscreen (the guest's own button) — see
+          // playerSingleton.toggleFullscreen. Fullscreening the host wrapper instead
+          // left the page chrome visible: the player's fixed-fill is trapped in an
+          // ancestor stacking context in-page, and native fullscreen escapes it.
+          player.toggleFullscreen()
         }}
       />
     </>

@@ -47,6 +47,8 @@ type PlayerInstance = Player & {
   mount(hostEl: HTMLElement): void
   /** Hide the player and stop syncing (the guest persists; no reload). */
   unmount(): void
+  /** Toggle YouTube's own (native) fullscreen from inside the guest. */
+  toggleFullscreen(): void
 }
 
 /** Fixed nonce for the host→guest port transfer (spec §4.1). Not secret; just unique. */
@@ -128,21 +130,7 @@ function syncBounds(): void {
     syncRaf = 0
     return
   }
-  // While the wrapper is the OS-fullscreen element (TransportBar's fullscreen button
-  // calls wrapper.requestFullscreen()), the browser renders it in the top layer at
-  // screen size. The wrapper's inline left/top/width/height (author styles) outrank the
-  // UA `:fullscreen` rule, so if we kept snapping them to the small host rect the
-  // fullscreen frame ended up offset/clipped (the "fullscreen button bugs out" skew).
-  // Pin it to fill and skip the host sync until fullscreen exits.
-  if (document.fullscreenElement === wrapper) {
-    if (lastRectKey !== 'fullscreen') {
-      lastRectKey = 'fullscreen'
-      wrapper.style.left = '0'
-      wrapper.style.top = '0'
-      wrapper.style.width = '100vw'
-      wrapper.style.height = '100vh'
-    }
-  } else if (host?.isConnected) {
+  if (host?.isConnected) {
     const r = host.getBoundingClientRect()
     const key = `${r.left}|${r.top}|${r.width}|${r.height}`
     if (key !== lastRectKey) {
@@ -313,6 +301,19 @@ export function getPlayer(): PlayerInstance {
 
     getMediaRect(): DOMRect | null {
       return webviewEl ? webviewEl.getBoundingClientRect() : null
+    },
+
+    toggleFullscreen(): void {
+      // Drive YouTube's OWN fullscreen button instead of fullscreening the host wrapper.
+      // Native fullscreen lifts #movie_player into the browser top layer, escaping the
+      // ancestor stacking context that traps its fixed-fill in-page (which let the page
+      // chrome paint over the video when we fullscreened the wrapper). The userGesture
+      // flag (executeJavaScript's 2nd arg) supplies the transient activation the
+      // Fullscreen API requires — the host's button click doesn't carry into the guest.
+      void safeExec(
+        "var b=document.querySelector('#movie_player .ytp-fullscreen-button');if(b){b.click();}",
+        true,
+      )
     },
 
     destroy() {
