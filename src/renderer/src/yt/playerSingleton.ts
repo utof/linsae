@@ -61,6 +61,7 @@ const timeout = (ms: number) => new Promise<'timeout'>((r) => setTimeout(() => r
 let wrapper: HTMLDivElement | null = null
 let webview: WebviewElement | null = null
 let cover: HTMLDivElement | null = null
+let spinner: HTMLDivElement | null = null
 let rpc: Rpc | null = null
 let videoId: string | null = null
 let cache: { currentTime: number; duration: number | null; last: PlayerState } = {
@@ -112,7 +113,29 @@ function applyState(f: VideoFlags & { currentTime: number; duration: number }): 
     stateCbs.forEach((cb) => {
       cb(s)
     })
+    refreshSpinner()
   }
+}
+
+/** Inject the spin keyframe into the HOST document once (the wrapper lives in host <body>). */
+function ensureSpinnerStyle(): void {
+  if (document.getElementById('yt-spinner-style')) return
+  const st = document.createElement('style')
+  st.id = 'yt-spinner-style'
+  st.textContent = '@keyframes yt-spin{to{transform:rotate(360deg)}}'
+  document.head.appendChild(st)
+}
+
+/**
+ * Loading-spinner visibility: shown while the black `cover` is up (initial load) and while
+ * `buffering` (seek-into-unbuffered / mid-play stalls) — both are otherwise a bare black
+ * frame that reads as "broken". Lives in the wrapper (vanilla DOM), not React: the <webview>
+ * paints above page content, so a React overlay would hide behind it.
+ */
+function refreshSpinner(): void {
+  if (!spinner) return
+  const coverUp = !!cover && cover.style.display !== 'none'
+  spinner.style.display = coverUp || cache.last === 'buffering' ? 'block' : 'none'
 }
 
 /** rAF loop: keep the fixed wrapper exactly over the ThreadView host placeholder. */
@@ -166,6 +189,7 @@ async function onDomReady(): Promise<void> {
   await Promise.race([rpc.whenReady(), timeout(10000)])
 
   if (cover) cover.style.display = 'none'
+  refreshSpinner()
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
@@ -201,6 +225,15 @@ export function getPlayer(): PlayerInstance {
   cover = document.createElement('div')
   cover.style.cssText = 'position:absolute;inset:0;background:#000;z-index:2;pointer-events:none;'
 
+  // Loading spinner: a Figma-blue (#0D99FF) arc on a translucent track, centered over the
+  // player. A full circle is fine here — a spinner is inherently round, not a "shape" in the
+  // sharp-by-default sense. z-index:3 sits above the cover; pointer-events:none keeps the
+  // webview interactive. Visibility is driven by refreshSpinner() off the player state.
+  ensureSpinnerStyle()
+  spinner = document.createElement('div')
+  spinner.style.cssText =
+    'position:absolute;top:50%;left:50%;width:40px;height:40px;margin:-20px 0 0 -20px;box-sizing:border-box;border-radius:50%;border:3px solid rgba(255,255,255,0.18);border-top-color:#0D99FF;animation:yt-spin 0.8s linear infinite;z-index:3;pointer-events:none;display:none;'
+
   // No click-catcher overlay: the webview stays fully interactive so the user can
   // dismiss YouTube's consent / sign-in walls and use native click-to-toggle. The
   // TransportBar drives play/pause/seek over the RPC. Trade-off: a focused webview
@@ -215,6 +248,7 @@ export function getPlayer(): PlayerInstance {
 
   wrapper.appendChild(webview)
   wrapper.appendChild(cover)
+  wrapper.appendChild(spinner)
   // Attach ONCE to <body> and never move it again (see header / electron#9529).
   document.body.appendChild(wrapper)
 
@@ -255,6 +289,7 @@ export function getPlayer(): PlayerInstance {
       rpc?.destroy()
       rpc = null
       if (cover) cover.style.display = 'block'
+      refreshSpinner()
       webviewEl.src = watchUrl(id)
     },
 
@@ -337,6 +372,7 @@ export function destroyPlayer(): void {
   wrapper = null
   webview = null
   cover = null
+  spinner = null
   videoId = null
   host = null
   lastRectKey = ''
