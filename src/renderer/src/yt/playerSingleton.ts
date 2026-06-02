@@ -155,11 +155,6 @@ async function onDomReady(): Promise<void> {
     cache.currentTime = o.currentTime
     if (o.duration > 0) cache.duration = o.duration
   })
-  // Guest diagnostics (seek/stall) surfaced in the renderer console for debugging the
-  // far-seek-goes-black issue. Temporary instrumentation.
-  rpc.on('diag', (d) => {
-    console.warn('[yt-guest diag]', JSON.stringify(d))
-  })
 
   await safeExec(guestRuntime(NONCE))
   try {
@@ -211,16 +206,10 @@ export function getPlayer(): PlayerInstance {
   // TransportBar drives play/pause/seek over the RPC. Trade-off: a focused webview
   // can swallow host hotkeys — accepted for v1 (spec §8 follow-up).
   webview.addEventListener('dom-ready', () => {
-    // Sign-in mode: set localStorage.ytSignIn='1' then reload to SKIP chrome-hide, so
-    // YouTube's masthead + "Sign in" are reachable. Logging in gives the persist:yt-player
-    // partition an authenticated (max-trust) session, which should stop both the home-bounce
-    // and the far-seek segment gating. Clear the flag + reload after signing in to re-hide.
-    const signInMode =
-      typeof localStorage !== 'undefined' && localStorage.getItem('ytSignIn') === '1'
     // insertCSS must wait for dom-ready (it calls getWebContentsId, which throws
     // synchronously before then — that was the 'did-start-loading' crash). Re-applies
     // on every (re)load; the black cover hides any pre-CSS flash.
-    if (!signInMode) safeInsertCSS()
+    safeInsertCSS()
     void onDomReady()
   })
 

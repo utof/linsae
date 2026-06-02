@@ -204,12 +204,6 @@ async function openYoutubeLoginWindow(): Promise<void> {
     void shell.openExternal(url)
     return { action: 'deny' }
   })
-  // Diagnostic flow logging — one run shows exactly where Google routes/blocks.
-  win.webContents.on('did-create-window', (_c, { url }) =>
-    console.log(`[yt-login] popup open → ${url}`),
-  )
-  win.webContents.on('did-navigate', (_e, u) => console.log(`[yt-login] nav → ${u}`))
-  win.webContents.on('did-navigate-in-page', (_e, u) => console.log(`[yt-login] in-page → ${u}`))
   // Load the LEGACY "One account. All of Google" sign-in page (ServiceLogin) DIRECTLY, not
   // youtube.com — which bounces into the modern /v3/signin (GlifWebSignIn) flow that Google
   // gates with "this browser or app may not be secure" (we hit exactly that). The legacy
