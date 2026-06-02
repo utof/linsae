@@ -157,19 +157,28 @@ function createWindow(origin: string): BrowserWindow {
 /**
  * Open a dedicated top-level window for YouTube/Google sign-in (opt-in; `YT_LOGIN=1`).
  *
- * Google refuses sign-in inside an embedded `<webview>` ("this browser or app may not be
- * secure"). A standalone BrowserWindow with a clean desktop-Chrome UA is treated as a real
- * browser, so login usually succeeds. It shares the `persist:yt-player` partition, so the
- * resulting authenticated cookies persist for the player webview. The user logs in, then
- * closes the window. This is additive/opt-in; the guest (unlogged-in) path is untouched.
+ * Google refuses sign-in inside an embedded `<webview>`, AND its modern `/v3/signin`
+ * (GlifWebSignIn) flow rejects an Electron BrowserWindow as "not secure" even with a clean
+ * Chrome UA — UA/client-hint spoofing can't be made consistent in Electron (electron#34481,
+ * #34762). The working path, shipped by ytmdesktop & th-ch/youtube-music in 2026, is to load
+ * the LEGACY `accounts.google.com/ServiceLogin?service=youtube` page directly (not gated that
+ * way) with the DEFAULT UA. It shares the `persist:yt-player` partition, so the resulting
+ * cookies persist for the player webview. The user logs in, then closes the window. This is
+ * additive/opt-in; the guest (unlogged-in) path is untouched.
  *
  * NOTE: not a `<webview>`, so the `web-contents-created` webview guards (will-attach /
  * will-navigate / popup-deny) do not apply — this window navigates Google freely and may
  * open the login popups Google's flow needs.
  */
-function openYoutubeLoginWindow(): void {
-  // Clean Chrome UA matched to the actual Chromium (no Electron/app token).
-  const chromeUA = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`
+async function openYoutubeLoginWindow(): Promise<void> {
+  const sess = session.fromPartition('persist:yt-player')
+  // Dev/test helper: YT_LOGOUT=1 clears ONLY this partition's local storage (it does NOT sign
+  // you out of Google server-side), so the window opens logged-OUT for a clean test of the
+  // sign-in flow. Reversible: a normal relaunch re-imports your cookies file and re-auths.
+  if (process.env.YT_LOGOUT === '1') {
+    await sess.clearStorageData()
+    console.log('[yt-login] cleared persist:yt-player storage (logged out for a clean test)')
+  }
   const win = new BrowserWindow({
     width: 980,
     height: 760,
@@ -182,8 +191,40 @@ function openYoutubeLoginWindow(): void {
       sandbox: true,
     },
   })
-  win.webContents.setUserAgent(chromeUA)
-  void win.loadURL('https://www.youtube.com/')
+  // Allow Google/YouTube sign-in popups (e.g. a security-key / passkey prompt); shell
+  // everything else out to the real browser.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    let host = ''
+    try {
+      host = new URL(url).hostname
+    } catch {
+      return { action: 'deny' }
+    }
+    if (GUEST_HOST_ALLOW.test(host)) return { action: 'allow' }
+    void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  // Diagnostic flow logging — one run shows exactly where Google routes/blocks.
+  win.webContents.on('did-create-window', (_c, { url }) =>
+    console.log(`[yt-login] popup open → ${url}`),
+  )
+  win.webContents.on('did-navigate', (_e, u) => console.log(`[yt-login] nav → ${u}`))
+  win.webContents.on('did-navigate-in-page', (_e, u) => console.log(`[yt-login] in-page → ${u}`))
+  // Load the LEGACY "One account. All of Google" sign-in page (ServiceLogin) DIRECTLY, not
+  // youtube.com — which bounces into the modern /v3/signin (GlifWebSignIn) flow that Google
+  // gates with "this browser or app may not be secure" (we hit exactly that). The legacy
+  // ServiceLogin?service=youtube page is not gated that way: it's what ytmdesktop and
+  // th-ch/youtube-music ship in 2026, the latter with NO UA override. UA / client-hint
+  // spoofing is a dead end — Electron can't make Sec-CH-UA / navigator.userAgentData
+  // consistent (electron#34481, #34762) — so we use the default UA here, as both apps do.
+  // @see https://github.com/ytmdesktop/ytmdesktop (src/main ServiceLogin redirect)
+  const next = encodeURIComponent('https://www.youtube.com/')
+  const cont = encodeURIComponent(
+    `https://www.youtube.com/signin?action_handle_signin=true&app=desktop&next=${next}`,
+  )
+  void win.loadURL(
+    `https://accounts.google.com/ServiceLogin?ltmpl=music&service=youtube&continue=${cont}`,
+  )
 }
 
 app.whenReady().then(async () => {
@@ -279,7 +320,7 @@ app.whenReady().then(async () => {
   void importYoutubeCookies()
   // Opt-in fresh login: `YT_LOGIN=1` opens a dedicated top-level window (NOT a <webview>)
   // for Google sign-in, which Google treats as a real browser. See openYoutubeLoginWindow.
-  if (process.env.YT_LOGIN === '1') openYoutubeLoginWindow()
+  if (process.env.YT_LOGIN === '1') void openYoutubeLoginWindow()
 
   mainWindow = createWindow(shell.origin)
   // Reuse the same shell when macOS re-activates the app with no windows open.
