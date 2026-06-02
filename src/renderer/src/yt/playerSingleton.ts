@@ -35,6 +35,7 @@ interface WebviewElement extends HTMLElement {
   src: string
   executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>
   insertCSS(css: string): Promise<string>
+  removeInsertedCSS(key: string): Promise<void>
   contentWindow: Window
 }
 
@@ -62,6 +63,8 @@ let wrapper: HTMLDivElement | null = null
 let webview: WebviewElement | null = null
 let cover: HTMLDivElement | null = null
 let spinner: HTMLDivElement | null = null
+// Key returned by the last CLEAN_CSS insertCSS, so setYoutubeChrome can removeInsertedCSS it.
+let cssKey: string | null = null
 let rpc: Rpc | null = null
 let videoId: string | null = null
 let cache: { currentTime: number; duration: number | null; last: PlayerState } = {
@@ -96,9 +99,14 @@ async function safeExec(code: string, gesture?: boolean): Promise<unknown> {
  */
 function safeInsertCSS(): void {
   try {
-    void webview?.insertCSS(CLEAN_CSS).catch((e) => {
-      console.warn('[player] insertCSS failed', e)
-    })
+    void webview
+      ?.insertCSS(CLEAN_CSS)
+      .then((key) => {
+        cssKey = key
+      })
+      .catch((e) => {
+        console.warn('[player] insertCSS failed', e)
+      })
   } catch (e) {
     console.warn('[player] insertCSS threw', e)
   }
@@ -239,10 +247,11 @@ export function getPlayer(): PlayerInstance {
   // TransportBar drives play/pause/seek over the RPC. Trade-off: a focused webview
   // can swallow host hotkeys — accepted for v1 (spec §8 follow-up).
   webview.addEventListener('dom-ready', () => {
-    // insertCSS must wait for dom-ready (it calls getWebContentsId, which throws
-    // synchronously before then — that was the 'did-start-loading' crash). Re-applies
-    // on every (re)load; the black cover hides any pre-CSS flash.
-    safeInsertCSS()
+    // insertCSS must wait for dom-ready (it calls getWebContentsId, which throws synchronously
+    // before then — that was the 'did-start-loading' crash). Skipped when the "show full
+    // YouTube UI" debug toggle is on; re-applies on every (re)load otherwise; the black cover
+    // hides any pre-CSS flash.
+    if (!isYoutubeChromeShown()) safeInsertCSS()
     void onDomReady()
   })
 
@@ -373,10 +382,50 @@ export function destroyPlayer(): void {
   webview = null
   cover = null
   spinner = null
+  cssKey = null
   videoId = null
   host = null
   lastRectKey = ''
   cache = { currentTime: 0, duration: null, last: 'unstarted' }
   stateCbs.clear()
   instance = null
+}
+
+/** localStorage key for the Settings "show full YouTube UI" debug toggle. */
+const SHOW_CHROME_KEY = 'linsae.ytShowChrome'
+
+/**
+ * Whether the user opted to show YouTube's full page chrome in the player (debug). Default
+ * false → chrome is hidden by CLEAN_CSS. Read on every dom-ready to gate the CSS injection.
+ */
+export function isYoutubeChromeShown(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(SHOW_CHROME_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Toggle YouTube's full page chrome in the player (debug, from Settings). Persists the choice
+ * and applies it to the live webview — remove the chrome-hiding CSS when showing, re-insert it
+ * when hiding. The next video load also honours the pref via the dom-ready handler.
+ */
+export function setYoutubeChrome(show: boolean): void {
+  try {
+    localStorage.setItem(SHOW_CHROME_KEY, show ? '1' : '0')
+  } catch {
+    /* localStorage unavailable */
+  }
+  if (show) {
+    if (cssKey && webview) {
+      const key = cssKey
+      cssKey = null
+      void webview.removeInsertedCSS(key).catch((e) => {
+        console.warn('[player] removeInsertedCSS failed', e)
+      })
+    }
+  } else if (!cssKey) {
+    safeInsertCSS()
+  }
 }

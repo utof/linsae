@@ -8,6 +8,7 @@ import { Feed } from './feed/Feed'
 import { api } from './lib/api'
 import { parseYouTubeUrl } from './lib/parse-youtube-url'
 import { CommandPalette } from './palette/CommandPalette'
+import { SettingsPanel } from './settings/SettingsPanel'
 import { ThreadView } from './thread/ThreadView'
 import { WindowFrame } from './topbar/WindowFrame'
 
@@ -59,6 +60,7 @@ export function App() {
   })
   const [focusedId, setFocusedId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null)
   const [draftBody, setDraftBody] = useState<string | null>(null)
   const [skipBannerDismissed, setSkipBannerDismissed] = useState(false)
@@ -213,6 +215,10 @@ export function App() {
   useHotkeys(
     'esc',
     () => {
+      if (settingsOpen) {
+        setSettingsOpen(false)
+        return
+      }
       if (paletteOpen) {
         setPaletteOpen(false)
         return
@@ -222,7 +228,7 @@ export function App() {
       }
     },
     { enableOnFormTags: ['textarea', 'input'] },
-    [paletteOpen, focusedId],
+    [settingsOpen, paletteOpen, focusedId],
   )
 
   /**
@@ -270,7 +276,10 @@ export function App() {
         background: 'var(--bg-0)',
       }}
     >
-      <WindowFrame onOpenPalette={() => setPaletteOpen(true)} />
+      <WindowFrame
+        onOpenPalette={() => setPaletteOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
       {/* Body row: position:relative so BacklinksPane can absolutely overlay
          it without pushing the feed left when the pane opens (the previous
          flex-sibling layout shifted the entire feed; user feedback called
@@ -430,6 +439,7 @@ export function App() {
         onClose={() => setPaletteOpen(false)}
         onJump={setFocusedId}
       />
+      <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   )
 }

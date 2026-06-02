@@ -85,6 +85,12 @@ const api = {
       author_url: string
       thumbnail_url: string
     } | null> => ipcRenderer.invoke('youtube:fetchOEmbed', i),
+    authStatus: (): Promise<{ signedIn: boolean }> => ipcRenderer.invoke('youtube:authStatus'),
+    signIn: (): Promise<{ ok: true }> => ipcRenderer.invoke('youtube:signIn'),
+    signOut: (): Promise<{ ok: true }> => ipcRenderer.invoke('youtube:signOut'),
+    importCookies: (): Promise<
+      { canceled: true } | { canceled: false; ok: number; fail: number }
+    > => ipcRenderer.invoke('youtube:importCookies'),
   },
   attachments: {
     list: (i: z.input<typeof AttachmentsListInputSchema>): Promise<Attachment[]> =>

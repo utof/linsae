@@ -70,6 +70,26 @@ function parseLine(line: string): Electron.CookiesSetDetails | null {
  * No-op if the file is absent or the partition is already authenticated.
  * Never logs cookie values.
  */
+/** Seed every parseable cookie line into the session. Never logs cookie values. */
+async function seedFromText(
+  sess: Electron.Session,
+  text: string,
+): Promise<{ ok: number; fail: number }> {
+  let ok = 0
+  let fail = 0
+  for (const line of text.split(/\r?\n/)) {
+    const d = parseLine(line)
+    if (!d) continue
+    try {
+      await sess.cookies.set(d)
+      ok++
+    } catch {
+      fail++ // never log the value
+    }
+  }
+  return { ok, fail }
+}
+
 export async function importYoutubeCookies(): Promise<void> {
   const path = cookiesPath()
   if (!existsSync(path)) return
@@ -88,17 +108,34 @@ export async function importYoutubeCookies(): Promise<void> {
     console.warn('[main] yt-cookies: read failed', e)
     return
   }
-  let ok = 0
-  let fail = 0
-  for (const line of text.split(/\r?\n/)) {
-    const d = parseLine(line)
-    if (!d) continue
-    try {
-      await sess.cookies.set(d)
-      ok++
-    } catch {
-      fail++ // never log the value
-    }
-  }
+  const { ok, fail } = await seedFromText(sess, text)
   console.log(`[main] yt-cookies imported ok=${ok} fail=${fail} → ${PARTITION}`)
+}
+
+/** True if the player partition holds a Google web-session auth cookie. */
+export async function isYoutubeAuthenticated(): Promise<boolean> {
+  const sess = session.fromPartition(PARTITION)
+  const c = await sess.cookies.get({ domain: '.youtube.com', name: '__Secure-3PSID' })
+  return c.length > 0
+}
+
+/** Sign out: drop the partition's cookies (keeps other storage like the volume pref). */
+export async function signOutYoutube(): Promise<void> {
+  await session.fromPartition(PARTITION).clearStorageData({ storages: ['cookies'] })
+  console.log('[main] yt-cookies: signed out (cleared partition cookies)')
+}
+
+/**
+ * Replace the partition session from a user-chosen Netscape cookies.txt: clear existing
+ * cookies first so a stale session can't shadow the import, then seed every line. Unlike
+ * {@link importYoutubeCookies} this is explicit (user picked the file), so it does NOT
+ * skip when already authenticated.
+ */
+export async function importCookiesFromFile(path: string): Promise<{ ok: number; fail: number }> {
+  const sess = session.fromPartition(PARTITION)
+  const text = readFileSync(path, 'utf8')
+  await sess.clearStorageData({ storages: ['cookies'] })
+  const res = await seedFromText(sess, text)
+  console.log(`[main] yt-cookies (file) imported ok=${res.ok} fail=${res.fail} → ${PARTITION}`)
+  return res
 }

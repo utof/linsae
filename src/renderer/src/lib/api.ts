@@ -175,6 +175,30 @@ export const api = {
       author_url: string
       thumbnail_url: string
     } | null> => window.api.youtube.fetchOEmbed({ videoId }),
+    /**
+     * Whether the player partition holds a Google web-session (i.e. signed in).
+     * @see src/main/ipc/youtube-auth.ts
+     */
+    authStatus: (): Promise<{ signedIn: boolean }> => window.api.youtube.authStatus(),
+    /**
+     * Open the dedicated ServiceLogin sign-in window (ADR 0017). Resolves once the window is
+     * opened, not when sign-in completes — re-query `authStatus` after the user signs in.
+     * @see src/main/yt-login.ts
+     */
+    signIn: (): Promise<{ ok: true }> => window.api.youtube.signIn(),
+    /**
+     * Sign out: clear the partition's cookies (keeps other storage like the volume pref).
+     * @see src/main/ipc/youtube-auth.ts
+     */
+    signOut: (): Promise<{ ok: true }> => window.api.youtube.signOut(),
+    /**
+     * Pick a Netscape cookies.txt via a native dialog and replace the partition session from
+     * it. Resolves `{canceled:true}` if the user dismissed the picker.
+     * @see src/main/ipc/youtube-auth.ts
+     */
+    importCookies: (): Promise<
+      { canceled: true } | { canceled: false; ok: number; fail: number }
+    > => window.api.youtube.importCookies(),
   },
   /**
    * Attachments IPC facade: list and associate screenshot/clip rows.

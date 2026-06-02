@@ -1,8 +1,9 @@
-import { Minus, Square, X } from 'lucide-react'
+import { Minus, Settings, Square, X } from 'lucide-react'
 import { api } from '../lib/api'
 
 interface Props {
   onOpenPalette: () => void
+  onOpenSettings: () => void
 }
 
 /**
@@ -31,7 +32,7 @@ interface Props {
  * @see src/main/ipc/system.ts (windowMinimize / windowToggleMaximize / windowClose)
  * @see src/renderer/src/styles/globals.css (.app-region-drag / .app-region-no-drag)
  */
-export function WindowFrame({ onOpenPalette }: Props) {
+export function WindowFrame({ onOpenPalette, onOpenSettings }: Props) {
   const iconBtn = {
     width: 28,
     height: 22,
@@ -85,6 +86,21 @@ export function WindowFrame({ onOpenPalette }: Props) {
           }}
         >
           ⌘K
+        </button>
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          aria-label="settings"
+          title="settings"
+          style={iconBtn}
+          onMouseEnter={(e) => {
+            ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-2)'
+          }}
+          onMouseLeave={(e) => {
+            ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+          }}
+        >
+          <Settings size={14} />
         </button>
         <button
           type="button"
