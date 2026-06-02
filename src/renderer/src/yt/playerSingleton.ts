@@ -128,7 +128,21 @@ function syncBounds(): void {
     syncRaf = 0
     return
   }
-  if (host?.isConnected) {
+  // While the wrapper is the OS-fullscreen element (TransportBar's fullscreen button
+  // calls wrapper.requestFullscreen()), the browser renders it in the top layer at
+  // screen size. The wrapper's inline left/top/width/height (author styles) outrank the
+  // UA `:fullscreen` rule, so if we kept snapping them to the small host rect the
+  // fullscreen frame ended up offset/clipped (the "fullscreen button bugs out" skew).
+  // Pin it to fill and skip the host sync until fullscreen exits.
+  if (document.fullscreenElement === wrapper) {
+    if (lastRectKey !== 'fullscreen') {
+      lastRectKey = 'fullscreen'
+      wrapper.style.left = '0'
+      wrapper.style.top = '0'
+      wrapper.style.width = '100vw'
+      wrapper.style.height = '100vh'
+    }
+  } else if (host?.isConnected) {
     const r = host.getBoundingClientRect()
     const key = `${r.left}|${r.top}|${r.width}|${r.height}`
     if (key !== lastRectKey) {
