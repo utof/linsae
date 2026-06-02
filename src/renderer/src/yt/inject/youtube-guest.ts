@@ -116,6 +116,10 @@ export function guestRuntime(nonce: string): string {
     startedFlag = v.currentTime > 0 || !v.paused;
     waitingFlag = false;
 
+    // Never show the native <video> controls — the app's TransportBar is the only
+    // control surface and YouTube's own chrome is hidden by clean-css (audit H).
+    try { v.controls = false; } catch(e) { /* read-only in some states */ }
+
     /** Post state event with current snapshot. */
     function emitState() {
       if (rpc) {

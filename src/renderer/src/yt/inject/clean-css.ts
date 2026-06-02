@@ -19,10 +19,14 @@ export const CLEAN_CSS = `
   width: 100% !important; height: 100% !important; left: 0 !important; top: 0 !important;
   object-fit: contain !important; }
 html, body { overflow: hidden !important; }
-ytd-app .html5-endscreen { opacity: 0 !important; }
-body ytd-app .ytp-chrome-top, body ytd-app .ytp-chrome-bottom, body ytd-app .ytp-gradient-top,
-body ytd-app .ytp-show-cards-title, body ytd-app .ytp-watermark, body ytd-app .ytp-pause-overlay {
+/* Hide EVERY player overlay — chrome bars, gradients, title, end cards, the fullscreen
+   engagement/like-share/QR overlay, the "more" chevron, the cued thumbnail, watermark —
+   with a whitelist instead of enumerating .ytp-* classes. This keeps new/renamed YouTube
+   overlays hidden and survives YouTube reparenting the player when it enters its own
+   (native) fullscreen, which leaked those overlays before. Keep ONLY the <video> and the
+   ad module (the Skip-Ad button must stay clickable, spec §4.4); opacity:0 (not
+   display:none) so YouTube's player JS still sees the controls it measures. */
+#movie_player > *:not(.html5-video-container):not(.video-ads) {
   opacity: 0 !important; pointer-events: none !important; }
 #masthead-ad, ytd-ad-slot-renderer, #player-ads { display: none !important; }
-/* Deliberately NOT hiding .video-ads / .ytp-ad-* — Skip-Ad button must stay clickable (spec §4.4). */
 `
