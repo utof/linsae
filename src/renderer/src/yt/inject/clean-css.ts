@@ -29,4 +29,10 @@ html, body { overflow: hidden !important; }
 #movie_player > *:not(.html5-video-container):not(.video-ads) {
   opacity: 0 !important; pointer-events: none !important; }
 #masthead-ad, ytd-ad-slot-renderer, #player-ads { display: none !important; }
+/* Page shell OUTSIDE #movie_player (masthead, sidebar, below-player metadata). In the
+   in-page (non-fullscreen) player the fixed-fill is trapped in an ancestor stacking
+   context, so YouTube's masthead paints over the top of the video — hiding the shell
+   directly is the only reliable cover. Native fullscreen lifts the player into the top
+   layer and escapes the trap, so this only matters in-page (harmless in fullscreen). */
+#masthead-container, ytd-masthead, #secondary, #below { display: none !important; }
 `
