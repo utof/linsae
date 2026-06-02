@@ -212,6 +212,27 @@ export function guestRuntime(nonce: string): string {
     var consentObs = new MutationObserver(function() { checkConsent(); });
     consentObs.observe(document.body || document.documentElement, { childList: true, subtree: true });
 
+    // Disable YouTube's "Up Next" autoplay so an ENDED video doesn't swap the <video>
+    // to a new src — that would leave the host pointing at the wrong video (notes/seek
+    // target the old id). Adapted from media-extended web/userscript/youtube.ts
+    // disableAutoPlay: the toggle is a child .ytp-autonav-toggle-button carrying
+    // aria-checked; click the wrapping button if it's on. The control lives in the
+    // (CSS-hidden) chrome and appears slightly after the video, so poll for it.
+    var autoPlayHandled = false;
+    function disableAutoPlay() {
+      if (autoPlayHandled) return;
+      var btn = document.querySelector('button.ytp-button[data-tooltip-target-id="ytp-autonav-toggle-button"]');
+      var label = btn && btn.querySelector('.ytp-autonav-toggle-button');
+      if (!btn || !label) return;
+      autoPlayHandled = true;
+      if (label.getAttribute('aria-checked') === 'true') { btn.click(); }
+    }
+    var apTries = 0;
+    var apTimer = setInterval(function() {
+      disableAutoPlay();
+      if (autoPlayHandled || ++apTries > 100) { clearInterval(apTimer); }
+    }, 200);
+
     // Find or wait for the video
     if (!findVideo()) {
       setupObserver();

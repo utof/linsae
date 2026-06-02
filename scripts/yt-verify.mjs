@@ -57,6 +57,7 @@ const PROBE = `(function(){
     url: location.href,
     webdriver: navigator.webdriver,
     consent: !!document.querySelector('ytd-consent-bump-v2-lightbox'),
+    autonav: (function(){var l=document.querySelector('.ytp-autonav-toggle-button');return l?l.getAttribute('aria-checked'):'(absent)';})(),
     hasVideo: !!v,
     paused: v?v.paused:null,
     currentTime: v?Math.round(v.currentTime*10)/10:null,
