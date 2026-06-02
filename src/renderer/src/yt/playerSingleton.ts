@@ -115,15 +115,6 @@ function applyState(f: VideoFlags & { currentTime: number; duration: number }): 
   }
 }
 
-/**
- * Grant a user gesture so the renderer allows autoplay (spec §D6).
- * Electron's autoplayPolicy=user-gesture-required blocks video.play() unless the call
- * originates from a user gesture; executeJavaScript(..., true) injects the gesture flag.
- */
-function userGesture(): Promise<unknown> {
-  return safeExec('1', true)
-}
-
 /** rAF loop: keep the fixed wrapper exactly over the ThreadView host placeholder. */
 function syncBounds(): void {
   if (!wrapper) {
@@ -268,8 +259,15 @@ export function getPlayer(): PlayerInstance {
     },
 
     async play(): Promise<void> {
-      await userGesture()
-      await rpc?.invoke('play')
+      // Play DIRECTLY in the guest with a user gesture (executeJavaScript's 2nd arg).
+      // Routing play through the RPC port lost the gesture — the port message is a
+      // separate task, so by the time the guest called video.play() the transient
+      // activation was gone and autoplayPolicy=user-gesture-required silently blocked it
+      // (the play button looked dead). pause/seek/rate need no gesture, so they stay on RPC.
+      await safeExec(
+        "var v=document.querySelector('#movie_player video');if(v)v.play().catch(function(){});",
+        true,
+      )
     },
 
     async pause(): Promise<void> {
