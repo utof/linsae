@@ -189,7 +189,18 @@ export function guestRuntime(nonce: string): string {
     // Invoke handlers
     rpc.handle('play', function() { if (videoEl) { videoEl.play().catch(function() {}); } return null; });
     rpc.handle('pause', function() { if (videoEl) { videoEl.pause(); } return null; });
-    rpc.handle('seekTo', function(s) { if (videoEl) { videoEl.currentTime = s; } return null; });
+    rpc.handle('seekTo', function(s) {
+      // Use YouTube's player API seekTo(seconds, allowSeekAhead=true): allowSeekAhead is what
+      // makes the player REQUEST media outside the currently-buffered range. A raw
+      // video.currentTime= set does NOT — so seeking FAR into an unbuffered region left the
+      // <video> with no data to decode and the webview went black ("died"), while in-buffer
+      // seeks worked. #movie_player exposes the same API object as the IFrame embed. Fall
+      // back to currentTime only if the API method is missing.
+      var mp = document.getElementById('movie_player');
+      if (mp && typeof mp.seekTo === 'function') { mp.seekTo(s, true); }
+      else if (videoEl) { videoEl.currentTime = s; }
+      return null;
+    });
     rpc.handle('setRate', function(r) { if (videoEl) { videoEl.playbackRate = r; } return null; });
     rpc.handle('setMuted', function(m) { if (videoEl) { videoEl.muted = m; } return null; });
 
