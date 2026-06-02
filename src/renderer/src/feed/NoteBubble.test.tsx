@@ -261,6 +261,38 @@ describe('NoteBubble', () => {
     expect(screen.getByRole('menu')).toBeInTheDocument()
   })
 
+  // Regression: the menu is position:fixed; rendered inline inside the feed's
+  // `transform: translateY(...)` virtual-item wrapper it was offset by the wrapper's
+  // translate (drifted up, eventually off-screen). The portal must mount it on
+  // document.body so it escapes any transformed ancestor. See NoteBubble.tsx (createPortal).
+  it('right-click menu portals to document.body, not into a transformed ancestor', () => {
+    const { container } = render(
+      <div style={{ transform: 'translateY(800px)' }} data-testid="transformed-wrapper">
+        <NoteBubble
+          note={baseNote}
+          focused={false}
+          expanded={false}
+          onToggleExpand={noop}
+          onFocus={noop}
+          onWikilinkClick={noop}
+          onEdit={noop}
+          onDelete={noop}
+          onCopyLink={noop}
+        />
+      </div>,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    const menu = screen.getByRole('menu')
+    // The menu must NOT be a descendant of the transformed wrapper.
+    const wrapper = screen.getByTestId('transformed-wrapper')
+    expect(wrapper.contains(menu)).toBe(false)
+    // It mounts on document.body (portal target).
+    expect(menu.closest('[data-testid="transformed-wrapper"]')).toBeNull()
+    expect(document.body.contains(menu)).toBe(true)
+  })
+
   it('right-click does NOT call onFocus (avoids opening backlinks pane as a side-effect)', () => {
     const onFocus = vi.fn()
     const { container } = render(

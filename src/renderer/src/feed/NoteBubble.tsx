@@ -1,5 +1,6 @@
 import { ChevronDown, Link2, Pen, Trash2 } from 'lucide-react'
 import { type MouseEvent, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { Note } from '../../../shared/types'
 import { Markdown } from '../lib/markdown'
 import { MediaFeedNoteContainer } from './MediaFeedNote'
@@ -84,7 +85,17 @@ function BubbleContextMenu({
     onClose()
   }
 
-  return (
+  // Render into document.body via a portal. CRITICAL: the menu is `position: fixed`
+  // with viewport coords (clientX/clientY), but every feed bubble is rendered inside
+  // a `transform: translateY(...)` virtual-item wrapper (Feed.tsx) — and a transformed
+  // ancestor becomes the containing block for fixed descendants, so an inline menu was
+  // offset by the wrapper's scroll-dependent translate (drifted up, eventually off-screen).
+  // Portaling to body removes the menu from that transformed subtree so `fixed` resolves
+  // to the viewport again. Regressed when the feed moved to @tanstack/react-virtual (65e5ce8).
+  // Click-outside still works: React events bubble through the React tree, and the
+  // `menuRef.contains` check is on the portaled node itself.
+  // @see https://developer.mozilla.org/en-US/docs/Web/CSS/position#fixed
+  return createPortal(
     <div
       ref={menuRef}
       role="menu"
@@ -149,7 +160,8 @@ function BubbleContextMenu({
         <Trash2 size={14} />
         Delete
       </button>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
