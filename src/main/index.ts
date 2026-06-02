@@ -36,6 +36,7 @@ import { NotesDir } from './files/notes-dir'
 import { DEV_MEDIA_PORT, startLoopbackShell } from './http-shell'
 import { registerAllIpc } from './ipc'
 import { secureWebPreferences } from './security'
+import { importYoutubeCookies } from './yt-cookies'
 
 // Why: single-instance lock must precede everything. A second launch should
 // focus the running window and exit, NOT race the first instance on the DB.
@@ -153,6 +154,38 @@ function createWindow(origin: string): BrowserWindow {
   return win
 }
 
+/**
+ * Open a dedicated top-level window for YouTube/Google sign-in (opt-in; `YT_LOGIN=1`).
+ *
+ * Google refuses sign-in inside an embedded `<webview>` ("this browser or app may not be
+ * secure"). A standalone BrowserWindow with a clean desktop-Chrome UA is treated as a real
+ * browser, so login usually succeeds. It shares the `persist:yt-player` partition, so the
+ * resulting authenticated cookies persist for the player webview. The user logs in, then
+ * closes the window. This is additive/opt-in; the guest (unlogged-in) path is untouched.
+ *
+ * NOTE: not a `<webview>`, so the `web-contents-created` webview guards (will-attach /
+ * will-navigate / popup-deny) do not apply — this window navigates Google freely and may
+ * open the login popups Google's flow needs.
+ */
+function openYoutubeLoginWindow(): void {
+  // Clean Chrome UA matched to the actual Chromium (no Electron/app token).
+  const chromeUA = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`
+  const win = new BrowserWindow({
+    width: 980,
+    height: 760,
+    title: 'Sign in to YouTube',
+    autoHideMenuBar: true,
+    webPreferences: {
+      partition: 'persist:yt-player',
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+    },
+  })
+  win.webContents.setUserAgent(chromeUA)
+  void win.loadURL('https://www.youtube.com/')
+}
+
 app.whenReady().then(async () => {
   bootStart = performance.now()
   const userData = app.getPath('userData')
@@ -240,6 +273,13 @@ app.whenReady().then(async () => {
       expirationDate: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 395,
     })
     .catch((e) => console.warn('[main] SOCS consent cookie set failed', e))
+
+  // Opt-in YouTube login via imported cookies (sidesteps Google's webview-login block).
+  // No-op unless a cookies file exists and the partition isn't already authenticated.
+  void importYoutubeCookies()
+  // Opt-in fresh login: `YT_LOGIN=1` opens a dedicated top-level window (NOT a <webview>)
+  // for Google sign-in, which Google treats as a real browser. See openYoutubeLoginWindow.
+  if (process.env.YT_LOGIN === '1') openYoutubeLoginWindow()
 
   mainWindow = createWindow(shell.origin)
   // Reuse the same shell when macOS re-activates the app with no windows open.

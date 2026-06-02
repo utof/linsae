@@ -84,6 +84,7 @@ export function guestRuntime(nonce: string): string {
 
   var rpc = null;
   var rafId = 0;
+  var seekWatch = 0;
   var videoEl = null;
   var startedFlag = false;
   var waitingFlag = false;
@@ -190,15 +191,38 @@ export function guestRuntime(nonce: string): string {
     rpc.handle('play', function() { if (videoEl) { videoEl.play().catch(function() {}); } return null; });
     rpc.handle('pause', function() { if (videoEl) { videoEl.pause(); } return null; });
     rpc.handle('seekTo', function(s) {
-      // Use YouTube's player API seekTo(seconds, allowSeekAhead=true): allowSeekAhead is what
-      // makes the player REQUEST media outside the currently-buffered range. A raw
-      // video.currentTime= set does NOT — so seeking FAR into an unbuffered region left the
-      // <video> with no data to decode and the webview went black ("died"), while in-buffer
-      // seeks worked. #movie_player exposes the same API object as the IFrame embed. Fall
-      // back to currentTime only if the API method is missing.
+      // Seek via YouTube's player API seekTo(seconds, allowSeekAhead=true) — allowSeekAhead
+      // requests media OUTSIDE the buffered range (a raw video.currentTime= set does not).
+      // #movie_player exposes the same API object as the IFrame embed. Diagnostic-instrumented
+      // (rpc 'diag') + a stall watchdog that hard-reloads at the target, because far/unbuffered
+      // seeks go black: this tells us WHETHER the segment is being refused (anti-bot) vs a
+      // seek-method issue.
       var mp = document.getElementById('movie_player');
-      if (mp && typeof mp.seekTo === 'function') { mp.seekTo(s, true); }
-      else if (videoEl) { videoEl.currentTime = s; }
+      var hasApi = !!(mp && typeof mp.seekTo === 'function');
+      rpc.send('diag', { ev: 'seekTo', target: Math.round(s), api: hasApi });
+      if (hasApi) { mp.seekTo(s, true); } else if (videoEl) { videoEl.currentTime = s; }
+      if (seekWatch) { clearTimeout(seekWatch); }
+      seekWatch = setTimeout(function() {
+        var v = videoEl;
+        if (!v) return;
+        rpc.send('diag', {
+          ev: 'post-seek', ct: Math.round(v.currentTime), target: Math.round(s),
+          readyState: v.readyState, networkState: v.networkState,
+          err: v.error ? v.error.code : 0, paused: v.paused, bufferedLen: v.buffered.length
+        });
+        // Graceful recovery: if we're parked at the (far) target with not-enough data, the
+        // out-of-buffer segment is not being delivered (YouTube low-trust/SABR — stays black
+        // forever; only a manual seek-back recovers). Auto-seek to the furthest BUFFERED
+        // position so playback resumes instead of dying. This does NOT make the far point
+        // reachable — that needs the session-trust fix (first-install visitor-warming).
+        if (Math.abs(v.currentTime - s) < 2 && v.readyState < 3 && v.buffered.length > 0) {
+          var end = v.buffered.end(v.buffered.length - 1);
+          if (end < s - 1) {
+            rpc.send('diag', { ev: 'recover-buffered', to: Math.round(end) });
+            v.currentTime = end;
+          }
+        }
+      }, 5000);
       return null;
     });
     rpc.handle('setRate', function(r) { if (videoEl) { videoEl.playbackRate = r; } return null; });
