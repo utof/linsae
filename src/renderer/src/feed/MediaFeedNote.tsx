@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { ChevronRight, MessagesSquare, Play } from 'lucide-react'
+import { ChevronRight, MessagesSquare } from 'lucide-react'
 import type { Note } from '../../../shared/types'
 import { api } from '../lib/api'
 import { formatClock } from '../lib/time'
@@ -118,16 +118,22 @@ export function MediaFeedNote({
         fontFamily: 'var(--font-sans)',
       }}
     >
-      {/* 16:9 thumbnail region — dark fallback, optional image, play badge, duration chip */}
-      <div
+      {/* 16:9 thumbnail — click anywhere to open the thread; dark fallback, optional
+          image, duration chip. The play-badge overlay was removed (no inline playback
+          here — the thumbnail is a thread affordance, not a player). */}
+      <button
+        type="button"
+        aria-label={title ? `open notes for ${title}` : 'open video notes'}
+        onClick={onOpenThread}
         style={{
+          display: 'block',
           width: '100%',
           aspectRatio: '16 / 9',
           background: '#1c1c1e',
           position: 'relative',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
+          border: 0,
+          padding: 0,
+          cursor: 'pointer',
           overflow: 'hidden',
         }}
       >
@@ -144,21 +150,6 @@ export function MediaFeedNote({
             }}
           />
         )}
-        {/* Play badge overlay */}
-        <div
-          style={{
-            position: 'relative',
-            width: 38,
-            height: 38,
-            borderRadius: '50%',
-            background: 'rgba(255,255,255,0.16)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <Play size={16} color="#fff" />
-        </div>
         {/* Duration chip — only when durationSec is known */}
         {durationSec != null && (
           <span
@@ -177,7 +168,7 @@ export function MediaFeedNote({
             {formatClock(durationSec)}
           </span>
         )}
-      </div>
+      </button>
 
       {/* Title + meta + bottom-right timestamp */}
       <div style={{ padding: '10px 12px' }}>
@@ -200,7 +191,8 @@ export function MediaFeedNote({
             marginTop: 4,
           }}
         >
-          {/* channel · duration meta line; duration part omitted when unknown */}
+          {/* channel meta line — duration lives only on the thumbnail chip now
+              (it used to be duplicated here next to the channel). */}
           <div
             style={{
               fontSize: 12,
@@ -209,7 +201,6 @@ export function MediaFeedNote({
             }}
           >
             {channel}
-            {durationSec != null ? ` · ${formatClock(durationSec)}` : null}
           </div>
           {/* wall-clock bottom-right (Telegram-style) — no view count per I-3 */}
           <span

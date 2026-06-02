@@ -65,4 +65,17 @@ describe('MediaFeedNote', () => {
     // formatClock(2240) = "37:20"
     expect(screen.getByText(formatClock(2240))).toBeInTheDocument()
   })
+
+  it('(f) clicking the thumbnail opens the thread', () => {
+    const onOpenThread = vi.fn()
+    render(<MediaFeedNote {...BASE_PROPS} onOpenThread={onOpenThread} />)
+    // The thumbnail is its own button, distinct from the bottom "open video notes" row.
+    fireEvent.click(screen.getByRole('button', { name: /open notes for/i }))
+    expect(onOpenThread).toHaveBeenCalledTimes(1)
+  })
+
+  it('(g) duration is shown once — on the thumbnail chip, not duplicated in the meta line', () => {
+    render(<MediaFeedNote {...BASE_PROPS} durationSec={2240} />)
+    expect(screen.getAllByText(formatClock(2240))).toHaveLength(1)
+  })
 })
