@@ -353,7 +353,14 @@ export function NoteBubble({
     note.source_kind === 'youtube' &&
     note.source_locator?.video_id != null
   if (isSource) {
-    return <MediaFeedNoteContainer note={note} {...(onOpenThread ? { onOpenThread } : {})} />
+    return (
+      <MediaFeedNoteContainer
+        note={note}
+        {...(onOpenThread ? { onOpenThread } : {})}
+        onDelete={handleDelete}
+        onCopyLink={handleCopyLink}
+      />
+    )
   }
 
   return (

@@ -78,4 +78,24 @@ describe('MediaFeedNote', () => {
     render(<MediaFeedNote {...BASE_PROPS} durationSec={2240} />)
     expect(screen.getAllByText(formatClock(2240))).toHaveLength(1)
   })
+
+  it('(h) no hover toolbar when onDelete / onCopyLink are omitted', () => {
+    const { container } = render(<MediaFeedNote {...BASE_PROPS} />)
+    fireEvent.mouseEnter(container.firstChild as Element)
+    expect(screen.queryByRole('button', { name: /^delete$/i })).toBeNull()
+  })
+
+  it('(i) hover reveals delete; arm-then-confirm fires onDelete once', () => {
+    const onDelete = vi.fn()
+    const { container } = render(<MediaFeedNote {...BASE_PROPS} onDelete={onDelete} />)
+    // Hidden until hover.
+    expect(screen.queryByRole('button', { name: /^delete$/i })).toBeNull()
+    fireEvent.mouseEnter(container.firstChild as Element)
+    // First click arms (no delete yet).
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
+    expect(onDelete).not.toHaveBeenCalled()
+    // Second click (now labelled "confirm delete") fires.
+    fireEvent.click(screen.getByRole('button', { name: /confirm delete/i }))
+    expect(onDelete).toHaveBeenCalledTimes(1)
+  })
 })

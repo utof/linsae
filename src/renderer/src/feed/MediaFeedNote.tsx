@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
-import { ChevronRight, MessagesSquare } from 'lucide-react'
+import { ChevronRight, Link2, MessagesSquare, Trash2 } from 'lucide-react'
+import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { api } from '../lib/api'
 import { formatClock } from '../lib/time'
@@ -29,6 +30,13 @@ export interface MediaFeedNoteProps {
   /** Wall-clock epoch ms when this note entered the feed. */
   createdAt: number
   onOpenThread: () => void
+  /**
+   * Hover-toolbar actions (parity with NoteBubble's edit/copy/delete bar). When
+   * omitted the toolbar is hidden. `edit` is intentionally absent — a source note
+   * has no editable body; you annotate inside the thread, not on the card.
+   */
+  onDelete?: () => void
+  onCopyLink?: () => void
 }
 
 /**
@@ -72,9 +80,13 @@ function formatTimestamp(ms: number): string {
 export function MediaFeedNoteContainer({
   note,
   onOpenThread,
+  onDelete,
+  onCopyLink,
 }: {
   note: Note
   onOpenThread?: (id: string) => void
+  onDelete?: () => void
+  onCopyLink?: () => void
 }) {
   const videoId = note.source_locator?.video_id ?? ''
   const { data: meta } = useQuery({
@@ -93,6 +105,8 @@ export function MediaFeedNoteContainer({
       openQuestionCount={openQuestionCount}
       createdAt={note.created_at}
       onOpenThread={() => onOpenThread?.(note.id)}
+      {...(onDelete ? { onDelete } : {})}
+      {...(onCopyLink ? { onCopyLink } : {})}
     />
   )
 }
@@ -106,10 +120,44 @@ export function MediaFeedNote({
   openQuestionCount,
   createdAt,
   onOpenThread,
+  onDelete,
+  onCopyLink,
 }: MediaFeedNoteProps) {
+  const [hover, setHover] = useState(false)
+  // Two-click delete arm, mirroring NoteBubble: deleting a video card removes the
+  // whole source note, so a single misclick over the thumbnail shouldn't nuke it.
+  const [deleteArmed, setDeleteArmed] = useState(false)
+  const armTimer = useRef<number | null>(null)
+  // Clear a pending arm timer on unmount so it can't setState a virtualised-out card.
+  useEffect(
+    () => () => {
+      if (armTimer.current !== null) clearTimeout(armTimer.current)
+    },
+    [],
+  )
+  const showToolbar = hover && (onDelete != null || onCopyLink != null)
+  const handleTrashClick = (e: MouseEvent) => {
+    e.stopPropagation()
+    if (deleteArmed) {
+      if (armTimer.current !== null) clearTimeout(armTimer.current)
+      setDeleteArmed(false)
+      onDelete?.()
+      return
+    }
+    setDeleteArmed(true)
+    armTimer.current = window.setTimeout(() => setDeleteArmed(false), 2000)
+  }
+
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: the card root only tracks hover to reveal the action toolbar; the actionable targets are the inner <button>s (thumbnail / open-notes / copy / delete).
     <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => {
+        setHover(false)
+        setDeleteArmed(false)
+      }}
       style={{
+        position: 'relative',
         maxWidth: 360,
         background: 'var(--bg-0)',
         border: '1px solid var(--border-0)',
@@ -249,6 +297,62 @@ export function MediaFeedNote({
         </span>
         <ChevronRight size={15} color="var(--fg-3)" />
       </button>
+
+      {/* Hover toolbar — copy-link + arm-to-confirm delete. Positioned INSIDE the
+          card (top:6) rather than NoteBubble's top:-10 because the card root is
+          overflow:hidden (to clip the thumbnail corners), which would clip an
+          outset bar. */}
+      {showToolbar && (
+        // biome-ignore lint/a11y/noStaticElementInteractions: wrapper only stops click propagation to the card; the real targets are the inner <button>s.
+        // biome-ignore lint/a11y/useKeyWithClickEvents: inner buttons own keyboard activation; the wrapper has no keyboard semantics.
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: 'absolute',
+            top: 6,
+            right: 6,
+            display: 'flex',
+            gap: 2,
+            background: '#fff',
+            border: '1px solid var(--border-0)',
+            borderRadius: 4,
+            padding: 2,
+            boxShadow: 'var(--shadow-1)',
+          }}
+        >
+          {onCopyLink && (
+            <button
+              type="button"
+              title="copy link"
+              aria-label="copy link"
+              onClick={(e) => {
+                e.stopPropagation()
+                onCopyLink()
+              }}
+              style={{ border: 0, background: 'transparent', cursor: 'pointer', padding: 4 }}
+            >
+              <Link2 size={14} />
+            </button>
+          )}
+          {onDelete && (
+            <button
+              type="button"
+              title="delete video"
+              aria-label={deleteArmed ? 'confirm delete' : 'delete'}
+              onClick={handleTrashClick}
+              style={{
+                border: 0,
+                background: deleteArmed ? '#FDECEC' : 'transparent',
+                cursor: 'pointer',
+                padding: 4,
+                color: deleteArmed ? '#E5484D' : 'inherit',
+              }}
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
