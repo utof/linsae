@@ -1,8 +1,10 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import type { Note } from '../../../shared/types'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
+import { dayKey, formatDayLabel } from '../lib/day'
+import { DayDivider, ScrollDatePill } from './DatePills'
 import { NoteBubble } from './NoteBubble'
 import { useExpandCollapseMorph } from './useExpandCollapseMorph'
 
@@ -104,6 +106,14 @@ function estimateBubbleHeight(note: Note): number {
 const SCROLL_END_THRESHOLD = 120
 
 /**
+ * Height (px) the inline {@link DayDivider} adds to a first-of-day item's wrapper.
+ * Seeds the virtualizer's size estimate for unmeasured day-boundary items (the real
+ * height arrives via measureElement on first paint) and defines the top zone within
+ * which an incoming divider pushes the floating scroll pill out.
+ */
+const DAY_DIVIDER_H = 34
+
+/**
  * Renders the rolling feed of notes — oldest at the top, newest at the
  * bottom — using `@tanstack/react-virtual`'s headless virtualizer with
  * its chat-shaped `anchorTo: 'end'` mode.
@@ -163,12 +173,26 @@ export function Feed({
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null)
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set())
 
+  // Indices that begin a new calendar day → an inline DayDivider renders above them
+  // and their size estimate gains DAY_DIVIDER_H. Recomputed only when the list changes.
+  const dayFirsts = useMemo(() => {
+    const set = new Set<number>()
+    let prevKey: string | null = null
+    notes.forEach((n, i) => {
+      const k = dayKey(n.created_at)
+      if (k !== prevKey) set.add(i)
+      prevKey = k
+    })
+    return set
+  }, [notes])
+
   const virtualizer = useVirtualizer({
     count: notes.length,
     getScrollElement: () => scrollerEl,
     estimateSize: (index) => {
       const n = notes[index]
-      return n ? estimateBubbleHeight(n) : 80
+      const base = n ? estimateBubbleHeight(n) : 80
+      return dayFirsts.has(index) ? base + DAY_DIVIDER_H : base
     },
     // Stable key per note (uuidv7 id). Critical for prepend stability under
     // `anchorTo: 'end'`: tanstack captures the visible item by key before a
@@ -350,6 +374,50 @@ export function Feed({
 
   const thumb = useScrollThumb(scrollerEl, suppressThumbResizeRef)
 
+  // ── floating "scroll date" pill (Telegram-style) ───────────────────────────
+  // On scroll: label = the topmost visible note's day; push = how far the next
+  // day's inline divider has risen into the top zone (it shoves the old pill out
+  // as it arrives, and the label flips to the new day exactly as the old pill
+  // clears the top — so they never overlap); visible = true, fading 800ms after
+  // scrolling stops. Reading geometry here never moves the list (no feedback loop):
+  // it only updates the overlay. The pillKeyRef guard skips setState on frames
+  // where neither the label nor the rounded push changed.
+  const [scrollPill, setScrollPill] = useState<{ label: string; push: number } | null>(null)
+  const [pillVisible, setPillVisible] = useState(false)
+  const pillKeyRef = useRef('')
+  const pillIdleRef = useRef<number | undefined>(undefined)
+  const onFeedScroll = useCallback(() => {
+    const el = scrollerEl
+    if (!el) return
+    const top = el.scrollTop
+    const items = virtualizer.getVirtualItems()
+    const firstVisible = items.find((it) => it.end > top + 1) ?? items[items.length - 1]
+    const note = firstVisible ? notes[firstVisible.index] : undefined
+    // Next day-boundary still below the top edge: as it rises within DAY_DIVIDER_H,
+    // push the current (older-day) pill up by the overlap.
+    let push = 0
+    const incoming = items.find((it) => dayFirsts.has(it.index) && it.start > top)
+    if (incoming && incoming.start - top < DAY_DIVIDER_H) {
+      push = Math.round(DAY_DIVIDER_H - (incoming.start - top))
+    }
+    const label = note ? formatDayLabel(note.created_at) : ''
+    const key = note ? `${label}|${push}` : ''
+    if (key !== pillKeyRef.current) {
+      pillKeyRef.current = key
+      setScrollPill(note ? { label, push } : null)
+    }
+    setPillVisible(true)
+    if (pillIdleRef.current !== undefined) clearTimeout(pillIdleRef.current)
+    pillIdleRef.current = window.setTimeout(() => setPillVisible(false), 800)
+  }, [scrollerEl, virtualizer, notes, dayFirsts])
+  // Clear the idle timer on unmount so it can't setState an unmounted feed.
+  useEffect(
+    () => () => {
+      if (pillIdleRef.current !== undefined) clearTimeout(pillIdleRef.current)
+    },
+    [],
+  )
+
   return (
     <div
       ref={containerRef}
@@ -361,6 +429,7 @@ export function Feed({
       <div style={{ maxWidth: 720, margin: '0 auto', height: '100%', position: 'relative' }}>
         <div
           ref={handleScrollerRef}
+          onScroll={onFeedScroll}
           style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}
         >
           {/* Inner spacer: tanstack-virtual sets this element's height to
@@ -400,6 +469,9 @@ export function Feed({
                     paddingBottom: 6,
                   }}
                 >
+                  {dayFirsts.has(vItem.index) && (
+                    <DayDivider label={formatDayLabel(note.created_at)} />
+                  )}
                   <NoteBubble
                     note={note}
                     focused={note.id === focusedId}
@@ -433,6 +505,9 @@ export function Feed({
           setThumbHovered={thumb.setThumbHovered}
           onPointerDown={thumb.onThumbPointerDown}
         />
+        {scrollPill && (
+          <ScrollDatePill label={scrollPill.label} push={scrollPill.push} visible={pillVisible} />
+        )}
       </div>
     </div>
   )

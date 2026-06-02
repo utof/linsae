@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { installMockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
+import { formatDayLabel } from '../lib/day'
 import { Feed } from './Feed'
 
 // jsdom has no layout engine so offsetHeight is always 0.
@@ -65,6 +66,52 @@ describe('Feed onOpenThread wiring', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: /open video notes/i }))
     expect(onOpenThread).toHaveBeenCalledWith('s1')
+  })
+})
+
+describe('Feed date dividers', () => {
+  // Fixed 2024 dates so the labels are stable month/day strings (never today/yesterday).
+  const day1 = new Date(2024, 0, 15, 9, 0, 0).getTime()
+  const day1Later = new Date(2024, 0, 15, 18, 0, 0).getTime()
+  const day2 = new Date(2024, 0, 16, 10, 0, 0).getTime()
+  const at = (id: string, ms: number): Note => ({
+    ...makeNote(id, id),
+    created_at: ms,
+    updated_at: ms,
+  })
+
+  it('renders an inline date divider above the first note of each calendar day', async () => {
+    render(
+      <Feed
+        notes={[at('a', day1), at('b', day2)]}
+        focusedId={null}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    await act(async () => {})
+    expect(screen.getByText(formatDayLabel(day1))).toBeInTheDocument()
+    expect(screen.getByText(formatDayLabel(day2))).toBeInTheDocument()
+  })
+
+  it('groups same-day notes under a single divider', async () => {
+    render(
+      <Feed
+        notes={[at('a', day1), at('b', day1Later)]}
+        focusedId={null}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    await act(async () => {})
+    // day1 and day1Later share a day → exactly one divider with that label.
+    expect(screen.getAllByText(formatDayLabel(day1))).toHaveLength(1)
   })
 })
 
