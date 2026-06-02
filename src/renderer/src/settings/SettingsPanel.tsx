@@ -39,10 +39,22 @@ function YoutubeAccountSection() {
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
   const [chromeShown, setChromeShown] = useState(isYoutubeChromeShown())
   const [busy, setBusy] = useState(false)
+  const [checking, setChecking] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
 
   const refresh = () => {
     void api.youtube.authStatus().then((r) => setSignedIn(r.signedIn))
+  }
+  // Min 400ms so the "checking…" feedback is always visible — otherwise a fast recheck that
+  // returns the same status looks like nothing happened (can't tell loading from bugged).
+  const recheck = async () => {
+    setChecking(true)
+    const [r] = await Promise.all([
+      api.youtube.authStatus(),
+      new Promise((res) => setTimeout(res, 400)),
+    ])
+    setSignedIn(r.signedIn)
+    setChecking(false)
   }
   // biome-ignore lint/correctness/useExhaustiveDependencies: run once on mount
   useEffect(() => refresh(), [])
@@ -72,8 +84,9 @@ function YoutubeAccountSection() {
     setYoutubeChrome(next)
   }
 
-  const status = signedIn === null ? 'checking…' : signedIn ? 'signed in' : 'not signed in'
-  const dot = signedIn ? 'var(--accent)' : 'var(--fg-3)'
+  const status =
+    checking || signedIn === null ? 'checking…' : signedIn ? 'signed in' : 'not signed in'
+  const dot = !checking && signedIn ? 'var(--accent)' : 'var(--fg-3)'
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -87,10 +100,11 @@ function YoutubeAccountSection() {
         <span style={{ color: 'var(--fg-2)' }}>{status}</span>
         <button
           type="button"
-          onClick={refresh}
+          onClick={recheck}
+          disabled={checking}
           style={{ ...btn, padding: '2px 8px', fontSize: 11 }}
         >
-          recheck
+          {checking ? 'checking…' : 'recheck'}
         </button>
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
