@@ -135,15 +135,14 @@ export function guestRuntime(nonce: string): string {
       });
     });
 
-    // Theater mode: enter best-effort (YouTube recreates the button after navigation)
+    // Theater mode: best-effort. The clean-css fill is now UNCONDITIONAL so chrome is
+    // hidden regardless, but entering theater nudges YouTube to pick a higher resolution
+    // and size the <video> up. (YouTube recreates the button after SPA navigation, so
+    // this is best-effort — and we no longer add a .mx-ready class: nothing reads it.)
     try {
       var sizeBtn = document.querySelector('#movie_player .ytp-size-button');
       if (sizeBtn) { sizeBtn.click(); }
     } catch(e) { /* best-effort */ }
-
-    // Mark ready on #movie_player so our clean-css selector activates
-    var mp = document.getElementById('movie_player');
-    if (mp) { mp.classList.add('mx-ready'); }
 
     // Initial state event
     emitState();
