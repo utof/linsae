@@ -103,6 +103,14 @@ function safeInsertCSS(): void {
       ?.insertCSS(CLEAN_CSS)
       .then((key) => {
         cssKey = key
+        // Reveal as soon as the chrome-hiding CSS is applied (next frame, so it has painted —
+        // no raw-page flash). Don't wait for the full guest RPC handshake (inject + port +
+        // find-video), which lags the video actually being visible by ~1s; the loading spinner
+        // covers any remaining buffering.
+        requestAnimationFrame(() => {
+          if (cover) cover.style.display = 'none'
+          refreshSpinner()
+        })
       })
       .catch((e) => {
         console.warn('[player] insertCSS failed', e)
@@ -248,10 +256,15 @@ export function getPlayer(): PlayerInstance {
   // can swallow host hotkeys — accepted for v1 (spec §8 follow-up).
   webview.addEventListener('dom-ready', () => {
     // insertCSS must wait for dom-ready (it calls getWebContentsId, which throws synchronously
-    // before then — that was the 'did-start-loading' crash). Skipped when the "show full
-    // YouTube UI" debug toggle is on; re-applies on every (re)load otherwise; the black cover
-    // hides any pre-CSS flash.
-    if (!isYoutubeChromeShown()) safeInsertCSS()
+    // before then — that was the 'did-start-loading' crash). It also drops the black loading
+    // cover once the CSS has painted (see safeInsertCSS). In debug "show full UI" mode there's
+    // no chrome CSS to wait for, so reveal immediately.
+    if (isYoutubeChromeShown()) {
+      if (cover) cover.style.display = 'none'
+      refreshSpinner()
+    } else {
+      safeInsertCSS()
+    }
     void onDomReady()
   })
 
