@@ -158,7 +158,8 @@ describe('ThreadView', () => {
     await waitFor(() => expect(screen.getByText('note at five seconds')).toBeInTheDocument())
 
     // Order is asserted via the rail's rendered note bodies in DOM order.
-    const getOrder = () => screen.getAllByTestId('rail-note').map((el) => el.textContent?.trim())
+    const getOrder = () =>
+      screen.getAllByTestId('rail-note-body').map((el) => el.textContent?.trim())
     // In video-time mode: note-B (t=5, "five") before note-A (t=10, "ten")
     expect(getOrder()).toEqual(['note at five seconds', 'note at ten seconds'])
 
@@ -192,7 +193,8 @@ describe('ThreadView', () => {
     await waitFor(() => expect(screen.getByText('note at ten seconds')).toBeInTheDocument())
 
     // Video mode: by t → note-B (t=5, "five") first, then note-A (t=10, "ten")
-    const getOrder = () => screen.getAllByTestId('rail-note').map((el) => el.textContent?.trim())
+    const getOrder = () =>
+      screen.getAllByTestId('rail-note-body').map((el) => el.textContent?.trim())
     expect(getOrder()).toEqual(['note at five seconds', 'note at ten seconds'])
 
     // Switch to capture mode: note-A created_at=50 < note-B created_at=100 → note-A first

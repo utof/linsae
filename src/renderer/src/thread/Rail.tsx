@@ -31,10 +31,12 @@ import { PinOff } from 'lucide-react'
 import { Fragment } from 'react'
 import type { Attachment, Note } from '../../../shared/types'
 import { DayDivider } from '../feed/DatePills'
+import { useClock24 } from '../lib/clock-pref'
 import { dayKey, formatDayLabel } from '../lib/day'
 import { Markdown } from '../lib/markdown'
 import { mediaUrlFromPath } from '../lib/media-url'
 import { formatClock } from '../lib/time'
+import { formatWallClock } from '../lib/wallclock'
 import { activeClusterIndex, logGapHeight } from './rail-layout'
 
 // ── layout constants (shared column + its left rail gutter) ─────────────────
@@ -87,6 +89,7 @@ export interface RailProps {
 
 /** A neutral note bubble: screenshot frame (if any) fills the bubble, body below. */
 function NoteBubble({ item, active }: { item: RailItem; active: boolean }) {
+  const clock24 = useClock24()
   return (
     <div
       data-testid="rail-note"
@@ -117,10 +120,25 @@ function NoteBubble({ item, active }: { item: RailItem; active: boolean }) {
         </div>
       )}
       {item.note.body && (
-        <div style={{ fontSize: 14, lineHeight: 'var(--lh-normal)', color: 'var(--fg-1)' }}>
+        <div
+          data-testid="rail-note-body"
+          style={{ fontSize: 14, lineHeight: 'var(--lh-normal)', color: 'var(--fg-1)' }}
+        >
           <Markdown body={item.note.body} onWikilinkClick={NOOP} />
         </div>
       )}
+      {/* Wall-clock post time — the thread note had none; matches the feed bubble. */}
+      <div
+        style={{
+          marginTop: 4,
+          textAlign: 'right',
+          fontSize: 11,
+          color: 'var(--fg-3)',
+          fontFamily: 'var(--font-sans)',
+        }}
+      >
+        {formatWallClock(item.createdAt, !clock24)}
+      </div>
     </div>
   )
 }

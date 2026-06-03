@@ -3,6 +3,7 @@ import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { useClock24 } from '../lib/clock-pref'
 import { Markdown } from '../lib/markdown'
+import { formatWallClock } from '../lib/wallclock'
 import { type ContextMenuPos, NoteContextMenu } from './ContextMenu'
 import { MediaFeedNoteContainer } from './MediaFeedNote'
 
@@ -14,33 +15,6 @@ import { MediaFeedNoteContainer } from './MediaFeedNote'
  * pasted 10k-char log doesn't dominate the feed's visual rhythm.
  */
 const BODY_TRUNCATE_AT = 4096
-
-/**
- * Telegram-style timestamp for the bubble footer.
- *
- * Today → just the time ("14:23" or "2:23 PM" depending on OS locale).
- * Older → month-day prefix ("May 27, 2:23 PM") so a bubble from days ago
- * isn't ambiguous with one from this morning. linsae has no day-separator
- * row (unlike Telegram) so the bubble itself must carry the date for
- * non-today entries.
- */
-function formatTimestamp(ms: number, hour12: boolean): string {
-  const d = new Date(ms)
-  const now = new Date()
-  const sameDay =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  return sameDay
-    ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12 })
-    : d.toLocaleString(undefined, {
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12,
-      })
-}
 
 interface Props {
   note: Note
@@ -345,7 +319,7 @@ export function NoteBubble({
               </span>
             )}
             <span title={new Date(note.created_at).toLocaleString()}>
-              {formatTimestamp(note.created_at, !clock24)}
+              {formatWallClock(note.created_at, !clock24)}
             </span>
           </span>
         </div>
@@ -384,7 +358,7 @@ export function NoteBubble({
             </span>
           )}
           <span title={new Date(note.created_at).toLocaleString()}>
-            {formatTimestamp(note.created_at, !clock24)}
+            {formatWallClock(note.created_at, !clock24)}
           </span>
         </div>
       )}
