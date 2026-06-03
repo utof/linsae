@@ -1,9 +1,11 @@
 // Playwright-Electron harness for the v0.2.1 send animation — the iMessage-style
 // ghost that flies from the composer up into the feed (SendGhost +
-// useSendAnimation). Forked from morph-harness.mjs. It seeds notes, scrolls to
-// the bottom, installs a per-rAF sampler that records the ghost's rect + opacity
-// each frame, sends one more note (triggering the flight), and reports the
-// trajectory + the LANDING DRIFT of the ghost's final rect vs the real new
+// useSendAnimation) AND the make-room reveal that slides the new note up into
+// place (useAppendReveal). Forked from morph-harness.mjs. It seeds notes, scrolls
+// to the bottom, installs a per-rAF sampler that records the scroller's scrollTop
+// (the reveal) and the ghost's rect + opacity each frame, sends one more note
+// (triggering both), and reports the scrollTop ramp (smooth vs abrupt jump) plus
+// the trajectory + the LANDING DRIFT of the ghost's final rect vs the real new
 // note's rect — both vertical AND horizontal, since the geometry approximates
 // `feedContentLeft` as the scroller's left edge and the harness is the arbiter
 // of whether that drifts (see docs/specs/v0.2.1-send-animation.md §Verification).
@@ -54,13 +56,19 @@ try {
   })
   await win.waitForTimeout(150)
 
-  // Per-rAF sampler: every frame, if the ghost exists, record its rect + opacity.
+  // Per-rAF sampler: every frame record the scroller's scrollTop (the make-room
+  // reveal, useAppendReveal) and — if the ghost exists — its rect + opacity.
   await win.evaluate(() => {
     const w = window
     w.__sg = []
+    w.__st = []
     w.__sgOn = true
+    const scroller = document.querySelector('[data-index]')?.parentElement?.parentElement ?? null
     const tick = () => {
       if (!w.__sgOn) return
+      if (scroller) {
+        w.__st.push({ t: Math.round(performance.now()), scrollTop: Math.round(scroller.scrollTop) })
+      }
       const g = document.querySelector('[data-testid="send-ghost"]')
       if (g) {
         const r = g.getBoundingClientRect()
@@ -95,9 +103,9 @@ try {
   await win.waitForTimeout(350)
 
   // Stop sampling; read the trajectory + the settled landing geometry.
-  const sg = await win.evaluate(() => {
+  const { sg, st } = await win.evaluate(() => {
     window.__sgOn = false
-    return window.__sg
+    return { sg: window.__sg, st: window.__st }
   })
   const landing = await win.evaluate(() => {
     const items = [...document.querySelectorAll('[data-index]')]
@@ -151,6 +159,26 @@ try {
       )
     }
     console.log('ghost cleaned up      :', ghostGone, '(removed from DOM at t≥1)')
+  }
+
+  // ---- make-room reveal: the feed should RAMP scrollTop up by ~one note height
+  // (existing notes glide up, new note rises in), NOT jump it in a single frame.
+  if (st && st.length > 1) {
+    const tops = st.map((s) => s.scrollTop)
+    const rise = Math.max(...tops) - Math.min(...tops)
+    let maxStep = 0
+    let risingFrames = 0
+    for (let i = 1; i < tops.length; i++) {
+      const d = tops[i] - tops[i - 1]
+      if (d > 0) risingFrames++
+      if (Math.abs(d) > maxStep) maxStep = Math.abs(d)
+    }
+    console.log('scrollTop rise (px)   :', rise, '(≈ one note height ⇒ the feed made room)')
+    console.log('scrollTop max step    :', maxStep, '(≪ rise ⇒ smooth ramp; ≈ rise ⇒ abrupt jump)')
+    console.log('scrollTop rising frms :', risingFrames, '(several ⇒ animated reveal, not a pop)')
+    console.log('scrollTop trajectory  :', JSON.stringify(tops))
+  } else {
+    console.log('scrollTop trajectory  : (not captured — no scroller?)')
   }
   console.log('SCREENSHOTS           :', SHOT_DIR)
 } finally {

@@ -6,6 +6,7 @@ import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { dayKey, formatDayLabel } from '../lib/day'
 import { DayDivider, ScrollDatePill } from './DatePills'
 import { NoteBubble } from './NoteBubble'
+import { useAppendReveal } from './useAppendReveal'
 import { useExpandCollapseMorph } from './useExpandCollapseMorph'
 
 interface Props {
@@ -236,6 +237,12 @@ export function Feed({
   const morphingIndexRef = useRef<number | null>(null)
   morphingIndexRef.current = morphingIndex
   const suppressThumbResizeRef = useRef<boolean>(false)
+  // `revealing` is true while the make-room reveal (useAppendReveal) drives
+  // scrollTop to slide a freshly-sent note up into place. Like `morphingIndex`
+  // it gates the virtualizer's scroll-correction below; the ref is read live in
+  // the `shouldAdjust` closure, the state forces the anchorTo re-apply.
+  const [revealing, setRevealing] = useState(false)
+  const revealingRef = useRef(false)
   // Collapsed-state geometry (item height + constant chrome), captured for free
   // when a note is EXPANDED — at that instant the note is still rendered
   // collapsed, so its pre-swap layout IS the collapse target. Reused on collapse
@@ -252,19 +259,34 @@ export function Feed({
     setMorphingIndex,
     suppressThumbResizeRef,
   })
+  // iMessage make-room: a freshly-sent note slides up into its slot instead of
+  // popping in. Mirrors the morph's scrollTop-driving so it can't fight the
+  // virtualizer (ADR 0019). The ghost-flight half is App's useSendAnimation.
+  useAppendReveal({
+    virtualizer,
+    scrollerEl,
+    notes,
+    revealingRef,
+    setRevealing,
+    suppressThumbResizeRef,
+  })
 
-  // Prevent the virtualizer's own scroll-position correction from fighting
-  // the manual bottom-anchor during an active morph. ADR 0007.
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => morphingIndexRef.current === null
+  // Prevent the virtualizer's own scroll-position correction from fighting the
+  // manual bottom-anchor during an active morph OR make-room reveal. ADR 0007 /
+  // ADR 0019. Both drive scrollTop themselves; an estimate→measured size
+  // correction mid-animation would yank it.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () =>
+    morphingIndexRef.current === null && !revealingRef.current
   // shouldAdjust above does NOT gate virtual-core's `anchorTo:'end'` "wasAtEnd"
   // path: in resizeItem the `if (wasAtEnd) applyScrollAdjustment(...)` branch is
   // unconditional (dist/esm/index.js). When collapsing a note near the bottom,
   // that branch rides the scroll up by the size delta AT THE SAME TIME as our
   // manual bottom-anchor — double-applying, so the viewport overshoots above all
-  // content and the feed blanks for the morph. Drop anchorTo to 'start' for the
-  // morph window so OUR bottom-anchor is the only thing moving scroll; restore
-  // 'end' after. (anchorTo is read live as this.options.anchorTo.) ADR 0007.
-  virtualizer.options.anchorTo = morphingIndexRef.current === null ? 'end' : 'start'
+  // content and the feed blanks for the morph. The reveal hits the same hazard
+  // (its measured row corrects size as it scrolls in). Drop anchorTo to 'start'
+  // for the morph/reveal window so OUR scroll is the only thing moving; restore
+  // 'end' after. (anchorTo is read live as this.options.anchorTo.) ADR 0007 / 0019.
+  virtualizer.options.anchorTo = morphingIndexRef.current === null && !revealing ? 'end' : 'start'
 
   // Initial scroll-to-bottom once the scroller is available. Layout
   // effect (not effect) so the bottom-pinned position is set BEFORE the
