@@ -133,6 +133,15 @@ const SCROLL_END_THRESHOLD = 120
 const DAY_DIVIDER_H = 34
 
 /**
+ * Wall-clock cap (ms) on how long a just-sent note may stay hidden behind its
+ * flying ghost (see `hiddenId`). The normal hand-off reveals it at ~flight end
+ * (~460ms); this only fires if the hand-off is slowed (`window.__morphSlow`) or
+ * stuck — so a CREATED note can never be permanently invisible. Generous enough
+ * to clear the real flight, short enough that a stuck note reappears fast.
+ */
+const HIDE_FAILSAFE_MS = 900
+
+/**
  * Renders the rolling feed of notes — oldest at the top, newest at the
  * bottom — using `@tanstack/react-virtual`'s headless virtualizer with
  * its chat-shaped `anchorTo: 'end'` mode.
@@ -259,6 +268,12 @@ export function Feed({
   // gated by `sendInFlight` at render time, so it self-clears when the ghost lands.
   const [hiddenId, setHiddenId] = useState<string | null>(null)
   const prevLastIdRef = useRef<string | undefined>(notes[notes.length - 1]?.id)
+  // Fail-safe so a CREATED note is never invisible: a hidden note is force-revealed
+  // after HIDE_FAILSAFE_MS of wall-clock even if the hand-off (sendInFlight→false)
+  // is slow (`window.__morphSlow` in dev) or never fires. The normal hand-off at
+  // ~flight end (460ms) wins this race in production; the cap only catches the
+  // pathological case (the bug where a note was created but stayed hidden).
+  const hideTimerRef = useRef<number | undefined>(undefined)
   // Collapsed-state geometry (item height + constant chrome), captured for free
   // when a note is EXPANDED — at that instant the note is still rendered
   // collapsed, so its pre-swap layout IS the collapse target. Reused on collapse
@@ -295,9 +310,22 @@ export function Feed({
     const last = notes[notes.length - 1]
     const prevLast = prevLastIdRef.current
     prevLastIdRef.current = last?.id
-    if (sendInFlight && last && last.id !== prevLast) setHiddenId(last.id)
-    else if (!sendInFlight) setHiddenId(null)
+    if (sendInFlight && last && last.id !== prevLast) {
+      setHiddenId(last.id)
+      if (hideTimerRef.current !== undefined) clearTimeout(hideTimerRef.current)
+      hideTimerRef.current = window.setTimeout(() => setHiddenId(null), HIDE_FAILSAFE_MS)
+    } else if (!sendInFlight) {
+      setHiddenId(null)
+      if (hideTimerRef.current !== undefined) clearTimeout(hideTimerRef.current)
+    }
   }, [notes, sendInFlight])
+  // Clear the fail-safe timer on unmount so it can't setState an unmounted feed.
+  useEffect(
+    () => () => {
+      if (hideTimerRef.current !== undefined) clearTimeout(hideTimerRef.current)
+    },
+    [],
+  )
 
   // Prevent the virtualizer's own scroll-position correction from fighting the
   // manual bottom-anchor during an active morph OR make-room reveal. ADR 0007 /

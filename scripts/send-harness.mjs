@@ -45,7 +45,7 @@ try {
 
   // Seed enough notes that the feed is taller than the viewport (tall-feed path:
   // the new note pins flush to the scroller bottom).
-  for (let i = 1; i <= 8; i++) {
+  for (let i = 1; i <= 30; i++) {
     await send(`seed note ${i} — some body text so the bubble has real height`)
   }
 
@@ -157,6 +157,33 @@ try {
   })
   const ghostGone = await win.evaluate(() => !document.querySelector('[data-testid="send-ghost"]'))
 
+  // ---- FULLY-SETTLED state (the bug report: note created but never visible).
+  // Wait well past both the flight (460ms) and the reveal (400ms), then check the
+  // newest note is opaque, on-screen, and the content transform/scroll recovered.
+  await win.waitForTimeout(1500)
+  const settled = await win.evaluate(() => {
+    const items = [...document.querySelectorAll('[data-index]')]
+    const last = items[items.length - 1]
+    const content = items[0]?.parentElement ?? null
+    const sc = content?.parentElement ?? null
+    if (!last || !sc || !content) return null
+    const lr = last.getBoundingClientRect()
+    const scr = sc.getBoundingClientRect()
+    const cty = Math.round(new DOMMatrixReadOnly(getComputedStyle(content).transform).m42)
+    return {
+      lastOpacity: Number(getComputedStyle(last).opacity),
+      onScreen: lr.top >= scr.top - 1 && lr.bottom <= scr.bottom + 1,
+      lastTop: Math.round(lr.top),
+      lastBottom: Math.round(lr.bottom),
+      scTop: Math.round(scr.top),
+      scBottom: Math.round(scr.bottom),
+      contentTransformY: cty,
+      atBottom: Math.abs(sc.scrollTop - (sc.scrollHeight - sc.clientHeight)) < 2,
+      scrollTop: Math.round(sc.scrollTop),
+      maxScroll: Math.round(sc.scrollHeight - sc.clientHeight),
+    }
+  })
+
   // ---- Report (read the numbers; screenshots are a backstop) ----
   if (sg.length === 0) {
     console.log(
@@ -250,6 +277,15 @@ try {
     )
   } else {
     console.log('make-room trajectory  : (not captured — no content wrapper?)')
+  }
+  console.log('SETTLED (1.5s later)  :', JSON.stringify(settled))
+  if (settled) {
+    const ok = settled.lastOpacity === 1 && settled.onScreen && settled.contentTransformY === 0
+    console.log(
+      'NEWEST NOTE VISIBLE   :',
+      ok ? 'OK' : 'FAIL',
+      `(opacity ${settled.lastOpacity}, onScreen ${settled.onScreen}, contentTY ${settled.contentTransformY}, atBottom ${settled.atBottom})`,
+    )
   }
   console.log('SCREENSHOTS           :', SHOT_DIR)
 } finally {

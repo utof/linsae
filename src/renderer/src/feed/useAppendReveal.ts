@@ -65,6 +65,7 @@ export function useAppendReveal(args: {
     suppressThumbResizeRef,
   } = args
   const controlsRef = useRef<{ stop: () => void } | null>(null)
+  const failTimerRef = useRef<number | undefined>(undefined)
   // Previous list shape, to detect a single append. Initialised to the first
   // render's value so the initial mount (empty → loaded list) is never an append.
   const prevRef = useRef<{ count: number; lastId: string | undefined }>({
@@ -72,14 +73,28 @@ export function useAppendReveal(args: {
     lastId: notes[notes.length - 1]?.id,
   })
 
-  const stop = useCallback(() => {
-    controlsRef.current?.stop()
+  // Force the reveal to its END state: transform cleared, suppression released,
+  // re-pinned to bottom. Driven by the animation's `onComplete` AND a fail-safe
+  // timer, so a freshly-sent note can NEVER be left translated below the fold if
+  // the animation's completion callback doesn't fire. Idempotent.
+  const settle = useCallback(() => {
+    if (failTimerRef.current !== undefined) {
+      clearTimeout(failTimerRef.current)
+      failTimerRef.current = undefined
+    }
     controlsRef.current = null
     const content = contentRef.current
     if (content) content.style.transform = ''
     revealingRef.current = false
+    setRevealing(false)
     suppressThumbResizeRef.current = false
-  }, [contentRef, revealingRef, suppressThumbResizeRef])
+    virtualizer.scrollToEnd?.()
+  }, [contentRef, revealingRef, setRevealing, suppressThumbResizeRef, virtualizer])
+
+  const stop = useCallback(() => {
+    controlsRef.current?.stop()
+    settle()
+  }, [settle])
 
   // Stop any in-flight reveal on unmount.
   useEffect(() => stop, [stop])
@@ -126,28 +141,20 @@ export function useAppendReveal(args: {
     controlsRef.current = animate(
       content,
       { y: [noteH, 0] },
-      {
-        type: spring,
-        bounce: REVEAL_BOUNCE,
-        visualDuration: duration,
-        onComplete: () => {
-          content.style.transform = ''
-          controlsRef.current = null
-          revealingRef.current = false
-          setRevealing(false)
-          suppressThumbResizeRef.current = false
-          // Re-pin to the true bottom — a measure correction during the reveal can
-          // have shifted it (anchorTo was 'start', so it wasn't tracked).
-          virtualizer.scrollToEnd?.()
-        },
-      },
+      { type: spring, bounce: REVEAL_BOUNCE, visualDuration: duration, onComplete: settle },
     )
+    // Fail-safe: if `onComplete` never fires (a hung/orphaned animation), force the
+    // end state so the note is never left translated below the fold. Scales with
+    // the dev slow-mo so it doesn't cut a deliberately-slowed reveal short.
+    if (failTimerRef.current !== undefined) clearTimeout(failTimerRef.current)
+    failTimerRef.current = window.setTimeout(settle, duration * 1000 + 800)
   }, [
     notes,
     scrollerEl,
     contentRef,
     virtualizer,
     stop,
+    settle,
     setRevealing,
     revealingRef,
     suppressThumbResizeRef,
