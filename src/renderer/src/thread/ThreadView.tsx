@@ -46,6 +46,12 @@ const MIN_NOTES_W = 360
 const DEFAULT_SPLIT_W = 480
 
 /**
+ * Spring-overshoot easing for the resize-handle thicken-on-hover, matched to the
+ * custom scrollbar thumb (ScrollArea) so the divider grows with the same feel.
+ */
+const SPRING_EASE = 'cubic-bezier(0.34, 1.56, 0.64, 1)'
+
+/**
  * ThreadView — shell for a single video-annotation thread.
  *
  * Regions (top → bottom):
@@ -461,17 +467,6 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   // lower stack in stacked. Internals are identical in both layouts.
   const notesPane = (
     <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-      {/* SortPill lives OUTSIDE the scroller so changing sort never requires
-          scrolling back to the top. */}
-      <div style={{ flex: '0 0 auto', padding: '12px 24px 8px' }}>
-        <div style={{ maxWidth: COL, margin: '0 auto' }}>
-          <SortPill
-            sortMode={sortMode}
-            onToggle={() => setSortMode((m) => (m === 'video' ? 'capture' : 'video'))}
-          />
-        </div>
-      </div>
-
       <div
         style={{ flex: 1, minHeight: 0, position: 'relative' }}
         onPointerEnter={thumb.onAreaEnter}
@@ -524,6 +519,38 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
               setThumbHovered={thumb.setThumbHovered}
               onPointerDown={thumb.onThumbPointerDown}
             />
+          </div>
+        </div>
+
+        {/* Floating sort pill — overlays the notes' top-right (no dedicated row, so
+            the notes reclaim that vertical space; the feed scrolls under it). */}
+        <div
+          style={{
+            position: 'absolute',
+            top: 8,
+            left: 0,
+            right: 0,
+            display: 'flex',
+            justifyContent: 'center',
+            pointerEvents: 'none',
+          }}
+        >
+          <div
+            style={{
+              width: '100%',
+              maxWidth: COL,
+              boxSizing: 'border-box',
+              padding: '0 24px',
+              display: 'flex',
+              justifyContent: 'flex-end',
+            }}
+          >
+            <div style={{ pointerEvents: 'auto' }}>
+              <SortPill
+                sortMode={sortMode}
+                onToggle={() => setSortMode((m) => (m === 'video' ? 'capture' : 'video'))}
+              />
+            </div>
           </div>
         </div>
 
@@ -700,25 +727,12 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
           </div>
           {/* Horizontal resize handle — drag to scale the player; notes take the
               freed vertical space. */}
-          <div
+          <ResizeHandle
+            orientation="row"
             onPointerDown={onResizeStart}
+            testId="player-resize"
             title="drag to resize the player"
-            aria-hidden
-            data-testid="player-resize"
-            style={{
-              flex: '0 0 auto',
-              height: 11,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'row-resize',
-              borderBottom: '1px solid var(--border-0)',
-            }}
-          >
-            <span
-              style={{ width: 36, height: 3, borderRadius: 2, background: 'var(--border-2)' }}
-            />
-          </div>
+          />
           {notesPane}
         </>
       ) : (
@@ -735,25 +749,12 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
           >
             {playerContent}
           </div>
-          <div
+          <ResizeHandle
+            orientation="col"
             onPointerDown={onSplitResizeStart}
+            testId="player-resize-v"
             title="drag to resize the video"
-            aria-hidden
-            data-testid="player-resize-v"
-            style={{
-              flex: '0 0 auto',
-              width: 11,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'col-resize',
-              borderRight: '1px solid var(--border-0)',
-            }}
-          >
-            <span
-              style={{ width: 3, height: 36, borderRadius: 2, background: 'var(--border-2)' }}
-            />
-          </div>
+          />
           {notesPane}
         </div>
       )}
@@ -779,7 +780,7 @@ interface SortPillProps {
  */
 function SortPill({ sortMode, onToggle }: SortPillProps) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
+    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
       <button
         type="button"
         aria-label="sort mode"
@@ -806,6 +807,71 @@ function SortPill({ sortMode, onToggle }: SortPillProps) {
         )}
         {sortMode === 'video' ? 'by video time' : 'by capture time'}
       </button>
+    </div>
+  )
+}
+
+// ── ResizeHandle ───────────────────────────────────────────────────────────────
+
+/**
+ * The draggable divider between the player and the notes. The line IS the handle —
+ * drag anywhere along it — and it thickens + tints on hover/drag with the same
+ * spring-overshoot as the custom scrollbar thumb (ScrollArea). Used in both layouts
+ * (`row` = horizontal divider in stacked, `col` = vertical divider in split).
+ *
+ * `dragging` keeps it thick for the whole drag even when the cursor leaves the strip
+ * (the pointer roams over the webview/notes), cleared on the window-level pointerup.
+ */
+function ResizeHandle({
+  orientation,
+  onPointerDown,
+  testId,
+  title,
+}: {
+  orientation: 'row' | 'col'
+  onPointerDown: (e: ReactPointerEvent) => void
+  testId: string
+  title: string
+}) {
+  const [hover, setHover] = useState(false)
+  const [dragging, setDragging] = useState(false)
+  const row = orientation === 'row'
+  const hot = hover || dragging
+  const thick = hot ? 6 : 2
+  const start = (e: ReactPointerEvent) => {
+    setDragging(true)
+    const up = () => {
+      setDragging(false)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointerup', up)
+    onPointerDown(e)
+  }
+  return (
+    <div
+      onPointerDown={start}
+      onPointerEnter={() => setHover(true)}
+      onPointerLeave={() => setHover(false)}
+      title={title}
+      aria-hidden
+      data-testid={testId}
+      style={{
+        flex: '0 0 auto',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        touchAction: 'none',
+        ...(row ? { height: 11, cursor: 'row-resize' } : { width: 11, cursor: 'col-resize' }),
+      }}
+    >
+      <span
+        style={{
+          borderRadius: 4,
+          background: hot ? 'var(--fg-3)' : 'var(--border-1)',
+          transition: `height 240ms ${SPRING_EASE}, width 240ms ${SPRING_EASE}, background 140ms ease`,
+          ...(row ? { width: '100%', height: thick } : { height: '100%', width: thick }),
+        }}
+      />
     </div>
   )
 }
