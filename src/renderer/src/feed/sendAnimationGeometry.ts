@@ -12,11 +12,6 @@
 
 import { lerp } from './expandCollapseMorph'
 
-// Re-export lerp usage so TypeScript doesn't tree-shake the import away.
-// The import ensures we share one implementation across the two geometry
-// modules — avoids drift if the formula ever changes.
-const _lerpRef = lerp // used below in sendFrame via SEND_EASE
-
 // ---------------------------------------------------------------------------
 // SEND_EASE — spring-overshoot timing curve
 // ---------------------------------------------------------------------------
@@ -100,11 +95,6 @@ export const SEND_EASE: (t: number) => number = (() => {
   }
 })()
 
-// Keep the _lerpRef used (TypeScript/knip) — lerp is used transitively via SEND_EASE
-// calling it indirectly through the shared module. We reference it explicitly
-// below in sendFrame to satisfy the "import its lerp rather than redefining it" brief.
-void _lerpRef
-
 // ---------------------------------------------------------------------------
 // sendTarget — where the new note lands in the feed
 // ---------------------------------------------------------------------------
@@ -186,8 +176,8 @@ export function sendFrame(
   const ty = (target.top - start.top) * eased + 0
 
   // Opacity: fully visible until progress=0.6, then linearly fade to 0 by progress=1.
-  // Use lerp for the fade segment (shares the implementation from expandCollapseMorph).
-  const opacity = progress < 0.6 ? 1 : Math.max(0, _lerpRef(1, 0, (progress - 0.6) / 0.4))
+  // lerp (shared with expandCollapseMorph) does the 1→0 fade over the last 40%.
+  const opacity = progress < 0.6 ? 1 : Math.max(0, lerp(1, 0, (progress - 0.6) / 0.4))
 
   return { tx, ty, opacity }
 }
