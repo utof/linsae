@@ -13,6 +13,14 @@ describe('Composer', () => {
     expect(onSubmit).toHaveBeenCalledWith({ body: 'hello', type: 'claim' })
   })
 
+  it('the send button submits with mode=claim', () => {
+    const onSubmit = vi.fn()
+    render(<Composer onSubmit={onSubmit} initialBody="" initialMode="claim" onCancel={() => {}} />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'hi' } })
+    fireEvent.click(screen.getByRole('button', { name: /send note/i }))
+    expect(onSubmit).toHaveBeenCalledWith({ body: 'hi', type: 'claim' })
+  })
+
   it('Shift+Enter inserts a newline (does not submit)', () => {
     const onSubmit = vi.fn()
     render(<Composer onSubmit={onSubmit} initialBody="" initialMode="claim" onCancel={() => {}} />)

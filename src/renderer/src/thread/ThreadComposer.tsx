@@ -24,7 +24,7 @@
  * @see docs/specs/v0.2-youtube-annotation.md §Composer
  */
 
-import { Camera, Send } from 'lucide-react'
+import { Camera } from 'lucide-react'
 import {
   type CSSProperties,
   type KeyboardEvent,
@@ -33,6 +33,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { SendButton } from '../composer/SendButton'
 import { clampSeconds, formatClock, parseTimeDigits } from '../lib/time'
 import { chipTime, nextFrozenAt } from './composer-chip'
 
@@ -387,27 +388,7 @@ export function ThreadComposer({
 
         <div style={{ flex: 1 }} />
 
-        <button
-          type="button"
-          title="post note ↵"
-          aria-label="post note"
-          onClick={submit}
-          style={{
-            flexShrink: 0,
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: 30,
-            height: 30,
-            borderRadius: 'var(--r-pill)',
-            border: 0,
-            background: 'var(--accent)',
-            color: '#fff',
-            cursor: 'pointer',
-          }}
-        >
-          <Send size={15} />
-        </button>
+        <SendButton onClick={submit} label="post note" title="post note ↵" />
       </div>
 
       {error && (

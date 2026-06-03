@@ -7,6 +7,7 @@ import {
   useState,
 } from 'react'
 import type { NoteType } from '../../../shared/types'
+import { SendButton } from './SendButton'
 
 /**
  * Cap on the auto-grown textarea height. ~10 lines at 14px text + 1.5
@@ -258,19 +259,9 @@ export function Composer({
               {error}
             </div>
           )}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 14,
-              paddingTop: 6,
-              borderTop: '1px dashed var(--border-0)',
-              marginTop: 4,
-              fontSize: 11,
-              color: 'var(--fg-3)',
-            }}
-          >
-            <span>↵ send · ⇧↵ newline · ⌘K search</span>
+          <div style={{ display: 'flex', alignItems: 'center', marginTop: 6 }}>
+            <div style={{ flex: 1 }} />
+            <SendButton onClick={submit} label="send note" title="send ↵" />
           </div>
         </div>
       </div>
