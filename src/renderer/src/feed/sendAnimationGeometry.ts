@@ -36,7 +36,14 @@ export function sendTarget(input: {
   scrollerBottom: number
   noteH: number
   feedContentLeft: number
+  /**
+   * The feed row's bottom padding (px). A feed row is the bubble plus
+   * `paddingTop`/`paddingBottom` (Feed.tsx); the bubble's bottom edge sits
+   * `bottomPad` above the row's bottom, so the ghost (a bare bubble) must land
+   * `bottomPad` higher than the row bottom to dissolve onto the real bubble.
+   */
+  bottomPad: number
 }): { top: number; left: number } {
-  const { scrollerBottom, noteH, feedContentLeft } = input
-  return { top: scrollerBottom - noteH, left: feedContentLeft }
+  const { scrollerBottom, noteH, feedContentLeft, bottomPad } = input
+  return { top: scrollerBottom - noteH - bottomPad, left: feedContentLeft }
 }

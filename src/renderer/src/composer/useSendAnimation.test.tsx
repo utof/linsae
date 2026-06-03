@@ -2,9 +2,8 @@
 /**
  * Component tests for useSendAnimation — behavior only, NOT trajectory.
  *
- * happy-dom has no layout engine (getBoundingClientRect returns zeros) and the
- * flight is a Motion spring, so we mock `motion` to capture the animation's
- * `onComplete` and assert mount → hand-off + the `inFlight` flag + the
+ * happy-dom has no layout engine (getBoundingClientRect returns zeros) and no
+ * real rAF clock, so these tests assert mount/unmount + the `inFlight` flag + the
  * reduced-motion / null-ref no-ops. Trajectory/visual correctness is verified by
  * the Playwright send-harness, never here. @see docs/specs/v0.2.1-send-animation.md
  */
@@ -15,18 +14,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import '../../../../tests/setup'
 import { useSendAnimation } from './useSendAnimation'
 
-// Capture the last Motion animation's options so a test can fire its onComplete.
-let lastAnimateOpts: { onComplete?: () => void } | null = null
-vi.mock('motion', () => ({
-  animate: (_el: unknown, _kf: unknown, opts: { onComplete?: () => void }) => {
-    lastAnimateOpts = opts
-    return { stop: () => {} }
-  },
-  spring: 'spring',
-}))
+// A controllable rAF: callbacks queue, and `flushFrames(n)` invokes them with
+// advancing timestamps so the tween can be driven to t>=1.
+let rafQueue: Array<(ts: number) => void> = []
+function flushFrames(count: number, step = 1000): void {
+  for (let i = 0; i < count; i++) {
+    const cbs = rafQueue
+    rafQueue = []
+    const ts = (i + 1) * step
+    act(() => {
+      for (const cb of cbs) cb(ts)
+    })
+  }
+}
 
 beforeEach(() => {
-  lastAnimateOpts = null
+  rafQueue = []
+  vi.stubGlobal('requestAnimationFrame', (cb: (ts: number) => void) => {
+    rafQueue.push(cb)
+    return rafQueue.length
+  })
+  vi.stubGlobal('cancelAnimationFrame', () => {})
 })
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -86,7 +94,7 @@ describe('useSendAnimation', () => {
     expect(screen.queryByTestId('send-ghost')).not.toBeInTheDocument()
   })
 
-  it('non-reduced → launch mounts a send-ghost + flips inFlight, hands off on landing', () => {
+  it('non-reduced → launch mounts a send-ghost + flips inFlight, hands off after the tween', () => {
     vi.stubGlobal('matchMedia', () => ({ matches: false }))
     render(<Harness />)
     act(() => {
@@ -96,11 +104,9 @@ describe('useSendAnimation', () => {
     expect(screen.getByTestId('send-ghost')).toBeInTheDocument()
     expect(screen.getByTestId('in-flight')).toHaveTextContent('yes')
 
-    // The flight is a Motion spring (mocked); landing fires its onComplete, which
-    // unmounts the ghost and clears inFlight — the hand-off to the real note.
-    act(() => {
-      lastAnimateOpts?.onComplete?.()
-    })
+    // Drive frames: with a 1000ms step and a 460ms duration the first frame sets
+    // the clock origin and the second reaches t>=1 → unmount + hand-off.
+    flushFrames(3)
     expect(screen.queryByTestId('send-ghost')).not.toBeInTheDocument()
     expect(screen.getByTestId('in-flight')).toHaveTextContent('no')
   })

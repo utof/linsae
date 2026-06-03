@@ -49,6 +49,12 @@ try {
     await send(`seed note ${i} — some body text so the bubble has real height`)
   }
 
+  // Let the last seed's ghost flight + make-room fully settle before filming —
+  // seeds are fired ~220ms apart but a flight is ~460ms, so without this the
+  // sampler catches the tail of seed #8's ghost (a false "flash"). Real sends are
+  // seconds apart; this models a settled feed.
+  await win.waitForTimeout(700)
+
   // Pin to the bottom so the landing slot is on-screen.
   await win.evaluate(() => {
     const sc = document.querySelector('[data-index]')?.parentElement?.parentElement
@@ -86,7 +92,20 @@ try {
       }
       const g = document.querySelector('[data-testid="send-ghost"]')
       if (g) {
+        if (!w.__gp) {
+          // One-time: confirm the ghost escaped to <body> and that no ancestor is
+          // transformed (a transformed ancestor would drag the fixed ghost — ADR 0018).
+          let transformed = null
+          for (let el = g.parentElement; el; el = el.parentElement) {
+            if (getComputedStyle(el).transform !== 'none') {
+              transformed = el.tagName + (el.id ? `#${el.id}` : '')
+              break
+            }
+          }
+          w.__gp = { parent: g.parentElement?.tagName ?? null, transformedAncestor: transformed }
+        }
         const r = g.getBoundingClientRect()
+        const m = new DOMMatrixReadOnly(getComputedStyle(g).transform)
         w.__sg.push({
           t: Math.round(performance.now()),
           top: Math.round(r.top),
@@ -94,6 +113,8 @@ try {
           width: Math.round(r.width),
           height: Math.round(r.height),
           opacity: Number(getComputedStyle(g).opacity),
+          ty: Math.round(m.m42), // the transform translateY Motion is applying
+          cssTop: g.style.top, // the fixed `top` (should be constant)
         })
       }
       requestAnimationFrame(tick)
@@ -118,9 +139,9 @@ try {
   await win.waitForTimeout(350)
 
   // Stop sampling; read the trajectory + the settled landing geometry.
-  const { sg, st } = await win.evaluate(() => {
+  const { sg, st, gp } = await win.evaluate(() => {
     window.__sgOn = false
-    return { sg: window.__sg, st: window.__st }
+    return { sg: window.__sg, st: window.__st, gp: window.__gp }
   })
   const landing = await win.evaluate(() => {
     const items = [...document.querySelectorAll('[data-index]')]
@@ -156,6 +177,16 @@ try {
       .filter((d) => d > 0)
     console.log('frames sampled        :', sg.length)
     console.log('top trajectory (px)   :', JSON.stringify(tops))
+    console.log(
+      'ghost transform ty    :',
+      JSON.stringify(sg.map((s) => s.ty)),
+      '(Motion translateY)',
+    )
+    console.log(
+      'ghost css top         :',
+      JSON.stringify([...new Set(sg.map((s) => s.cssTop))]),
+      '(should be 1 constant)',
+    )
     console.log('opacity trajectory    :', JSON.stringify(sg.map((s) => s.opacity)))
     console.log('upward reversals      :', reversals, '(spring overshoot ok if small)')
     console.log('frame intervals (ms)  :', JSON.stringify(intervals), '(~16 ⇒ 60fps)')
@@ -174,6 +205,11 @@ try {
       )
     }
     console.log('ghost cleaned up      :', ghostGone, '(removed from DOM at t≥1)')
+    console.log(
+      'ghost parent / xform  :',
+      JSON.stringify(gp),
+      '(want parent BODY, transformedAncestor null)',
+    )
   }
 
   // ---- make-room reveal: the content wrapper's translateY should RAMP from one
