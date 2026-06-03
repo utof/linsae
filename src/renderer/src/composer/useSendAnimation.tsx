@@ -9,6 +9,7 @@ import {
 } from 'react'
 import type { NoteType } from '../../../shared/types'
 import { sendTarget } from '../feed/sendAnimationGeometry'
+import { useClock24 } from '../lib/clock-pref'
 import { SendGhost } from './SendGhost'
 
 /**
@@ -49,6 +50,12 @@ function easeFlight(t: number): number {
 interface Flight {
   body: string
   mode: NoteType
+  /**
+   * Wall-clock at submit, shown on the ghost so it matches the real note's
+   * `created_at` time. The create is async, so the note's row doesn't exist yet;
+   * captured here it's within the flight's <0.5s of the real value → same HH:MM.
+   */
+  createdAt: number
   /** Composer textarea top/left at submit — the ghost's fixed-position anchor. */
   start: { top: number; left: number }
   /**
@@ -99,6 +106,9 @@ export function useSendAnimation(args: {
   scrollerRef: RefObject<HTMLDivElement | null>
 }): { launch: (body: string, mode: NoteType) => void; ghost: ReactNode; inFlight: boolean } {
   const { cardRef, scrollerRef } = args
+  // 12/24h pref so the ghost's time matches the feed note (NoteBubble reads the
+  // same hook). Live: re-renders the in-flight ghost if toggled mid-flight.
+  const clock24 = useClock24()
   const [flight, setFlight] = useState<Flight | null>(null)
   const ghostRef = useRef<HTMLDivElement | null>(null)
   const rafRef = useRef<number | null>(null)
@@ -136,7 +146,13 @@ export function useSendAnimation(args: {
 
       cancelRaf()
       seqRef.current += 1
-      setFlight({ body, mode, start: { top: r.top, left: r.left }, seq: seqRef.current })
+      setFlight({
+        body,
+        mode,
+        createdAt: Date.now(),
+        start: { top: r.top, left: r.left },
+        seq: seqRef.current,
+      })
     },
     [cardRef, scrollerRef, cancelRaf],
   )
@@ -199,6 +215,8 @@ export function useSendAnimation(args: {
       key={flight.seq}
       body={flight.body}
       mode={flight.mode}
+      createdAt={flight.createdAt}
+      hour12={!clock24}
       top={flight.start.top}
       left={flight.start.left}
       ref={ghostRef}

@@ -135,9 +135,11 @@ const DAY_DIVIDER_H = 34
 /**
  * Wall-clock cap (ms) on how long a just-sent note may stay hidden behind its
  * flying ghost (see `hiddenId`). The normal hand-off reveals it at ~flight end
- * (~460ms); this only fires if the hand-off is slowed (`window.__morphSlow`) or
- * stuck — so a CREATED note can never be permanently invisible. Generous enough
- * to clear the real flight, short enough that a stuck note reappears fast.
+ * (~460ms); this only fires if the hand-off is stuck — so a CREATED note can
+ * never be permanently invisible. Generous enough to clear the real flight,
+ * short enough that a stuck note reappears fast. In dev it's scaled by
+ * `window.__morphSlow` (at the call site) to stay behind the also-scaled flight
+ * — so slowing the animation to debug it never reveals the note early (doubling).
  */
 const HIDE_FAILSAFE_MS = 900
 
@@ -313,7 +315,14 @@ export function Feed({
     if (sendInFlight && last && last.id !== prevLast) {
       setHiddenId(last.id)
       if (hideTimerRef.current !== undefined) clearTimeout(hideTimerRef.current)
-      hideTimerRef.current = window.setTimeout(() => setHiddenId(null), HIDE_FAILSAFE_MS)
+      // Scale the fail-safe by the dev slow-mo so it stays a BACKSTOP behind the
+      // (also-scaled) ghost flight — otherwise at `__morphSlow=10` the fixed 900ms
+      // reveals the real note ~3.7s before the 4600ms ghost lands, doubling the
+      // note on screen while debugging. Same idiom as the flight/reveal durations.
+      const failMs = import.meta.env.DEV
+        ? HIDE_FAILSAFE_MS * (window.__morphSlow ?? 1)
+        : HIDE_FAILSAFE_MS
+      hideTimerRef.current = window.setTimeout(() => setHiddenId(null), failMs)
     } else if (!sendInFlight) {
       setHiddenId(null)
       if (hideTimerRef.current !== undefined) clearTimeout(hideTimerRef.current)
@@ -343,6 +352,16 @@ export function Feed({
   // for the morph/reveal window so OUR scroll is the only thing moving; restore
   // 'end' after. (anchorTo is read live as this.options.anchorTo.) ADR 0007 / 0019.
   virtualizer.options.anchorTo = morphingIndexRef.current === null && !revealing ? 'end' : 'start'
+  // Suppress the virtualizer's own `followOnAppend` auto-scroll while a send is in
+  // flight: on the send's append, virtual-core's `_willUpdate` would `scrollToEnd()`
+  // to the new note's ESTIMATE-inflated bottom (and arm its `reconcileScroll` rAF
+  // loop) one frame before the make-room reveal's frame 0 collapses the row — a
+  // visible pre-roll scroll blip. The reveal (`useAppendReveal`) drives the scroll
+  // itself, so the virtualizer must not also chase the bottom here. `sendInFlight`
+  // is false under reduced-motion (no ghost), so normal auto-follow is unaffected.
+  // Re-applied every render (like anchorTo) so useVirtualizer's setOptions can't
+  // reset it mid-send.
+  virtualizer.options.followOnAppend = !sendInFlight
 
   // Initial scroll-to-bottom once the scroller is available. Layout
   // effect (not effect) so the bottom-pinned position is set BEFORE the
@@ -364,6 +383,11 @@ export function Feed({
     const el = containerRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
+      // Don't re-pin during a morph or make-room reveal — they drive scrollTop
+      // themselves, and `scrollToEnd()` here would arm virtual-core's
+      // `reconcileScroll` rAF loop against them (sending clears the composer →
+      // the feed grows → this fires mid-reveal, a one-frame scroll blip).
+      if (morphingIndexRef.current !== null || revealingRef.current) return
       if (virtualizer.isAtEnd()) {
         virtualizer.scrollToEnd()
       }
@@ -567,10 +591,16 @@ export function Feed({
               return (
                 <div
                   key={vItem.key}
-                  // Detach measureElement while this item is morphing — the
-                  // morph drives its size via resizeItem instead (ADR 0007;
-                  // tanstack: don't use both on one item).
-                  ref={vItem.index === morphingIndex ? undefined : virtualizer.measureElement}
+                  // Detach measureElement while this item is morphing OR while the
+                  // make-room reveal is unrolling the just-appended (last) row —
+                  // both drive the row's size via resizeItem instead, and tanstack
+                  // forbids mixing measureElement + resizeItem on one item (ADR 0007;
+                  // useAppendReveal). The reveal target is always the last index.
+                  ref={
+                    vItem.index === morphingIndex || (revealing && vItem.index === notes.length - 1)
+                      ? undefined
+                      : virtualizer.measureElement
+                  }
                   data-index={vItem.index}
                   style={{
                     position: 'absolute',

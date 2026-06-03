@@ -86,7 +86,11 @@ try {
       if (content) {
         w.__st.push({
           t: Math.round(performance.now()),
+          // Make-room is now a HEIGHT-unroll on the new (last) row, not a content
+          // transform (ADR 0019 / useAppendReveal). Sample the last row's height
+          // ramping 0→noteH; `ty` stays for back-compat but should hold ~0.
           ty: readTY(content),
+          lastH: last ? Math.round(last.getBoundingClientRect().height) : null,
           lastOpacity: last ? Number(getComputedStyle(last).opacity) : null,
         })
       }
@@ -239,30 +243,31 @@ try {
     )
   }
 
-  // ---- make-room reveal: the content wrapper's translateY should RAMP from one
-  // note-height down back to 0 (the note pushes the whole feed up as it stuffs
-  // in) over several frames, NOT snap in a single frame.
+  // ---- make-room reveal: the new (last) row's HEIGHT should RAMP 0→noteH over
+  // several frames (the slot unrolls and pushes the feed up), NOT snap in a single
+  // frame. (ADR 0019 / useAppendReveal — height-unroll via resizeItem, not a
+  // content transform; `ty` should stay ~0.)
   if (st && st.length > 1) {
-    const tys = st.map((s) => s.ty)
-    const span = Math.max(...tys) - Math.min(...tys)
+    const hs = st.map((s) => s.lastH).filter((h) => h != null)
+    const span = Math.max(...hs) - Math.min(...hs)
     let maxStep = 0
     let movingFrames = 0
-    for (let i = 1; i < tys.length; i++) {
-      const d = Math.abs(tys[i] - tys[i - 1])
+    for (let i = 1; i < hs.length; i++) {
+      const d = Math.abs(hs[i] - hs[i - 1])
       if (d > 0) movingFrames++
       if (d > maxStep) maxStep = d
     }
+    const tys = st.map((s) => s.ty)
     console.log(
-      'make-room translateY  : start',
-      tys[0],
-      '→ end',
-      tys[tys.length - 1],
-      '(≈ noteH → 0)',
+      'content transform ty  :',
+      JSON.stringify([...new Set(tys)]),
+      '(want just [0] — no transform)',
     )
-    console.log('make-room span (px)   :', span, '(≈ one note height ⇒ the feed made room)')
-    console.log('make-room max step    :', maxStep, '(≪ span ⇒ smooth ramp; ≈ span ⇒ abrupt snap)')
-    console.log('make-room moving frms :', movingFrames, '(several ⇒ animated push-up, not a pop)')
-    console.log('make-room trajectory  :', JSON.stringify(tys))
+    console.log('make-room new-row H   : start', hs[0], '→ end', hs[hs.length - 1], '(≈ 0 → noteH)')
+    console.log('make-room span (px)   :', span, '(≈ one note height ⇒ the slot unrolled)')
+    console.log('make-room max step    :', maxStep, '(≪ span ⇒ smooth unroll; ≈ span ⇒ abrupt pop)')
+    console.log('make-room moving frms :', movingFrames, '(several ⇒ animated unroll, not a pop)')
+    console.log('make-room trajectory  :', JSON.stringify(hs))
     // hide-until-landing: while the ghost flies, the newest note must be invisible
     // (opacity 0) — that is what kills the "double note". It flips to 1 on hand-off.
     const opacities = st.map((s) => s.lastOpacity)
