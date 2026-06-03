@@ -88,11 +88,21 @@ export interface RailProps {
 }
 
 /** A neutral note bubble: screenshot frame (if any) fills the bubble, body below. */
-function NoteBubble({ item, active }: { item: RailItem; active: boolean }) {
+function NoteBubble({
+  item,
+  active,
+  dataDay,
+}: {
+  item: RailItem
+  active: boolean
+  /** Day label (capture mode only) — read by ThreadView's floating date pill. */
+  dataDay?: string
+}) {
   const clock24 = useClock24()
   return (
     <div
       data-testid="rail-note"
+      data-day={dataDay}
       style={{
         background: '#fff',
         border: `1px solid ${active ? 'var(--accent)' : 'var(--border-0)'}`,
@@ -336,10 +346,11 @@ export function Rail({
         {sorted.map((it, i) => {
           const prev = sorted[i - 1]
           const newDay = prev === undefined || dayKey(it.createdAt) !== dayKey(prev.createdAt)
+          const label = formatDayLabel(it.createdAt)
           return (
             <Fragment key={it.id}>
-              {newDay && <DayDivider label={formatDayLabel(it.createdAt)} />}
-              <NoteBubble item={it} active={false} />
+              {newDay && <DayDivider label={label} />}
+              <NoteBubble item={it} active={false} dataDay={label} />
             </Fragment>
           )
         })}

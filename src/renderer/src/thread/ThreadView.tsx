@@ -10,6 +10,7 @@ import {
 } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
+import { ScrollDatePill } from '../feed/DatePills'
 import { api } from '../lib/api'
 import { mediaUrlFromPath } from '../lib/media-url'
 import { getPlayer, setPlayerInteractive } from '../yt/playerSingleton'
@@ -289,6 +290,33 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     measurePill()
   }, [measurePill])
 
+  // ── floating date pill (capture view only) ──────────────────────────────────
+  // Capture order is chronological, so the notes carry `data-day` (Rail) and we
+  // label the pill with the topmost visible note's day, fading 800ms after scroll
+  // stops — same idea as the feed's ScrollDatePill, but DOM-measured (the thread
+  // isn't virtualized). Video order has no date monotonicity, so the pill is off there.
+  const [datePill, setDatePill] = useState<string | null>(null)
+  const [datePillVisible, setDatePillVisible] = useState(false)
+  const datePillIdleRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const updateDatePill = useCallback(() => {
+    if (sortMode !== 'capture') return
+    const el = scrollRef.current
+    if (!el) return
+    const top = el.getBoundingClientRect().top
+    const days = Array.from(el.querySelectorAll<HTMLElement>('[data-day]'))
+    const topDay = days.find((d) => d.getBoundingClientRect().bottom > top + 1)
+    setDatePill(topDay?.dataset.day ?? null)
+    setDatePillVisible(true)
+    clearTimeout(datePillIdleRef.current)
+    datePillIdleRef.current = setTimeout(() => setDatePillVisible(false), 800)
+  }, [sortMode])
+  const onNotesScroll = useCallback(() => {
+    measurePill()
+    updateDatePill()
+  }, [measurePill, updateDatePill])
+  // Clear the date-pill idle timer on unmount.
+  useEffect(() => () => clearTimeout(datePillIdleRef.current), [])
+
   // Unmount cleanup: clear the flash timer so a pending setTimeout cannot call
   // setFlashClusterIdx on an unmounted tree. React 19 makes this a no-op in
   // practice, but clearing timers on unmount is the correct pattern.
@@ -453,7 +481,7 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
         <div
           ref={setScroller}
           data-testid="thread-scroll"
-          onScroll={measurePill}
+          onScroll={onNotesScroll}
           style={{ height: '100%', overflowY: 'auto', padding: '4px 24px 10px' }}
         >
           <div style={{ maxWidth: COL, margin: '0 auto' }}>
@@ -498,6 +526,11 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
             />
           </div>
         </div>
+
+        {/* Floating date pill (capture view only) — names the topmost visible day. */}
+        {sortMode === 'capture' && datePill && (
+          <ScrollDatePill label={datePill} push={0} visible={datePillVisible} />
+        )}
 
         {/* Jump-to-now pill — top (arrow up) when "now" is above the viewport,
             bottom (arrow down) when below. */}
