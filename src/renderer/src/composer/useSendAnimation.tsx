@@ -118,14 +118,24 @@ export function useSendAnimation(args: {
     const start = flight.start
     const noteH = ghost.getBoundingClientRect().height
     const sr = scroller.getBoundingClientRect()
+    // True content height = the virtual content wrapper (scroller's child, sized
+    // to the virtualizer's getTotalSize, Feed.tsx). NOT scroller.scrollHeight —
+    // that is clamped to at least clientHeight, so on a short (content < viewport)
+    // feed it equals clientHeight, the short-feed branch in sendTarget never
+    // fires, and the ghost flies to the empty bottom of the scroller instead of
+    // the top-aligned landing slot. (send-harness caught this as Δtop 245px.)
+    const contentEl = scroller.firstElementChild
+    const contentHeight = contentEl
+      ? contentEl.getBoundingClientRect().height
+      : scroller.scrollHeight
     const target = sendTarget({
       scrollerTop: sr.top,
       scrollerBottom: sr.bottom,
       scrollerHeight: scroller.clientHeight,
-      contentHeight: scroller.scrollHeight,
+      contentHeight,
       noteH,
-      // Notes are left-aligned in the centered column, so the column's left
-      // edge ≈ the scroller's left edge. Refined by the harness if it drifts.
+      // Notes are left-aligned in the centered column, so the column's left edge
+      // ≈ the scroller's left edge. Harness-confirmed: Δleft 0.
       feedContentLeft: sr.left,
     })
 
