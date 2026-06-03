@@ -31,6 +31,13 @@ interface Props {
    * @see adrs/0004-memoize-virtuoso-prop-callbacks.md
    */
   scrollerRef?: Ref<HTMLDivElement>
+  /**
+   * True while the send ghost is flying (App's `useSendAnimation`). The feed
+   * hides the just-created note (renders it `opacity:0`) until this flips false
+   * on landing, so the ghost and the real note are never on screen together
+   * (no "double note", no cross-fade — the ghost hands off to the note).
+   */
+  sendInFlight?: boolean
 }
 
 /** Returns a new Set with `id` toggled — immutable so React sees a new ref. */
@@ -181,8 +188,10 @@ export function Feed({
   onCopyLink,
   onOpenThread,
   scrollerRef,
+  sendInFlight = false,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null)
   // Holder for the external scrollerRef so `handleScrollerRef` can stay
   // `[]`-memoized (ADR 0004): reading a ref of stable identity inside the
@@ -237,12 +246,19 @@ export function Feed({
   const morphingIndexRef = useRef<number | null>(null)
   morphingIndexRef.current = morphingIndex
   const suppressThumbResizeRef = useRef<boolean>(false)
-  // `revealing` is true while the make-room reveal (useAppendReveal) drives
-  // scrollTop to slide a freshly-sent note up into place. Like `morphingIndex`
-  // it gates the virtualizer's scroll-correction below; the ref is read live in
-  // the `shouldAdjust` closure, the state forces the anchorTo re-apply.
+  // `revealing` is true while the make-room reveal (useAppendReveal) slides a
+  // freshly-sent note up into place by translating the content wrapper. Like
+  // `morphingIndex` it gates the virtualizer's scroll-correction below (so a
+  // measure correction can't jump scrollTop out from under the transform); the
+  // ref is read live in the `shouldAdjust` closure, the state forces the
+  // anchorTo re-apply.
   const [revealing, setRevealing] = useState(false)
   const revealingRef = useRef(false)
+  // The just-sent note's id, hidden (opacity:0) while its ghost is in flight so
+  // the two are never on screen together. Set when a note appends during a send;
+  // gated by `sendInFlight` at render time, so it self-clears when the ghost lands.
+  const [hiddenId, setHiddenId] = useState<string | null>(null)
+  const prevLastIdRef = useRef<string | undefined>(notes[notes.length - 1]?.id)
   // Collapsed-state geometry (item height + constant chrome), captured for free
   // when a note is EXPANDED — at that instant the note is still rendered
   // collapsed, so its pre-swap layout IS the collapse target. Reused on collapse
@@ -259,17 +275,29 @@ export function Feed({
     setMorphingIndex,
     suppressThumbResizeRef,
   })
-  // iMessage make-room: a freshly-sent note slides up into its slot instead of
-  // popping in. Mirrors the morph's scrollTop-driving so it can't fight the
-  // virtualizer (ADR 0019). The ghost-flight half is App's useSendAnimation.
+  // iMessage make-room: a freshly-sent note pushes the whole feed up as it stuffs
+  // in, instead of popping in. Translates the content wrapper (no scrollTop fight
+  // — ADR 0019). The ghost-flight half is App's useSendAnimation.
   useAppendReveal({
     virtualizer,
     scrollerEl,
+    contentRef,
     notes,
     revealingRef,
     setRevealing,
     suppressThumbResizeRef,
   })
+  // Hide the just-sent note until its ghost lands (no double note). When a note
+  // arrives during a send, mark it hidden; when the send ends, clear (reveal).
+  // Between launch and the note's arrival, hiddenId stays null (cleared by the
+  // previous send's end), so the gap never hides the PREVIOUS newest note.
+  useLayoutEffect(() => {
+    const last = notes[notes.length - 1]
+    const prevLast = prevLastIdRef.current
+    prevLastIdRef.current = last?.id
+    if (sendInFlight && last && last.id !== prevLast) setHiddenId(last.id)
+    else if (!sendInFlight) setHiddenId(null)
+  }, [notes, sendInFlight])
 
   // Prevent the virtualizer's own scroll-position correction from fighting the
   // manual bottom-anchor during an active morph OR make-room reveal. ADR 0007 /
@@ -475,18 +503,34 @@ export function Feed({
         <div
           ref={handleScrollerRef}
           onScroll={onFeedScroll}
-          style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}
+          style={{
+            height: '100%',
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            // Bottom-anchor (chat-style): with the content wrapper's
+            // `margin-top:auto` below, a short feed sits flush at the bottom by
+            // the composer (not top-aligned with a gap), so a new note pushes the
+            // whole stack UP. When content overflows, the auto-margin collapses to
+            // 0 and normal top-down scrolling resumes.
+            display: 'flex',
+            flexDirection: 'column',
+          }}
         >
           {/* Inner spacer: tanstack-virtual sets this element's height to
              the exact total content size (sum of measured sizes plus
              estimates for unmeasured items). The browser's `scrollHeight`
              on the outer scroller equals this inner height — that's what
-             makes the custom scrollbar thumb stable. */}
+             makes the custom scrollbar thumb stable. `marginTop:auto` bottom-
+             anchors it; `flexShrink:0` keeps its exact getTotalSize height in the
+             flex column; `contentRef` is the element useAppendReveal translates. */}
           <div
+            ref={contentRef}
             style={{
               height: virtualizer.getTotalSize(),
               width: '100%',
               position: 'relative',
+              marginTop: 'auto',
+              flexShrink: 0,
             }}
           >
             {virtualizer.getVirtualItems().map((vItem) => {
@@ -512,6 +556,10 @@ export function Feed({
                     // Same rationale as `6564a3d` carried forward.
                     paddingTop: 6,
                     paddingBottom: 6,
+                    // Hide the just-sent note (still occupies layout, so the
+                    // make-room reveal measures its real height) until its ghost
+                    // lands — no double note, no fade. Instant toggle, no transition.
+                    opacity: sendInFlight && note.id === hiddenId ? 0 : 1,
                   }}
                 >
                   {dayFirsts.has(vItem.index) && (

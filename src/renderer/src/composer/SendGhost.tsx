@@ -49,7 +49,9 @@ export function SendGhost({ body, mode, top, left, ref }: Props) {
         left,
         maxWidth: 560,
         pointerEvents: 'none',
-        willChange: 'transform, opacity',
+        // Only transform animates now (Motion spring); the ghost no longer fades —
+        // it hands off to the real note on landing (useSendAnimation).
+        willChange: 'transform',
         // z-index 1000 matches NoteContextMenu (ContextMenu.tsx:113) — the
         // overlay layer above feed items and the composer, but on the same
         // tier as the context menu so they don't clash.

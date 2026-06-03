@@ -56,18 +56,33 @@ try {
   })
   await win.waitForTimeout(150)
 
-  // Per-rAF sampler: every frame record the scroller's scrollTop (the make-room
-  // reveal, useAppendReveal) and — if the ghost exists — its rect + opacity.
+  // Per-rAF sampler. Each frame record:
+  //  - the content wrapper's translateY (the make-room reveal — useAppendReveal
+  //    translates it from one note-height down back to 0 as the note stuffs in),
+  //  - the newest note's opacity (hide-until-landing — it stays 0 while the ghost
+  //    flies, flips to 1 on hand-off, so the two are never both visible),
+  //  - the ghost's rect + opacity (the flight; opacity should stay ~1, no fade).
   await win.evaluate(() => {
     const w = window
     w.__sg = []
     w.__st = []
     w.__sgOn = true
-    const scroller = document.querySelector('[data-index]')?.parentElement?.parentElement ?? null
+    const anyItem = document.querySelector('[data-index]')
+    const content = anyItem?.parentElement ?? null // the getTotalSize wrapper
+    const readTY = (el) => {
+      const m = new DOMMatrixReadOnly(getComputedStyle(el).transform)
+      return Math.round(m.m42) // translateY
+    }
     const tick = () => {
       if (!w.__sgOn) return
-      if (scroller) {
-        w.__st.push({ t: Math.round(performance.now()), scrollTop: Math.round(scroller.scrollTop) })
+      const items = [...document.querySelectorAll('[data-index]')]
+      const last = items[items.length - 1]
+      if (content) {
+        w.__st.push({
+          t: Math.round(performance.now()),
+          ty: readTY(content),
+          lastOpacity: last ? Number(getComputedStyle(last).opacity) : null,
+        })
       }
       const g = document.querySelector('[data-testid="send-ghost"]')
       if (g) {
@@ -161,24 +176,44 @@ try {
     console.log('ghost cleaned up      :', ghostGone, '(removed from DOM at t≥1)')
   }
 
-  // ---- make-room reveal: the feed should RAMP scrollTop up by ~one note height
-  // (existing notes glide up, new note rises in), NOT jump it in a single frame.
+  // ---- make-room reveal: the content wrapper's translateY should RAMP from one
+  // note-height down back to 0 (the note pushes the whole feed up as it stuffs
+  // in) over several frames, NOT snap in a single frame.
   if (st && st.length > 1) {
-    const tops = st.map((s) => s.scrollTop)
-    const rise = Math.max(...tops) - Math.min(...tops)
+    const tys = st.map((s) => s.ty)
+    const span = Math.max(...tys) - Math.min(...tys)
     let maxStep = 0
-    let risingFrames = 0
-    for (let i = 1; i < tops.length; i++) {
-      const d = tops[i] - tops[i - 1]
-      if (d > 0) risingFrames++
-      if (Math.abs(d) > maxStep) maxStep = Math.abs(d)
+    let movingFrames = 0
+    for (let i = 1; i < tys.length; i++) {
+      const d = Math.abs(tys[i] - tys[i - 1])
+      if (d > 0) movingFrames++
+      if (d > maxStep) maxStep = d
     }
-    console.log('scrollTop rise (px)   :', rise, '(≈ one note height ⇒ the feed made room)')
-    console.log('scrollTop max step    :', maxStep, '(≪ rise ⇒ smooth ramp; ≈ rise ⇒ abrupt jump)')
-    console.log('scrollTop rising frms :', risingFrames, '(several ⇒ animated reveal, not a pop)')
-    console.log('scrollTop trajectory  :', JSON.stringify(tops))
+    console.log(
+      'make-room translateY  : start',
+      tys[0],
+      '→ end',
+      tys[tys.length - 1],
+      '(≈ noteH → 0)',
+    )
+    console.log('make-room span (px)   :', span, '(≈ one note height ⇒ the feed made room)')
+    console.log('make-room max step    :', maxStep, '(≪ span ⇒ smooth ramp; ≈ span ⇒ abrupt snap)')
+    console.log('make-room moving frms :', movingFrames, '(several ⇒ animated push-up, not a pop)')
+    console.log('make-room trajectory  :', JSON.stringify(tys))
+    // hide-until-landing: while the ghost flies, the newest note must be invisible
+    // (opacity 0) — that is what kills the "double note". It flips to 1 on hand-off.
+    const opacities = st.map((s) => s.lastOpacity)
+    const hiddenFrames = opacities.filter((o) => o === 0).length
+    const shownFrames = opacities.filter((o) => o === 1).length
+    console.log('newest-note opacity   :', JSON.stringify(opacities))
+    console.log(
+      'no-double-note        :',
+      hiddenFrames > 0 && shownFrames > 0
+        ? `OK — hidden ${hiddenFrames} frames then revealed ${shownFrames}`
+        : `CHECK — hidden:${hiddenFrames} shown:${shownFrames} (want both >0)`,
+    )
   } else {
-    console.log('scrollTop trajectory  : (not captured — no scroller?)')
+    console.log('make-room trajectory  : (not captured — no content wrapper?)')
   }
   console.log('SCREENSHOTS           :', SHOT_DIR)
 } finally {

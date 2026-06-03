@@ -90,7 +90,11 @@ export function App() {
   // @see docs/specs/v0.2.1-send-animation.md
   const composerCardRef = useRef<HTMLDivElement | null>(null)
   const feedScrollerRef = useRef<HTMLDivElement | null>(null)
-  const { launch: launchSend, ghost: sendGhost } = useSendAnimation({
+  const {
+    launch: launchSend,
+    ghost: sendGhost,
+    inFlight: sendInFlight,
+  } = useSendAnimation({
     cardRef: composerCardRef,
     scrollerRef: feedScrollerRef,
   })
@@ -390,6 +394,7 @@ export function App() {
                 <Feed
                   notes={notes}
                   scrollerRef={feedScrollerRef}
+                  sendInFlight={sendInFlight}
                   focusedId={focusedId}
                   // Toggle behaviour: clicking an unfocused bubble focuses it (opens
                   // BacklinksPane); clicking the already-focused bubble unfocuses it
