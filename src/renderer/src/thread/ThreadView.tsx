@@ -468,7 +468,12 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   const notesPane = (
     <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
       <div
-        style={{ flex: 1, minHeight: 0, position: 'relative' }}
+        // overflow:hidden CONTAINS the feed: the video-rail gutter (negative-offset
+        // timestamps/dots) and the active-note box-shadow rings draw outside the inner
+        // scroller, and without this they spilled left over the divider line and down
+        // over the composer's top border (worst in the narrow split pane). The inner
+        // scroller still owns the actual scrolling; this only clips the overflow.
+        style={{ flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden' }}
         onPointerEnter={thumb.onAreaEnter}
         onPointerLeave={thumb.onAreaLeave}
         onPointerMove={thumb.onAreaPointerMove}
