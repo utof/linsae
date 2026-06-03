@@ -134,13 +134,23 @@ export function useSendAnimation(args: {
     // this collapses to `DURATION_MS` and tree-shakes out. See GH #49.
     const duration = import.meta.env.DEV ? DURATION_MS * (window.__morphSlow ?? 1) : DURATION_MS
 
+    const applyFrame = (t: number) => {
+      const { tx, ty, opacity } = sendFrame(t, start, target)
+      ghost.style.transform = `translate(${tx}px, ${ty}px)`
+      ghost.style.opacity = `${opacity}`
+    }
+    // Apply t=0 synchronously inside the layout effect (before paint) so the
+    // ghost's first painted frame is its real start state — the no-flash
+    // guarantee is enforced here, not left to sendFrame(0) coincidentally
+    // returning identity. Mirrors useExpandCollapseMorph's synchronous first
+    // applyFrame (line ~120).
+    applyFrame(0)
+
     let startTs: number | null = null
     const tick = (ts: number) => {
       if (startTs === null) startTs = ts
       const t = Math.min(1, (ts - startTs) / duration)
-      const { tx, ty, opacity } = sendFrame(t, start, target)
-      ghost.style.transform = `translate(${tx}px, ${ty}px)`
-      ghost.style.opacity = `${opacity}`
+      applyFrame(t)
       if (t < 1) {
         rafRef.current = requestAnimationFrame(tick)
       } else {

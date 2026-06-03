@@ -46,20 +46,13 @@ afterEach(() => {
  * the "scroller"), exposes `launch` via a button so tests can fire it inside an
  * RTL `act`. The card/scroller divs are mounted so the refs are non-null.
  */
-function Harness({
-  matchReduced = false,
-  nullRefs = false,
-}: {
-  matchReduced?: boolean
-  nullRefs?: boolean
-}) {
+function Harness({ nullRefs = false }: { nullRefs?: boolean }) {
   const cardRef = useRef<HTMLDivElement | null>(null)
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const { launch, ghost } = useSendAnimation({
     cardRef: nullRefs ? ({ current: null } as RefObject<HTMLDivElement | null>) : cardRef,
     scrollerRef: nullRefs ? ({ current: null } as RefObject<HTMLDivElement | null>) : scrollerRef,
   })
-  void matchReduced
   return (
     <div>
       {!nullRefs && (
