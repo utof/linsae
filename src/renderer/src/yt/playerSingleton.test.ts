@@ -34,7 +34,7 @@ beforeEach(() => {
   }) as typeof document.createElement)
 })
 
-import { destroyPlayer, getPlayer } from './playerSingleton'
+import { destroyPlayer, getPlayer, setPlayerInteractive } from './playerSingleton'
 
 afterEach(() => {
   destroyPlayer()
@@ -68,6 +68,13 @@ describe('playerSingleton (webview)', () => {
   })
   it('getMediaRect returns the webview rect', () => {
     expect(getPlayer().getMediaRect()?.width).toBe(320)
+  })
+  it('setPlayerInteractive toggles the wrapper pointer-events (drag click-through)', () => {
+    const p = getPlayer()
+    setPlayerInteractive(false)
+    expect(p.wrapper.style.pointerEvents).toBe('none')
+    setPlayerInteractive(true)
+    expect(p.wrapper.style.pointerEvents).toBe('')
   })
   it('reconstructs after destroyPlayer()', () => {
     const a = getPlayer()

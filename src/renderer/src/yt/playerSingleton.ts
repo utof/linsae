@@ -371,6 +371,24 @@ export function getPlayer(): PlayerInstance {
 }
 
 /**
+ * Toggle whether the player `<webview>` receives pointer events.
+ *
+ * Set `false` for the DURATION OF A DIVIDER DRAG. The `<webview>` is an out-of-process
+ * frame (OOPIF): when the cursor crosses into it, its guest process captures the OS
+ * mouse stream, so the window-level `pointermove`/`pointerup` listeners that drive the
+ * ThreadView resize handles stop firing — the drag freezes, and the `pointerup` that
+ * happens over the webview never reaches the teardown, leaving the drag "stuck until
+ * the next click". `pointer-events:none` on the wrapper lets the cursor pass through to
+ * the host page so those window listeners keep firing across the whole viewport.
+ * ALWAYS restore (`true`) on drag end.
+ *
+ * @see src/renderer/src/thread/ThreadView.tsx (onResizeStart / onSplitResizeStart)
+ */
+export function setPlayerInteractive(on: boolean): void {
+  if (wrapper) wrapper.style.pointerEvents = on ? '' : 'none'
+}
+
+/**
  * Tears down the singleton (test cleanup + app teardown).
  * Why: called by destroy() and by usePlayer cleanup on HMR / test afterEach.
  */

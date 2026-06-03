@@ -12,7 +12,7 @@ import { useHotkeys } from 'react-hotkeys-hook'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { api } from '../lib/api'
 import { mediaUrlFromPath } from '../lib/media-url'
-import { getPlayer } from '../yt/playerSingleton'
+import { getPlayer, setPlayerInteractive } from '../yt/playerSingleton'
 import { usePlayer } from '../yt/usePlayer'
 import { JumpPill } from './JumpPill'
 import { Rail } from './Rail'
@@ -139,6 +139,9 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   const onResizeStart = useCallback(
     (e: ReactPointerEvent) => {
       e.preventDefault()
+      // Make the <webview> click-through for the drag so it can't swallow the pointer
+      // stream (frozen drag + stuck pointerup). Restored in onUp. See setPlayerInteractive.
+      setPlayerInteractive(false)
       const startY = e.clientY
       const startW = videoW ?? COL
       const onMove = (ev: PointerEvent) => {
@@ -146,6 +149,7 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
         setVideoW(Math.max(MIN_VIDEO_W, Math.min(COL, startW + dy * (16 / 9))))
       }
       const onUp = () => {
+        setPlayerInteractive(true)
         window.removeEventListener('pointermove', onMove)
         window.removeEventListener('pointerup', onUp)
       }
@@ -174,6 +178,9 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   const onSplitResizeStart = useCallback(
     (e: ReactPointerEvent) => {
       e.preventDefault()
+      // Same webview click-through guard as the stacked handle — this is the layout
+      // where the handle sits right beside the video, so the drag crosses it constantly.
+      setPlayerInteractive(false)
       const startX = e.clientX
       const startW = splitW ?? DEFAULT_SPLIT_W
       const rowW = rowRef.current?.getBoundingClientRect().width ?? 1200
@@ -182,6 +189,7 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
         setSplitW(Math.max(MIN_SPLIT_W, Math.min(max, startW + (ev.clientX - startX))))
       }
       const onUp = () => {
+        setPlayerInteractive(true)
         window.removeEventListener('pointermove', onMove)
         window.removeEventListener('pointerup', onUp)
       }
