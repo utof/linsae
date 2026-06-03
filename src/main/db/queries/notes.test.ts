@@ -41,6 +41,16 @@ describe('notes queries', () => {
     expect(list.map((n) => n.id)).toEqual(['n1', 'n2'])
   })
 
+  it('listNotes returns the NEWEST `limit` notes when the table exceeds the limit, oldest-first (regression #20: new notes vanished past the limit)', () => {
+    createNote(db, { id: 'n1', slug: 'a', body: 'a', type: 'claim' })
+    createNote(db, { id: 'n2', slug: 'b', body: 'b', type: 'claim' })
+    createNote(db, { id: 'n3', slug: 'c', body: 'c', type: 'claim' })
+    // limit 2 with 3 notes → the two most-recent (n2, n3), oldest-first — NOT the
+    // oldest two (`n1, n2`), which is what the old `created_at ASC LIMIT` returned
+    // and is why a freshly-created note disappeared from a feed of 100+ notes.
+    expect(listNotes(db, { limit: 2 }).map((n) => n.id)).toEqual(['n2', 'n3'])
+  })
+
   it('listNotes excludes soft-deleted notes', () => {
     createNote(db, { id: 'n1', slug: 'a', body: 'a', type: 'claim' })
     createNote(db, { id: 'n2', slug: 'b', body: 'b', type: 'claim' })

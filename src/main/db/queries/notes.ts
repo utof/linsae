@@ -77,16 +77,25 @@ export function getNote(db: DB, id: string): Note | null {
 }
 
 /**
- * Returns a page of non-deleted notes in ascending `created_at` order.
+ * Returns a page of the MOST RECENT non-deleted notes, oldest-first.
  *
- * `rowid ASC` tiebreaker ensures deterministic ordering when two notes share
+ * Why most-recent (not oldest): the rolling feed shows newest at the bottom and
+ * the user is always adding new notes there. The query fetches the newest `limit`
+ * rows (`created_at DESC LIMIT`) so a freshly-created note is ALWAYS in the page
+ * even once the table exceeds `limit`, then reverses to oldest-first for the
+ * feed's top→bottom order. The previous `created_at ASC LIMIT` returned the
+ * OLDEST `limit` rows, so once you had more than `limit` (default 100) notes,
+ * every new note silently vanished from the feed — created in the DB but never
+ * listed (issue #20: scroll-back to older history is still pending).
+ *
+ * `rowid DESC` tiebreaker ensures deterministic ordering when two notes share
  * the same millisecond timestamp (common on fast machines in tests).
  *
- * Cursor-based pagination: supply `before` to fetch notes created strictly
- * before that Unix-ms timestamp (used by the rolling feed's infinite scroll).
+ * Cursor-based pagination: supply `before` to fetch the most-recent notes created
+ * strictly before that Unix-ms timestamp (the previous page when scrolling up).
  *
  * @param db - Open better-sqlite3 Database.
- * @param opts.limit - Maximum rows to return.
+ * @param opts.limit - Maximum rows to return (the newest this many).
  * @param opts.before - Optional cursor: only return notes with `created_at < before`.
  * @returns Array of Notes, oldest first.
  * @see docs/specs/v0.1-rolling-feed-and-search.md §User-facing surfaces
@@ -102,10 +111,12 @@ export function listNotes(db: DB, opts: { limit: number; before?: number }): Not
     .prepare(
       `SELECT id, slug, body, type, created_at, updated_at, deleted_at, source_kind, source_locator
        FROM notes ${where}
-       ORDER BY created_at ASC, rowid ASC
+       ORDER BY created_at DESC, rowid DESC
        LIMIT ?`,
     )
     .all(...params) as (Omit<Note, 'source_locator'> & { source_locator: string | null })[]
+  // Fetched newest-first for the LIMIT; reverse to oldest-first for the feed.
+  rows.reverse()
   return rows.map((row) => ({
     ...row,
     source_locator: row.source_locator ? (JSON.parse(row.source_locator) as SourceLocator) : null,
