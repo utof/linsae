@@ -36,7 +36,7 @@ import { dayKey, formatDayLabel } from '../lib/day'
 import { Markdown } from '../lib/markdown'
 import { mediaUrlFromPath } from '../lib/media-url'
 import { formatClock } from '../lib/time'
-import { formatWallClock } from '../lib/wallclock'
+import { formatTimeOnly } from '../lib/wallclock'
 import { activeClusterIndex, logGapHeight } from './rail-layout'
 
 // ── layout constants (shared column + its left rail gutter) ─────────────────
@@ -109,6 +109,9 @@ function NoteBubble({
         borderRadius: 'var(--r-5)',
         padding: '9px 11px',
         boxShadow: active ? '0 0 0 3px var(--accent-tint)' : 'none',
+        // Break long unbroken tokens (URLs, no-space pastes) instead of overflowing
+        // the card to the right — matches the feed NoteBubble.
+        overflowWrap: 'anywhere',
       }}
     >
       {item.attachment && (
@@ -147,7 +150,7 @@ function NoteBubble({
           fontFamily: 'var(--font-sans)',
         }}
       >
-        {formatWallClock(item.createdAt, !clock24)}
+        {formatTimeOnly(item.createdAt, !clock24)}
       </div>
     </div>
   )

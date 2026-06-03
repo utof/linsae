@@ -17,6 +17,7 @@ const BASE_PROPS = {
   thumbnailUrl: 'https://example.com/thumb.jpg',
   noteCount: 12,
   openQuestionCount: 2,
+  createdAt: new Date(2026, 5, 3, 14, 23, 0).getTime(), // 2:23 PM local
   onOpenThread: vi.fn(),
 }
 
@@ -96,6 +97,13 @@ describe('MediaFeedNote', () => {
     // Second click (now labelled "confirm delete") fires.
     fireEvent.click(screen.getByRole('button', { name: /confirm delete/i }))
     expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  it('(k) shows the post time, time-of-day only (no date)', () => {
+    render(<MediaFeedNote {...BASE_PROPS} />)
+    expect(screen.getByText(/2:23/)).toBeInTheDocument()
+    // The day comes from the feed divider, never the card.
+    expect(screen.queryByText(/Jun|2026/)).toBeNull()
   })
 
   it('(j) right-click opens a context menu — delete fires directly, no edit item', () => {

@@ -3,7 +3,7 @@ import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { useClock24 } from '../lib/clock-pref'
 import { Markdown } from '../lib/markdown'
-import { formatWallClock } from '../lib/wallclock'
+import { formatTimeOnly } from '../lib/wallclock'
 import { type ContextMenuPos, NoteContextMenu } from './ContextMenu'
 import { MediaFeedNoteContainer } from './MediaFeedNote'
 
@@ -319,7 +319,7 @@ export function NoteBubble({
               </span>
             )}
             <span title={new Date(note.created_at).toLocaleString()}>
-              {formatWallClock(note.created_at, !clock24)}
+              {formatTimeOnly(note.created_at, !clock24)}
             </span>
           </span>
         </div>
@@ -358,7 +358,7 @@ export function NoteBubble({
             </span>
           )}
           <span title={new Date(note.created_at).toLocaleString()}>
-            {formatWallClock(note.created_at, !clock24)}
+            {formatTimeOnly(note.created_at, !clock24)}
           </span>
         </div>
       )}

@@ -3,7 +3,9 @@ import { ChevronRight, Link2, MessagesSquare, Trash2 } from 'lucide-react'
 import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { api } from '../lib/api'
+import { useClock24 } from '../lib/clock-pref'
 import { formatClock } from '../lib/time'
+import { formatTimeOnly } from '../lib/wallclock'
 import { useThreadNotes } from '../thread/useThreadNotes'
 import { type ContextMenuPos, NoteContextMenu } from './ContextMenu'
 
@@ -28,6 +30,8 @@ export interface MediaFeedNoteProps {
   thumbnailUrl: string | null
   noteCount: number
   openQuestionCount: number
+  /** Wall-clock epoch ms — shown as time-of-day only (the feed's day divider carries the date). */
+  createdAt: number
   onOpenThread: () => void
   /**
    * Hover-toolbar actions (parity with NoteBubble's edit/copy/delete bar). When
@@ -77,6 +81,7 @@ export function MediaFeedNoteContainer({
       thumbnailUrl={meta?.thumbnailUrl ?? null}
       noteCount={noteCount}
       openQuestionCount={openQuestionCount}
+      createdAt={note.created_at}
       onOpenThread={() => onOpenThread?.(note.id)}
       {...(onDelete ? { onDelete } : {})}
       {...(onCopyLink ? { onCopyLink } : {})}
@@ -91,10 +96,12 @@ export function MediaFeedNote({
   thumbnailUrl,
   noteCount,
   openQuestionCount,
+  createdAt,
   onOpenThread,
   onDelete,
   onCopyLink,
 }: MediaFeedNoteProps) {
+  const clock24 = useClock24()
   const [hover, setHover] = useState(false)
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null)
   // Two-click delete arm, mirroring NoteBubble: deleting a video card removes the
@@ -214,16 +221,23 @@ export function MediaFeedNote({
         >
           {title}
         </div>
-        {/* channel meta line — duration lives only on the thumbnail chip. */}
+        {/* channel + post time. Time-of-day only — no date (the feed's day divider
+            carries the date); duration lives only on the thumbnail chip. */}
         <div
           style={{
-            fontSize: 12,
-            color: 'var(--fg-2)',
-            fontFamily: 'var(--font-mono)',
+            display: 'flex',
+            alignItems: 'flex-end',
+            justifyContent: 'space-between',
+            gap: 10,
             marginTop: 4,
           }}
         >
-          {channel}
+          <div style={{ fontSize: 12, color: 'var(--fg-2)', fontFamily: 'var(--font-mono)' }}>
+            {channel}
+          </div>
+          <span style={{ fontSize: 11, color: 'var(--fg-3)', whiteSpace: 'nowrap' }}>
+            {formatTimeOnly(createdAt, !clock24)}
+          </span>
         </div>
       </div>
 
