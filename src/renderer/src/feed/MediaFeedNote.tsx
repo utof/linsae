@@ -3,9 +3,9 @@ import { ChevronRight, Link2, MessagesSquare, Trash2 } from 'lucide-react'
 import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { api } from '../lib/api'
-import { useClock24 } from '../lib/clock-pref'
 import { formatClock } from '../lib/time'
 import { useThreadNotes } from '../thread/useThreadNotes'
+import { type ContextMenuPos, NoteContextMenu } from './ContextMenu'
 
 /**
  * Presentational card for a YouTube video source note in the chronological feed.
@@ -28,8 +28,6 @@ export interface MediaFeedNoteProps {
   thumbnailUrl: string | null
   noteCount: number
   openQuestionCount: number
-  /** Wall-clock epoch ms when this note entered the feed. */
-  createdAt: number
   onOpenThread: () => void
   /**
    * Hover-toolbar actions (parity with NoteBubble's edit/copy/delete bar). When
@@ -38,32 +36,6 @@ export interface MediaFeedNoteProps {
    */
   onDelete?: () => void
   onCopyLink?: () => void
-}
-
-/**
- * Telegram-style timestamp: same-day → time only, older → short date + time.
- * Why: MediaFeedNote lives in the same feed as NoteBubble; timestamps must follow
- * the same convention so the user's eye isn't confused by two formats in one scroll.
- * Why: duplicated from NoteBubble instead of extracted to lib/time — the wall-clock
- * format is presentational preference, not a domain invariant; extracting would
- * violate the inline-fix gate (exported symbol change, >4 impl files).
- */
-function formatTimestamp(ms: number, hour12: boolean): string {
-  const d = new Date(ms)
-  const now = new Date()
-  const sameDay =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  return sameDay
-    ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12 })
-    : d.toLocaleString(undefined, {
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12,
-      })
 }
 
 /**
@@ -105,7 +77,6 @@ export function MediaFeedNoteContainer({
       thumbnailUrl={meta?.thumbnailUrl ?? null}
       noteCount={noteCount}
       openQuestionCount={openQuestionCount}
-      createdAt={note.created_at}
       onOpenThread={() => onOpenThread?.(note.id)}
       {...(onDelete ? { onDelete } : {})}
       {...(onCopyLink ? { onCopyLink } : {})}
@@ -120,13 +91,12 @@ export function MediaFeedNote({
   thumbnailUrl,
   noteCount,
   openQuestionCount,
-  createdAt,
   onOpenThread,
   onDelete,
   onCopyLink,
 }: MediaFeedNoteProps) {
-  const clock24 = useClock24()
   const [hover, setHover] = useState(false)
+  const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null)
   // Two-click delete arm, mirroring NoteBubble: deleting a video card removes the
   // whole source note, so a single misclick over the thumbnail shouldn't nuke it.
   const [deleteArmed, setDeleteArmed] = useState(false)
@@ -159,6 +129,14 @@ export function MediaFeedNote({
         setHover(false)
         setDeleteArmed(false)
       }}
+      onContextMenu={
+        onDelete && onCopyLink
+          ? (e) => {
+              e.preventDefault()
+              setContextMenu({ x: e.clientX, y: e.clientY })
+            }
+          : undefined
+      }
       style={{
         position: 'relative',
         maxWidth: 360,
@@ -221,8 +199,11 @@ export function MediaFeedNote({
         )}
       </button>
 
-      {/* Title + meta + bottom-right timestamp */}
-      <div style={{ padding: '10px 12px' }}>
+      {/* Title + channel. The bigger top padding (var(--space-5) = 16px, up from 10px)
+          opens the gap between the thumbnail and the title — and therefore between the
+          thumbnail and the channel below it. No wall-clock here anymore: the feed's day
+          dividers carry the date now (this used to read e.g. "Jun 1, 11:09 PM"). */}
+      <div style={{ padding: 'var(--space-5) var(--space-4) var(--space-4)' }}>
         <div
           style={{
             fontSize: 14,
@@ -233,36 +214,16 @@ export function MediaFeedNote({
         >
           {title}
         </div>
+        {/* channel meta line — duration lives only on the thumbnail chip. */}
         <div
           style={{
-            display: 'flex',
-            alignItems: 'flex-end',
-            justifyContent: 'space-between',
-            gap: 10,
+            fontSize: 12,
+            color: 'var(--fg-2)',
+            fontFamily: 'var(--font-mono)',
             marginTop: 4,
           }}
         >
-          {/* channel meta line — duration lives only on the thumbnail chip now
-              (it used to be duplicated here next to the channel). */}
-          <div
-            style={{
-              fontSize: 12,
-              color: 'var(--fg-2)',
-              fontFamily: 'var(--font-mono)',
-            }}
-          >
-            {channel}
-          </div>
-          {/* wall-clock bottom-right (Telegram-style) — no view count per I-3 */}
-          <span
-            style={{
-              fontSize: 11,
-              color: 'var(--fg-3)',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {formatTimestamp(createdAt, !clock24)}
-          </span>
+          {channel}
         </div>
       </div>
 
@@ -355,6 +316,18 @@ export function MediaFeedNote({
             </button>
           )}
         </div>
+      )}
+
+      {/* Right-click menu — same shared component as NoteBubble (copy + delete; no
+          edit on a source card). Portaled to body, so the card's overflow:hidden
+          and the feed's transformed wrapper don't clip / mis-place it. */}
+      {contextMenu && onCopyLink && onDelete && (
+        <NoteContextMenu
+          pos={contextMenu}
+          onCopyLink={onCopyLink}
+          onDelete={onDelete}
+          onClose={() => setContextMenu(null)}
+        />
       )}
     </div>
   )

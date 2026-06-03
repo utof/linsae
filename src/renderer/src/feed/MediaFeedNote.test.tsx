@@ -17,7 +17,6 @@ const BASE_PROPS = {
   thumbnailUrl: 'https://example.com/thumb.jpg',
   noteCount: 12,
   openQuestionCount: 2,
-  createdAt: 1737000000000,
   onOpenThread: vi.fn(),
 }
 
@@ -96,6 +95,21 @@ describe('MediaFeedNote', () => {
     expect(onDelete).not.toHaveBeenCalled()
     // Second click (now labelled "confirm delete") fires.
     fireEvent.click(screen.getByRole('button', { name: /confirm delete/i }))
+    expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  it('(j) right-click opens a context menu — delete fires directly, no edit item', () => {
+    const onDelete = vi.fn()
+    const onCopyLink = vi.fn()
+    const { container } = render(
+      <MediaFeedNote {...BASE_PROPS} onDelete={onDelete} onCopyLink={onCopyLink} />,
+    )
+    fireEvent.contextMenu(container.firstChild as Element)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    // A source card has no editable body → no Edit item.
+    expect(screen.queryByRole('menuitem', { name: /edit/i })).toBeNull()
+    // Menu delete is direct (no arm), unlike the hover toolbar.
+    fireEvent.click(screen.getByRole('menuitem', { name: /delete/i }))
     expect(onDelete).toHaveBeenCalledTimes(1)
   })
 })
