@@ -1,6 +1,7 @@
 import {
   type ClipboardEvent,
   type KeyboardEvent,
+  type Ref,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -52,6 +53,16 @@ interface Props {
    * @see src/renderer/src/App.tsx §paste handler
    */
   onPasteText?: (text: string) => boolean
+  /**
+   * Optional ref to the composer card-root element — the liftoff anchor for the
+   * send-note ghost animation (its `getBoundingClientRect()` is the ghost's
+   * fixed-position start). Only the create-mode composer wires this; the
+   * edit-mode composer leaves it undefined (no animation on edits).
+   *
+   * @see src/renderer/src/composer/useSendAnimation.tsx
+   * @see docs/specs/v0.2.1-send-animation.md
+   */
+  cardRef?: Ref<HTMLDivElement>
 }
 
 /**
@@ -94,6 +105,7 @@ export function Composer({
   error = null,
   onClearError,
   onPasteText,
+  cardRef,
 }: Props) {
   const [body, setBody] = useState(initialBody)
   const [mode, setMode] = useState<NoteType>(initialMode)
@@ -185,6 +197,7 @@ export function Composer({
     >
       <div style={{ maxWidth: 720, margin: '0 auto' }}>
         <div
+          ref={cardRef}
           style={{
             position: 'relative',
             background: '#fff',

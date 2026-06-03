@@ -1,5 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type Ref, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import type { Note } from '../../../shared/types'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
@@ -19,6 +19,17 @@ interface Props {
   onCopyLink: (id: string) => void
   /** Called when the user opens the thread panel for a source note. */
   onOpenThread?: (id: string) => void
+  /**
+   * Optional ref to the inner scroller element — the geometry source for the
+   * send-note ghost's landing target (its rect + scrollHeight/clientHeight feed
+   * `sendTarget`). App owns it via `useSendAnimation`. Merged into the existing
+   * internal scroller setup inside `handleScrollerRef`, never as a second JSX
+   * ref, so the memoized-callback identity (ADR 0004) is preserved.
+   *
+   * @see src/renderer/src/composer/useSendAnimation.tsx
+   * @see adrs/0004-memoize-virtuoso-prop-callbacks.md
+   */
+  scrollerRef?: Ref<HTMLDivElement>
 }
 
 /** Returns a new Set with `id` toggled — immutable so React sees a new ref. */
@@ -168,9 +179,15 @@ export function Feed({
   onDelete,
   onCopyLink,
   onOpenThread,
+  scrollerRef,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null)
+  // Holder for the external scrollerRef so `handleScrollerRef` can stay
+  // `[]`-memoized (ADR 0004): reading a ref of stable identity inside the
+  // callback avoids putting the changing `scrollerRef` prop in its deps.
+  const externalScrollerRef = useRef<Ref<HTMLDivElement> | undefined>(scrollerRef)
+  externalScrollerRef.current = scrollerRef
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set())
 
   // Indices that begin a new calendar day → an inline DayDivider renders above them
@@ -370,6 +387,12 @@ export function Feed({
       el.classList.add('scroll-area-inner')
       el.style.scrollbarWidth = 'none'
     }
+    // Forward to the optional external scrollerRef (send-animation geometry).
+    // Handles both function- and object-ref forms; read via the stable holder
+    // so this callback's identity stays frozen (ADR 0004).
+    const ext = externalScrollerRef.current
+    if (typeof ext === 'function') ext(el)
+    else if (ext) ext.current = el
   }, [])
 
   const thumb = useScrollThumb(scrollerEl, suppressThumbResizeRef)

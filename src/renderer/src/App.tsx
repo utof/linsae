@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import type { Note, NoteType } from '../../shared/types'
 import { BacklinksPane } from './backlinks/BacklinksPane'
 import { Composer } from './composer/Composer'
+import { useSendAnimation } from './composer/useSendAnimation'
 import { Feed } from './feed/Feed'
 import { api } from './lib/api'
 import { parseYouTubeUrl } from './lib/parse-youtube-url'
@@ -80,6 +81,19 @@ export function App() {
   // user's text on failure (which is the entire point of the Option B
   // body-preservation contract).
   const [successCount, setSuccessCount] = useState(0)
+
+  // Send-note ghost animation: the create-mode composer's card is the liftoff
+  // anchor, the Feed's inner scroller is the landing-geometry source. `launch`
+  // fires the ghost optimistically at submit (before the create mutation), and
+  // `ghost` is the portaled SendGhost node rendered below. Reduced motion or a
+  // missing Feed (first-ever send → empty-state placeholder) → no-op.
+  // @see docs/specs/v0.2.1-send-animation.md
+  const composerCardRef = useRef<HTMLDivElement | null>(null)
+  const feedScrollerRef = useRef<HTMLDivElement | null>(null)
+  const { launch: launchSend, ghost: sendGhost } = useSendAnimation({
+    cardRef: composerCardRef,
+    scrollerRef: feedScrollerRef,
+  })
 
   // Clear submitError whenever the composer's context changes (user clicks
   // edit on a different note, opens a dangling-wikilink draft, etc.). Without
@@ -375,6 +389,7 @@ export function App() {
               ) : (
                 <Feed
                   notes={notes}
+                  scrollerRef={feedScrollerRef}
                   focusedId={focusedId}
                   // Toggle behaviour: clicking an unfocused bubble focuses it (opens
                   // BacklinksPane); clicking the already-focused bubble unfocuses it
@@ -414,11 +429,17 @@ export function App() {
                 // key unchanged so the user's text + cursor survive.
                 <Composer
                   key={`${draftBody ?? 'fresh'}-${successCount}`}
+                  cardRef={composerCardRef}
                   initialBody={draftBody ?? ''}
                   initialMode="claim"
                   error={submitError}
                   onClearError={() => setSubmitError(null)}
-                  onSubmit={({ body, type }) => createMut.mutate({ body, type })}
+                  // Optimistic launch: fire the ghost (reads the card rect NOW,
+                  // before onSuccess remounts the composer) THEN mutate.
+                  onSubmit={({ body, type }) => {
+                    launchSend(body, type)
+                    createMut.mutate({ body, type })
+                  }}
                   onCancel={() => setDraftBody(null)}
                   onPasteText={handlePasteText}
                 />
@@ -440,6 +461,9 @@ export function App() {
         onJump={setFocusedId}
       />
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {/* Send-note ghost — portals to document.body itself, so its position in
+          the tree is irrelevant; render it once here while a flight is live. */}
+      {sendGhost}
     </div>
   )
 }
