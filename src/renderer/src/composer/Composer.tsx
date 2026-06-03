@@ -186,6 +186,7 @@ export function Composer({
       <div style={{ maxWidth: 720, margin: '0 auto' }}>
         <div
           style={{
+            position: 'relative',
             background: '#fff',
             border: `1px solid ${borderColor}`,
             borderRadius: 10,
@@ -229,6 +230,7 @@ export function Composer({
             className="composer-textarea"
             style={{
               width: '100%',
+              boxSizing: 'border-box',
               border: 0,
               outline: 'none',
               // resize:none disables the user-drag handle (we drive height
@@ -238,6 +240,10 @@ export function Composer({
               // container stops pushing the feed up.
               resize: 'none',
               overflowY: 'auto',
+              // Reserve the bottom-right corner for the floating send button so a
+              // long last line wraps before it collides — the textarea equivalent of
+              // NoteBubble's trailing-nbsp time reservation (a textarea can't hold nbsp).
+              paddingRight: 34,
               fontFamily: isQuestion ? 'var(--font-serif)' : 'var(--font-sans)',
               fontStyle: isQuestion ? 'italic' : 'normal',
               fontSize: isQuestion ? 16 : 14,
@@ -251,6 +257,7 @@ export function Composer({
               role="alert"
               style={{
                 marginTop: 6,
+                paddingRight: 40,
                 color: 'var(--status-wtf)',
                 fontSize: 12,
                 lineHeight: 1.4,
@@ -259,8 +266,9 @@ export function Composer({
               {error}
             </div>
           )}
-          <div style={{ display: 'flex', alignItems: 'center', marginTop: 6 }}>
-            <div style={{ flex: 1 }} />
+          {/* Floating send button — bottom-right corner, like a posted note's inline
+              timestamp. No dedicated toolbar row, so the card stays as short as the text. */}
+          <div style={{ position: 'absolute', right: 8, bottom: 8 }}>
             <SendButton onClick={submit} label="send note" title="send ↵" />
           </div>
         </div>
