@@ -20,6 +20,7 @@
     "knip": "knip",
     "smoke:capture": "node scripts/capture-smoke.mjs",
     "smoke:thread": "node scripts/thread-smoke.mjs",
+    "harness:send": "xvfb-run -a node scripts/send-harness.mjs",
     "doctor": "npx react-doctor@latest"
   },
   "dependencies": {
