@@ -28,7 +28,10 @@
  */
 
 import { PinOff } from 'lucide-react'
+import { Fragment } from 'react'
 import type { Attachment, Note } from '../../../shared/types'
+import { DayDivider } from '../feed/DatePills'
+import { dayKey, formatDayLabel } from '../lib/day'
 import { Markdown } from '../lib/markdown'
 import { mediaUrlFromPath } from '../lib/media-url'
 import { formatClock } from '../lib/time'
@@ -307,11 +310,21 @@ export function Rail({
   flashClusterIdx = -1,
 }: RailProps) {
   if (mode === 'capture') {
+    // Capture order is chronological by creation, so the feed's Telegram-style day
+    // dividers fit here. They make NO sense in video-time order (which has no date
+    // monotonicity), which is why this is the only thread view that gets them.
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {sorted.map((it) => (
-          <NoteBubble key={it.id} item={it} active={false} />
-        ))}
+        {sorted.map((it, i) => {
+          const prev = sorted[i - 1]
+          const newDay = prev === undefined || dayKey(it.createdAt) !== dayKey(prev.createdAt)
+          return (
+            <Fragment key={it.id}>
+              {newDay && <DayDivider label={formatDayLabel(it.createdAt)} />}
+              <NoteBubble item={it} active={false} />
+            </Fragment>
+          )
+        })}
       </div>
     )
   }
