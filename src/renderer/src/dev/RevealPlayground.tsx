@@ -3,26 +3,32 @@ import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, use
 import { useHotkeys } from 'react-hotkeys-hook'
 
 /**
- * DEV-ONLY playground for iterating on the feed "make-room" entrance — the
- * `scrollTop` glide that pushes the feed up when a note arrives (the real one lives
- * in `useAppendReveal`). It reproduces that glide faithfully (same `motion`
- * `animate(start → end)` on a real scroller's `scrollTop`) on a throwaway feed of
- * dummy notes, so you can swap the easing/spring + params and replay instantly to
- * feel which one you want, without sending real notes.
+ * DEV-ONLY playground for iterating on the feed "make-room" entrance: the scrollTop
+ * glide that pushes the feed up when a note arrives (the real one lives in
+ * useAppendReveal). It reproduces that glide faithfully (the same motion animate(start
+ * to end) on a real scroller's scrollTop) on a throwaway feed of dummy notes, so you
+ * can shape a custom cubic-bezier and replay instantly to feel which one you want,
+ * without sending real notes.
  *
- * Open it with the dev hotkey (see App). Replay with **Space** or **R**, close with
- * **Esc**. The "transition" readout at the bottom is the exact `motion` options — copy
- * it straight into `useAppendReveal`'s `animate(...)` once you've picked one.
+ * Tween (custom cubic-bezier) only: presets are just starting points you then tweak.
+ * NOTE: this animates SCROLL, which the browser clamps to the bottom, so an OVERSHOOT
+ * bezier (a control-point y above 1) will NOT bounce: the scroll just clamps. The curve
+ * preview still shows the overshoot for reference. A real bounce needs a transform, not
+ * scroll (a separate mechanism).
  *
- * Not shipped in production: App only mounts it behind `import.meta.env.DEV`.
+ * Open with the dev hotkey (App). Replay with Space or R, close with Esc. The
+ * "transition" readout is the exact motion options to paste into useAppendReveal.
+ *
+ * Not shipped in production: App only mounts it behind import.meta.env.DEV.
  */
 
-const para = (n: number) =>
-  Array.from(
-    { length: n },
-    (_, i) =>
-      `paragraph ${i + 1} of the arriving note — enough text that the bubble has real height to push the feed up`,
-  ).join('\n\n')
+const para = (n: number) => {
+  const lines: string[] = []
+  for (let i = 1; i <= n; i++) {
+    lines.push(`paragraph ${i} of the arriving note - text so the bubble has real height`)
+  }
+  return lines.join('\n\n')
+}
 
 const ARRIVING = {
   short: 'a short note',
@@ -33,29 +39,27 @@ const ARRIVING = {
 type Size = keyof typeof ARRIVING
 const SIZE_KEYS = Object.keys(ARRIVING) as Size[]
 
-// Named `motion` tween easings (+ 'custom' → a tunable cubic-bezier).
-const EASINGS = [
-  'linear',
-  'easeIn',
-  'easeOut',
-  'easeInOut',
-  'circIn',
-  'circOut',
-  'circInOut',
-  'backIn',
-  'backOut',
-  'backInOut',
-  'anticipate',
-  'custom',
-] as const
+// Cubic-bezier control points for quick-start presets - selecting one loads it into the
+// editable curve below. Everything is a custom bezier under the hood (no opaque named
+// easings, no spring) - exactly "tween (easing) + custom".
+const PRESETS: Record<string, [number, number, number, number]> = {
+  linear: [0, 0, 1, 1],
+  easeOut: [0, 0, 0.58, 1],
+  easeOutCubic: [0.22, 0.61, 0.36, 1],
+  easeOutQuint: [0.22, 1, 0.36, 1],
+  easeOutExpo: [0.16, 1, 0.3, 1],
+  easeInOut: [0.42, 0, 0.58, 1],
+  easeOutBack: [0.34, 1.56, 0.64, 1],
+  easeInOutBack: [0.68, -0.6, 0.32, 1.6],
+}
+const PRESET_KEYS = Object.keys(PRESETS)
 
-// Backdrop notes the arriving one pushes up — enough (and tall enough) to overflow the
-// scroller well, so even a big arriving note has room to glide.
-const BACKDROP = Array.from(
-  { length: 18 },
-  (_, i) =>
-    `older note ${i + 1} — some body text long enough to wrap onto a second line so the feed overflows`,
-)
+// Plenty of (wrapping) backdrop so the scroller ALWAYS overflows by more than any
+// arriving note, so even a SHORT note starts fully below the fold and visibly rises in.
+const BACKDROP: string[] = []
+for (let i = 1; i <= 35; i++) {
+  BACKDROP.push(`older note ${i} - some body text long enough to wrap onto a second line`)
+}
 
 const COL = {
   panel: '#16181d',
@@ -80,34 +84,18 @@ function bubble(arriving = false): CSSProperties {
   }
 }
 
-/**
- * The exact `motion` transition for the current control state. This object is what
- * the real `useAppendReveal` would pass to `animate(start, end, { ...this })`.
- */
-type Transition =
-  | { type: 'spring'; bounce: number; visualDuration: number }
-  | { type: 'tween'; duration: number; ease: string | number[] }
-
 export function RevealPlayground({ onClose }: { onClose: () => void }) {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const ctrlRef = useRef<{ stop: () => void } | null>(null)
   const loopTimerRef = useRef<number | undefined>(undefined)
 
-  const [animType, setAnimType] = useState<'spring' | 'tween'>('spring')
-  const [bounce, setBounce] = useState(0)
-  const [springDur, setSpringDur] = useState(0.4)
-  const [ease, setEase] = useState<(typeof EASINGS)[number]>('easeOut')
   const [bez, setBez] = useState<[number, number, number, number]>([0.22, 1, 0.36, 1])
-  const [tweenDur, setTweenDur] = useState(0.4)
-  const [arriving, setArriving] = useState<Size>('big')
+  const [dur, setDur] = useState(0.4)
+  const [arriving, setArriving] = useState<Size>('short')
   const [loop, setLoop] = useState(false)
 
-  const transition: Transition =
-    animType === 'spring'
-      ? { type: 'spring', bounce, visualDuration: springDur }
-      : { type: 'tween', duration: tweenDur, ease: ease === 'custom' ? bez : ease }
-  // Keep the latest config in a ref so `play` (and the loop) always read fresh values
-  // without being re-created mid-animation.
+  const transition = { type: 'tween' as const, duration: dur, ease: bez }
+  // Keep the latest config in a ref so play (and the loop) read fresh values.
   const cfgRef = useRef(transition)
   cfgRef.current = transition
   const loopRef = useRef(loop)
@@ -121,26 +109,24 @@ export function RevealPlayground({ onClose }: { onClose: () => void }) {
     const last = sc.querySelector<HTMLElement>('[data-arriving]')
     const noteH = last ? last.getBoundingClientRect().height : 80
     const end = sc.scrollHeight - sc.clientHeight
-    // Start one note-height short of the bottom (the arriving note just below the
-    // fold), then glide to the true bottom — exactly `useAppendReveal`'s geometry.
+    // Start one note-height short of the bottom (the arriving note just below the fold),
+    // then glide to the true bottom - exactly useAppendReveal's geometry.
     const start = Math.max(0, end - noteH)
     sc.scrollTop = start
-    // `cfgRef.current` is a valid motion transition; cast for the numeric `animate`
-    // overload (its `ease` union is narrower than our string|bezier control state).
     ctrlRef.current = animate(start, end, {
-      ...(cfgRef.current as object),
+      ...cfgRef.current,
       onUpdate: (v: number) => {
         sc.scrollTop = v
       },
       onComplete: () => {
         if (loopRef.current) loopTimerRef.current = window.setTimeout(play, 500)
       },
-      // biome-ignore lint/suspicious/noExplicitAny: dev tool — transition built from UI state, valid at runtime.
+      // biome-ignore lint/suspicious/noExplicitAny: dev tool - transition built from UI state, valid at runtime.
     } as any)
   }, [])
 
-  // Replay / close hotkeys. enableOnFormTags so they fire even while a slider/select
-  // (or the composer behind the overlay) has focus — Space/R always replay.
+  // Replay / close hotkeys. enableOnFormTags so they fire even while a slider/select (or
+  // the composer behind the overlay) has focus - Space/R always replay.
   const hkOpts = { enableOnFormTags: ['textarea', 'input', 'select'] as const }
   useHotkeys(
     'space',
@@ -165,6 +151,12 @@ export function RevealPlayground({ onClose }: { onClose: () => void }) {
   }, [])
 
   const transitionCode = JSON.stringify(transition)
+  const setPoint = (i: number, v: number) =>
+    setBez((b) => {
+      const next = [...b] as [number, number, number, number]
+      next[i] = v
+      return next
+    })
 
   return (
     <div
@@ -181,8 +173,8 @@ export function RevealPlayground({ onClose }: { onClose: () => void }) {
       {/* Dummy feed */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 24, minWidth: 0 }}>
         <div style={{ color: COL.dim, fontSize: 12, marginBottom: 8 }}>
-          reveal playground — <b style={{ color: COL.text }}>Space</b>/
-          <b style={{ color: COL.text }}>R</b> replay · <b style={{ color: COL.text }}>Esc</b> close
+          reveal playground - <b style={{ color: COL.text }}>Space</b>/
+          <b style={{ color: COL.text }}>R</b> replay - <b style={{ color: COL.text }}>Esc</b> close
         </div>
         <div
           ref={scrollerRef}
@@ -197,11 +189,11 @@ export function RevealPlayground({ onClose }: { onClose: () => void }) {
             flexDirection: 'column',
           }}
         >
-          {/* margin-top:auto bottom-anchors a short stack, like the real feed */}
+          {/* margin-top:auto bottom-anchors the stack, like the real feed */}
           <div style={{ marginTop: 'auto' }}>
             {BACKDROP.map((t, i) => (
               <div key={t} style={bubble()}>
-                {`${i + 1}· ${t}`}
+                {`${i + 1}. ${t}`}
               </div>
             ))}
             <div data-arriving="" style={bubble(true)}>
@@ -222,16 +214,15 @@ export function RevealPlayground({ onClose }: { onClose: () => void }) {
           overflowY: 'auto',
           display: 'flex',
           flexDirection: 'column',
-          gap: 16,
+          gap: 14,
         }}
       >
         <button type="button" data-testid="pg-play" onClick={play} style={btn(COL.accent)}>
-          ▶ Play (Space / R)
+          Play (Space / R)
         </button>
         <Row label="loop">
           <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} />
         </Row>
-
         <Row label="arriving note">
           <select
             value={arriving}
@@ -246,87 +237,51 @@ export function RevealPlayground({ onClose }: { onClose: () => void }) {
           </select>
         </Row>
 
-        <Row label="type">
+        <Row label="preset to curve">
           <select
-            value={animType}
-            onChange={(e) => setAnimType(e.target.value as 'spring' | 'tween')}
+            data-testid="pg-preset"
+            onChange={(e) => {
+              const p = PRESETS[e.target.value]
+              if (p) setBez([...p])
+            }}
             style={input()}
+            defaultValue=""
           >
-            <option value="spring">spring</option>
-            <option value="tween">tween (easing)</option>
+            <option value="" disabled>
+              load a preset...
+            </option>
+            {PRESET_KEYS.map((k) => (
+              <option key={k} value={k}>
+                {k}
+              </option>
+            ))}
           </select>
         </Row>
 
-        {animType === 'spring' ? (
-          <>
-            <Slider
-              label="bounce"
-              min={0}
-              max={1}
-              step={0.01}
-              value={bounce}
-              onChange={setBounce}
-            />
-            <Slider
-              label="visualDuration (s)"
-              min={0.1}
-              max={1.5}
-              step={0.01}
-              value={springDur}
-              onChange={setSpringDur}
-            />
-          </>
-        ) : (
-          <>
-            <Row label="easing">
-              <select
-                value={ease}
-                onChange={(e) => setEase(e.target.value as (typeof EASINGS)[number])}
-                style={input()}
-              >
-                {EASINGS.map((e) => (
-                  <option key={e} value={e}>
-                    {e}
-                  </option>
-                ))}
-              </select>
-            </Row>
-            {ease === 'custom' && (
-              <>
-                <BezierPreview bez={bez} />
-                {(['x1', 'y1', 'x2', 'y2'] as const).map((lbl, i) => (
-                  <Slider
-                    key={lbl}
-                    label={lbl}
-                    min={i % 2 === 0 ? 0 : -0.5}
-                    max={i % 2 === 0 ? 1 : 1.5}
-                    step={0.01}
-                    value={bez[i] ?? 0}
-                    onChange={(v) =>
-                      setBez((b) => {
-                        const next = [...b] as [number, number, number, number]
-                        next[i] = v
-                        return next
-                      })
-                    }
-                  />
-                ))}
-              </>
-            )}
-            <Slider
-              label="duration (s)"
-              min={0.1}
-              max={1.5}
-              step={0.01}
-              value={tweenDur}
-              onChange={setTweenDur}
-            />
-          </>
-        )}
+        <BezierPreview bez={bez} />
+        {(['x1', 'y1', 'x2', 'y2'] as const).map((lbl, i) => (
+          <Slider
+            key={lbl}
+            label={lbl}
+            min={i % 2 === 0 ? 0 : -1}
+            max={i % 2 === 0 ? 1 : 2}
+            step={0.01}
+            value={bez[i] ?? 0}
+            onChange={(v) => setPoint(i, v)}
+          />
+        ))}
+        <Slider
+          label="duration (s)"
+          min={0.1}
+          max={1.5}
+          step={0.01}
+          value={dur}
+          onChange={setDur}
+        />
 
         <div style={{ marginTop: 'auto' }}>
           <div style={{ color: COL.dim, fontSize: 11, marginBottom: 4 }}>
-            transition (copy into useAppendReveal):
+            transition (paste into useAppendReveal):
           </div>
           <code
             style={{
@@ -399,28 +354,41 @@ function Slider({
   )
 }
 
-/** Small SVG preview of the custom cubic-bezier curve (input t → output progress). */
+/**
+ * SVG preview of the cubic-bezier (input t to output progress). The vertical range is
+ * DYNAMIC: it expands to include any overshoot (control-point y outside [0,1]) so an
+ * extreme curve is never clipped. Dashed lines mark y=0 and y=1.
+ */
 function BezierPreview({ bez }: { bez: [number, number, number, number] }) {
   const [x1, y1, x2, y2] = bez
-  const S = 100
-  // y grows DOWN in SVG, and our easing y can exceed [0,1] (overshoot), so map y→up.
-  const py = (y: number) => S - y * S
+  const W = 160
+  const H = 160
+  const pad = 18
+  const yMax = Math.max(1, y1, y2) + 0.1
+  const yMin = Math.min(0, y1, y2) - 0.1
+  const range = yMax - yMin || 1
+  const px = (x: number) => pad + x * (W - 2 * pad)
+  const py = (y: number) => pad + ((yMax - y) / range) * (H - 2 * pad)
   return (
     <svg
-      width={S}
-      height={S}
+      width={W}
+      height={H}
       style={{
         background: COL.field,
         border: `1px solid ${COL.border}`,
         borderRadius: 8,
         alignSelf: 'center',
       }}
-      aria-label="bezier curve"
+      aria-label="cubic-bezier curve"
     >
-      <line x1={0} y1={py(0)} x2={S} y2={py(0)} stroke={COL.border} />
-      <line x1={0} y1={py(1)} x2={S} y2={py(1)} stroke={COL.border} />
+      <line x1={px(0)} y1={py(0)} x2={px(1)} y2={py(0)} stroke={COL.border} strokeDasharray="3 3" />
+      <line x1={px(0)} y1={py(1)} x2={px(1)} y2={py(1)} stroke={COL.border} strokeDasharray="3 3" />
+      <line x1={px(0)} y1={py(0)} x2={px(x1)} y2={py(y1)} stroke={COL.dim} />
+      <line x1={px(1)} y1={py(1)} x2={px(x2)} y2={py(y2)} stroke={COL.dim} />
+      <circle cx={px(x1)} cy={py(y1)} r={3} fill={COL.accent} />
+      <circle cx={px(x2)} cy={py(y2)} r={3} fill={COL.accent} />
       <path
-        d={`M 0 ${py(0)} C ${x1 * S} ${py(y1)} ${x2 * S} ${py(y2)} ${S} ${py(1)}`}
+        d={`M ${px(0)} ${py(0)} C ${px(x1)} ${py(y1)} ${px(x2)} ${py(y2)} ${px(1)} ${py(1)}`}
         fill="none"
         stroke={COL.accent}
         strokeWidth={2}

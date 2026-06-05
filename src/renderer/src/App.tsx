@@ -12,9 +12,12 @@ import { SettingsPanel } from './settings/SettingsPanel'
 import { ThreadView } from './thread/ThreadView'
 import { WindowFrame } from './topbar/WindowFrame'
 
-// DEV-only reveal-animation playground (mod+shift+R). Lazy + DEV-gated so it is never
-// bundled into production. @see src/renderer/src/dev/RevealPlayground.tsx
-const RevealPlayground = import.meta.env.DEV
+// Reveal-animation playground (mod+shift+R) — a dev tool. Enabled in `pnpm dev`, and in
+// a build via `VITE_PLAYGROUND=1 electron-vite build` (so it can be harness-driven); a
+// normal production build tree-shakes it out (both flags statically false).
+// @see src/renderer/src/dev/RevealPlayground.tsx
+const DEV_PLAYGROUND = import.meta.env.DEV || !!import.meta.env.VITE_PLAYGROUND
+const RevealPlayground = DEV_PLAYGROUND
   ? lazy(() => import('./dev/RevealPlayground').then((m) => ({ default: m.RevealPlayground })))
   : null
 
@@ -271,7 +274,7 @@ export function App() {
       e.preventDefault()
       setPlaygroundOpen((o) => !o)
     },
-    { enabled: import.meta.env.DEV, enableOnFormTags: ['textarea', 'input'] },
+    { enabled: DEV_PLAYGROUND, enableOnFormTags: ['textarea', 'input'] },
   )
 
   /**
@@ -490,7 +493,7 @@ export function App() {
         onJump={setFocusedId}
       />
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      {import.meta.env.DEV && playgroundOpen && RevealPlayground && (
+      {DEV_PLAYGROUND && playgroundOpen && RevealPlayground && (
         <Suspense fallback={null}>
           <RevealPlayground onClose={() => setPlaygroundOpen(false)} />
         </Suspense>
