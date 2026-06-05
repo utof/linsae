@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import type { Note, NoteType } from '../../shared/types'
 import { BacklinksPane } from './backlinks/BacklinksPane'
@@ -11,6 +11,12 @@ import { CommandPalette } from './palette/CommandPalette'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { ThreadView } from './thread/ThreadView'
 import { WindowFrame } from './topbar/WindowFrame'
+
+// DEV-only reveal-animation playground (mod+shift+R). Lazy + DEV-gated so it is never
+// bundled into production. @see src/renderer/src/dev/RevealPlayground.tsx
+const RevealPlayground = import.meta.env.DEV
+  ? lazy(() => import('./dev/RevealPlayground').then((m) => ({ default: m.RevealPlayground })))
+  : null
 
 /**
  * Root shell for v0.1 — composes Topbar, Feed, Composer, BacklinksPane, and
@@ -62,6 +68,7 @@ export function App() {
   const [focusedId, setFocusedId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [playgroundOpen, setPlaygroundOpen] = useState(false)
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null)
   const [draftBody, setDraftBody] = useState<string | null>(null)
   const [skipBannerDismissed, setSkipBannerDismissed] = useState(false)
@@ -256,6 +263,15 @@ export function App() {
     },
     { enableOnFormTags: ['textarea', 'input'] },
     [settingsOpen, paletteOpen, focusedId],
+  )
+  // DEV: toggle the reveal-animation playground (mod+shift+R).
+  useHotkeys(
+    'mod+shift+r',
+    (e) => {
+      e.preventDefault()
+      setPlaygroundOpen((o) => !o)
+    },
+    { enabled: import.meta.env.DEV, enableOnFormTags: ['textarea', 'input'] },
   )
 
   /**
@@ -474,6 +490,11 @@ export function App() {
         onJump={setFocusedId}
       />
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {import.meta.env.DEV && playgroundOpen && RevealPlayground && (
+        <Suspense fallback={null}>
+          <RevealPlayground onClose={() => setPlaygroundOpen(false)} />
+        </Suspense>
+      )}
     </div>
   )
 }
