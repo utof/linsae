@@ -48,7 +48,19 @@ const BIG = Array.from(
   (_, i) =>
     `paragraph ${i + 1} of a big multi-paragraph note — lots of text so the bubble is very tall and the make-room unroll has a long way to travel, which is when the overlap shows`,
 ).join('\n\n')
+// HUGE is deliberately TALLER than the viewport, so its glide (= noteH) would
+// exceed one screen — the condition for the big-note "jumps up then points to the
+// bottom" glitch (the reveal scrolls more than a full viewport).
+const HUGE = Array.from(
+  { length: 24 },
+  (_, i) =>
+    `paragraph ${i + 1} of a HUGE note taller than the whole viewport, so a naive scroll-glide that travels the full note height jumps the feed more than one screen`,
+).join('\n\n')
 const SIZES = [SHORT, WRAP, BIG, SHORT, BIG, WRAP]
+// ONLYSIZE=huge|big|wrap|short forces every burst send to one size — e.g.
+// `BURST=1 ONLYSIZE=huge` isolates a single over-tall reveal (the "jumps up then
+// points to the bottom" glitch).
+const ONLY = { short: SHORT, wrap: WRAP, big: BIG, huge: HUGE }[process.env.ONLYSIZE ?? '']
 
 const SHOT_DIR = 'scripts/.reveal-shots'
 const userDataDir = mkdtempSync(join(tmpdir(), 'linsae-reveal-stress-'))
@@ -185,6 +197,12 @@ try {
           ghostOverlapPx: Math.round(ghostOverlapPx),
           ghostOpacity,
           leftClips,
+          // scrollTop + the viewport height, to bound the reveal GLIDE distance: a
+          // healthy glide moves at most ~one viewport; a glide that scrolls from the
+          // very top to the bottom (a big note taller than the scroll range) is the
+          // "jumps up then points to the bottom" big-note glitch.
+          scrollTop: Math.round(scroller.scrollTop),
+          clientH: scroller.clientHeight,
           contentH: content.style.height, // inline; '' once handed back to React
           atBottom:
             Math.abs(scroller.scrollTop - (scroller.scrollHeight - scroller.clientHeight)) < 2,
@@ -210,7 +228,9 @@ try {
     // check (derived from the opening line) never rejects a burst send — SIZES reuses
     // the same BIG/WRAP bodies, whose identical first lines would otherwise collide
     // ("Note with the name already exists") and silently drop that append.
-    await win.keyboard.insertText(`b${i + 1}· ${SIZES[i % SIZES.length]} [burst ${i + 1}/${BURST}]`)
+    await win.keyboard.insertText(
+      `b${i + 1}· ${ONLY ?? SIZES[i % SIZES.length]} [burst ${i + 1}/${BURST}]`,
+    )
     await win.keyboard.press('Enter')
     if (GAP > 0) await win.waitForTimeout(GAP)
   }
@@ -405,6 +425,17 @@ try {
       : '(≤1 ⇒ reveals did NOT overlap — burst too slow to stress #66; fire faster)',
   )
   console.log('burst mean gap (ms)   :', meanGap, JSON.stringify(gaps), '(want ≪ 400 = one reveal)')
+  // Reveal GLIDE distance: how far scrollTop travelled across the sampling window. A
+  // healthy reveal glides at most ~one viewport (clientH); a glide ≫ clientH is the
+  // big-note "jumps from the top down to the bottom" glitch.
+  const scrollTops = rs.map((s) => s.scrollTop).filter((v) => v != null)
+  const clientH = rs.find((s) => s.clientH != null)?.clientH ?? 0
+  const glide = scrollTops.length ? Math.max(...scrollTops) - Math.min(...scrollTops) : 0
+  console.log(
+    'reveal glide (px)     :',
+    glide,
+    `(viewport=${clientH}; ≤ ~viewport ⇒ controlled; ≫ viewport ⇒ big-note jump-from-top)`,
+  )
   if (TRACE) {
     console.log('scrollTop writes      :', scrollSets.length)
     for (const s of scrollSets.slice(-12)) console.log('   set', s.v, '←', s.top)
@@ -424,7 +455,22 @@ try {
         Math.abs(settled.box.contentComputedH - settled.box.scrollerScrollH) <= 8,
         `contentH=${settled.box.contentComputedH} scrollH=${settled.box.scrollerScrollH} marginTop=${settled.box.contentMarginTop}`,
       ],
-      ['no two rows intersect', settled.overlaps.length === 0, JSON.stringify(settled.overlaps)],
+      [
+        'no two rows intersect (settled)',
+        settled.overlaps.length === 0,
+        JSON.stringify(settled.overlaps),
+      ],
+      // PER-FRAME intersection gates (not just settled): two notes must NEVER visually
+      // intersect at ANY frame. Committed rows (row↔row) is the hard layout invariant;
+      // the opaque flying ghost overlapping a note (it's pixel-identical, so it reads as
+      // a 2nd note) is the "overshoots like crazy" intersection — gated near-opaque so a
+      // fully-faded hand-off frame doesn't count.
+      ['no row↔row intersect (any frame)', peakOverlap <= 2, `peak=${peakOverlap}px`],
+      [
+        'ghost never overlaps a note',
+        landingGhostOverlap <= 40,
+        `near-opaque ghost↔row peak=${landingGhostOverlap}px`,
+      ],
       [
         'viewport fully covered (no white wall)',
         !settled.overflow || settled.maxBlank <= 8,
@@ -433,6 +479,10 @@ try {
       ['pinned to bottom', settled.atBottom, `scrollTop=${settled.scrollTop}/${settled.maxScroll}`],
       ['newest note visible', settled.lastOpacity === 1, `opacity=${settled.lastOpacity}`],
     ]
+    // (The reveal GLIDE distance is reported above as a diagnostic, not gated: a note
+    // taller than the viewport intentionally SNAPS to the bottom — moving >1 screen in
+    // one step — so the correctness gate for big notes is the settled state below
+    // (pinned to bottom, viewport fully covered, newest visible), not the glide size.)
     console.log('\n---- POST-SETTLE INVARIANTS ----')
     let failed = 0
     for (const [name, ok, detail] of inv) {
