@@ -1,83 +1,66 @@
 import type { Virtualizer } from '@tanstack/react-virtual'
 import { animate } from 'motion'
-import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { Note } from '../../../shared/types'
 
 /**
- * "Visual duration" (seconds) of the make-room reveal — how long the feed takes
- * to open the new note's slot. Kept slightly SHORTER than the ghost flight
- * (`useSendAnimation`, ~0.46s) so the slot has settled by the time the ghost
- * lands and hands off. Dev slow-mo via `window.__morphSlow`.
+ * "Visual duration" (seconds) of the make-room reveal — how long the feed takes to
+ * slide the new note up into place. Kept slightly SHORTER than the ghost flight
+ * (`useSendAnimation`, ~0.46s) so the feed has settled by the time the ghost lands
+ * and hands off. Dev slow-mo via `window.__morphSlow`.
  */
 const REVEAL_VISUAL_DURATION = 0.4
 
 /**
- * Makes a newly-sent note **push the whole feed up** as it stuffs itself into
- * place — the iMessage "the conversation makes room" half of the send animation
- * (the ghost flight is the other half, see `useSendAnimation`).
+ * Makes a newly-sent note **push the whole feed up** as it arrives — the iMessage
+ * "the conversation makes room" half of the send animation (the ghost flight is the
+ * other half, see `useSendAnimation`).
  *
- * How (height-unroll, mirroring the expand/collapse morph — ADR 0007): the new
- * row's REAL height is animated 0 → noteH by clipping the row node and driving
- * `virtualizer.resizeItem(index, h)` each frame, while `scroller.scrollTop` is
- * written DIRECTLY to keep the new row's bottom pinned to the viewport bottom.
- * The bottom-anchored feed (`Feed`'s `margin-top:auto` wrapper) then glides every
- * existing note up as the slot opens — on a short feed via flexbox, on a tall
- * feed via the scroll. The note is `opacity:0` (hidden by `Feed`) until the ghost
- * lands, so visually the slot just opens and the ghost dissolves onto it.
+ * How (scroll-glide — NO per-frame `resizeItem`): the appended row mounts at its
+ * FULL height (it's `opacity:0`, hidden by `Feed`, until the ghost lands, but it
+ * occupies its real layout slot from frame 0, so the virtualizer measures it ONCE,
+ * correctly). We then start the scroller one note-height short of the bottom (the
+ * new row just below the fold) and animate `scrollTop` up to the true bottom, so the
+ * whole feed glides up and the new note rises into view. The ghost dissolves onto it.
  *
- * Why NOT a content-wrapper `transform` (the previous implementation): a
- * `translateY`-down on the content INFLATES the scroller's `scrollHeight` (CSS
- * Overflow L3 §scrollable — transformed descendant boxes count as scrollable
- * overflow), and `virtualizer.scrollToEnd()` arms `reconcileScroll`'s rAF loop
- * which then chases `scrollTop` to that inflated bottom every frame, cancelling
- * the mask 1:1 → the note teleported instead of gliding. Driving the real item
- * height + writing `scrollTop` directly (never `scrollToEnd`) is the one path that
- * does NOT inflate `scrollHeight` and NEVER arms the reconcile loop — exactly why
- * the morph works cleanly. This realigns the code with ADR 0019's own guardrail
- * ("append make-room reveal … animates `scrollTop` / clip height imperatively").
+ * Why NOT the old height-unroll (per-frame `virtualizer.resizeItem(index, h)`):
+ * `resizeItem` has an UNCONDITIONAL `wasAtEnd` branch (when `anchorTo:'end'` + at
+ * end) that accumulates an internal `scrollAdjustments` virtual-core only clears on a
+ * REAL scroll event. Because the reveal drives `scrollTop` directly, it never cleared
+ * — so under overlapping sends the virtualizer's range desynced and rendered the
+ * WRONG row window (the #66 "white wall": blank band at top, "scrolling restores").
+ * This version never calls `resizeItem`, so that accumulation cannot happen. The
+ * caller additionally holds `anchorTo:'start'` for the whole send (`sendInFlight`, not
+ * just `revealing`) so even the new row's first measure can't fire `wasAtEnd`.
  *
- * During the reveal the caller flips the virtualizer to `anchorTo:'start'`,
- * suppresses its size-change scroll correction (the `revealing` flag, shared with
- * the morph), and detaches `measureElement` from the revealing row so its
- * ResizeObserver can't fight our per-frame `resizeItem`. `settle` releases all of
- * that and pins to the true bottom.
+ * Direct `scrollTop` writes (never `virtualizer.scrollToEnd()`) keep us off
+ * `reconcileScroll`'s self-correcting rAF loop, same as the expand/collapse morph.
  *
- * No-ops (the note just appears) for: reduced motion, a bulk/initial load (more
- * than one note added at once), the user being scrolled away from the bottom, a
- * zero-height row, or a missing scroller/content.
+ * No-ops (the note just appears) for: reduced motion, a bulk/initial load (more than
+ * one note added at once), the user scrolled away from the bottom, a zero-height row,
+ * a missing scroller, or a short feed with no scroll room to glide (it's already
+ * bottom-anchored, so the note is fully visible — nothing to push).
  *
  * @see adrs/0019-motion-animation-library.md
- * @see adrs/0007-animate-virtual-item-resize.md (the resizeItem+scrollTop lockstep this mirrors)
  * @see src/renderer/src/composer/useSendAnimation.tsx (the ghost-flight half)
+ * @see local_files/2026-06-03-send-animation-handoff.md (#66 root cause + why scroll-glide)
  */
 export function useAppendReveal(args: {
   // biome-ignore lint/suspicious/noExplicitAny: virtualizer is generic over the scroll element type; the hook only uses index-agnostic APIs.
   virtualizer: Virtualizer<any, any>
   scrollerEl: HTMLElement | null
-  /** The content wrapper (height = getTotalSize); we keep its CSS height in sync per frame. */
-  contentRef: RefObject<HTMLElement | null>
   notes: Note[]
-  /** Live flag the caller reads at render time to gate anchorTo/shouldAdjust/measureElement. */
+  /** Live flag the caller reads at render time to gate anchorTo / shouldAdjust. */
   revealingRef: { current: boolean }
-  /** Re-renders the caller so the gated virtualizer options + ref detach re-apply. */
+  /** Re-renders the caller so the gated virtualizer options re-apply. */
   setRevealing: (v: boolean) => void
-  /** Shared with the morph: pauses the scrollbar thumb while we drive layout. */
+  /** Shared with the morph: pauses the scrollbar thumb while we drive the scroll. */
   suppressThumbResizeRef: { current: boolean }
 }) {
-  const {
-    virtualizer,
-    scrollerEl,
-    contentRef,
-    notes,
-    revealingRef,
-    setRevealing,
-    suppressThumbResizeRef,
-  } = args
+  const { virtualizer, scrollerEl, notes, revealingRef, setRevealing, suppressThumbResizeRef } =
+    args
   const controlsRef = useRef<{ stop: () => void } | null>(null)
   const failTimerRef = useRef<number | undefined>(undefined)
-  // The in-flight reveal's row node + its final size, so `settle` can finalize
-  // (un-clip the row, commit the real size) even when fired by the fail-safe.
-  const ctxRef = useRef<{ node: HTMLElement; index: number; noteH: number } | null>(null)
   // Previous list shape, to detect a single append. Initialised to the first
   // render's value so the initial mount (empty → loaded list) is never an append.
   const prevRef = useRef<{ count: number; lastId: string | undefined }>({
@@ -85,33 +68,21 @@ export function useAppendReveal(args: {
     lastId: notes[notes.length - 1]?.id,
   })
 
-  // Force the reveal to its END state: row un-clipped at its real size, content
-  // height handed back to React, suppression released, pinned to the true bottom.
-  // Driven by the animation's `onComplete` AND a fail-safe timer, so a freshly-sent
-  // note can NEVER be left clipped below the fold if completion never fires. Idempotent.
+  // Force the reveal to its END state: suppression released, pinned to the true
+  // bottom. Driven by the animation's `onComplete` AND a fail-safe timer. Idempotent.
   const settle = useCallback(() => {
     if (failTimerRef.current !== undefined) {
       clearTimeout(failTimerRef.current)
       failTimerRef.current = undefined
     }
     controlsRef.current = null
-    const ctx = ctxRef.current
-    if (ctx) {
-      ctx.node.style.removeProperty('height')
-      ctx.node.style.removeProperty('overflow')
-      ctx.node.style.removeProperty('box-sizing')
-      virtualizer.resizeItem(ctx.index, ctx.noteH)
-      ctxRef.current = null
-    }
-    const content = contentRef.current
-    if (content) content.style.removeProperty('height') // hand height back to React (getTotalSize)
     revealingRef.current = false
     setRevealing(false)
     suppressThumbResizeRef.current = false
     // Pin to the true bottom with a DIRECT write — NOT virtualizer.scrollToEnd(),
-    // which arms reconcileScroll's self-correcting rAF loop (vc reconcileScroll).
+    // which arms reconcileScroll's self-correcting rAF loop.
     if (scrollerEl) scrollerEl.scrollTop = scrollerEl.scrollHeight
-  }, [contentRef, scrollerEl, revealingRef, setRevealing, suppressThumbResizeRef, virtualizer])
+  }, [scrollerEl, revealingRef, setRevealing, suppressThumbResizeRef])
 
   const stop = useCallback(() => {
     controlsRef.current?.stop()
@@ -131,81 +102,66 @@ export function useAppendReveal(args: {
     const appended = count === prev.count + 1 && lastId !== prev.lastId && prev.count > 0
     if (!appended) return
     const scroller = scrollerEl
-    const content = contentRef.current
-    if (!scroller || !content) return
+    if (!scroller) return
 
     const reduced =
       typeof window !== 'undefined' &&
       window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
     if (reduced) return
 
-    // Real height of the appended row from its DOM node (layout effect → the node
-    // is laid out; opacity:0 hiding does not affect layout, so the height is real).
+    // Real height of the appended row from its DOM node (layout effect → the node is
+    // laid out; opacity:0 hiding does not affect layout, so the height is real).
     const node = scroller.querySelector<HTMLElement>(`[data-index="${count - 1}"]`)
     if (!node) return
     const noteH = node.getBoundingClientRect().height
     if (noteH <= 0) return
 
-    // Only reveal when the user was pinned to the bottom (not browsing history).
-    // We check AFTER the append, when getTotalSize has already grown by ~noteH but
-    // the virtualizer's scroll hasn't necessarily followed yet — so the raw
-    // distance-from-end reads ≈ noteH for an at-bottom user, and a bare `isAtEnd()`
-    // (threshold 120) spuriously bails for a TALL note (its height alone exceeds
-    // 120 → the reveal no-ops and the note pops in). Widen the threshold by noteH so
-    // the test reflects the PRE-append distance: within scrollEndThreshold before?
+    // Only reveal when the user was pinned to the bottom (not browsing history). The
+    // append already grew getTotalSize by ~noteH but the scroll hasn't followed, so
+    // distance-from-end reads ≈ noteH; widen the threshold by noteH so the test
+    // reflects the PRE-append distance (a tall note alone exceeds the bare 120 floor).
     if (!virtualizer.isAtEnd(noteH + virtualizer.options.scrollEndThreshold)) return
 
     stop() // cancel + settle any previous in-flight reveal
+
+    // Scroll room to glide the new (full-size) row up into view. On a short,
+    // non-overflowing feed there is none — the row is already fully visible via the
+    // bottom-anchor — so skip the animation (the note simply appears).
+    const endScroll = scroller.scrollHeight - scroller.clientHeight
+    const startScroll = Math.max(0, endScroll - noteH)
+    if (endScroll - startScroll < 1) return
+
     revealingRef.current = true
-    setRevealing(true) // re-render → anchorTo:'start', size-correction + measureElement detached
+    setRevealing(true) // re-render → anchorTo:'start', size-correction suppressed
     suppressThumbResizeRef.current = true
-    // Flip the live anchor to 'start' NOW so the synchronous frame-0 resizeItem below
-    // can't fire virtual-core's unconditional `anchorTo:'end'` wasAtEnd scroll jump
-    // (the `revealing` re-render re-applies it; this covers the pre-render frame 0).
+    // Flip the live anchor to 'start' NOW (the `revealing` re-render re-applies it;
+    // this covers the synchronous frame below). With `anchorTo:'start'` virtual-core's
+    // unconditional `wasAtEnd` scroll jump never fires while we drive the scroll.
     virtualizer.options.anchorTo = 'start'
 
-    const index = count - 1
-    ctxRef.current = { node, index, noteH }
-
-    // One frame of the unroll: clip the row to height `h` (border-box, so it matches
-    // the measured value resizeItem expects), tell the virtualizer the row is `h`
-    // tall, sync the content wrapper's CSS height to the new getTotalSize, then pin
-    // the bottom with a DIRECT scrollTop write. No transform → no scrollHeight
-    // inflation; direct scrollTop → never arms reconcileScroll.
-    const applyFrame = (h: number) => {
-      const clamped = Math.max(0, Math.min(noteH, h))
-      node.style.boxSizing = 'border-box'
-      node.style.overflow = 'hidden'
-      node.style.height = `${clamped}px`
-      virtualizer.resizeItem(index, clamped)
-      content.style.height = `${virtualizer.getTotalSize()}px`
-      scroller.scrollTop = scroller.scrollHeight
-    }
-    // Frame 0 = the collapsed slot (h=0), applied SYNCHRONOUSLY before paint so the
-    // note never flashes at full height and nothing jumps: the feed looks exactly
-    // like the pre-send state, then the slot opens.
-    applyFrame(0)
+    // Start with the new full-size row just below the fold, then glide the feed up.
+    scroller.scrollTop = startScroll
 
     const duration = import.meta.env.DEV
       ? REVEAL_VISUAL_DURATION * (window.__morphSlow ?? 1)
       : REVEAL_VISUAL_DURATION
-    // `bounce: 0` — a spring with NO overshoot: an overshoot (h > noteH) would clip
-    // the row past its content (an empty gap), so the unroll must be monotonic.
-    controlsRef.current = animate(0, noteH, {
+    // `bounce: 0` — no overshoot past the true bottom (an overshoot would scroll into
+    // blank space below the last note).
+    controlsRef.current = animate(startScroll, endScroll, {
       type: 'spring',
       bounce: 0,
       visualDuration: duration,
-      onUpdate: applyFrame,
+      onUpdate: (v) => {
+        scroller.scrollTop = v
+      },
       onComplete: settle,
     })
-    // Fail-safe: if `onComplete` never fires, force the end state so the note is
-    // never left clipped. Scales with the dev slow-mo so it doesn't cut short.
+    // Fail-safe: if `onComplete` never fires, force the end state. Scales with slow-mo.
     if (failTimerRef.current !== undefined) clearTimeout(failTimerRef.current)
     failTimerRef.current = window.setTimeout(settle, duration * 1000 + 800)
   }, [
     notes,
     scrollerEl,
-    contentRef,
     virtualizer,
     stop,
     settle,

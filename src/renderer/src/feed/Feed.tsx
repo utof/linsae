@@ -298,7 +298,6 @@ export function Feed({
   useAppendReveal({
     virtualizer,
     scrollerEl,
-    contentRef,
     notes,
     revealingRef,
     setRevealing,
@@ -347,11 +346,16 @@ export function Feed({
   // unconditional (dist/esm/index.js). When collapsing a note near the bottom,
   // that branch rides the scroll up by the size delta AT THE SAME TIME as our
   // manual bottom-anchor — double-applying, so the viewport overshoots above all
-  // content and the feed blanks for the morph. The reveal hits the same hazard
-  // (its measured row corrects size as it scrolls in). Drop anchorTo to 'start'
-  // for the morph/reveal window so OUR scroll is the only thing moving; restore
-  // 'end' after. (anchorTo is read live as this.options.anchorTo.) ADR 0007 / 0019.
-  virtualizer.options.anchorTo = morphingIndexRef.current === null && !revealing ? 'end' : 'start'
+  // content and the feed blanks for the morph. The make-room reveal hits the same
+  // hazard the instant the new full-size row is FIRST measured (that one `wasAtEnd`
+  // would ride the scroll up by ~noteH and never be cleared — the #66 white wall).
+  // Drop anchorTo to 'start' for the morph AND the whole send (`sendInFlight`, which
+  // is true from ghost-launch THROUGH the append, so it covers the new row's first
+  // measure too — not just `revealing`, which is set only AFTER the append) so OUR
+  // scroll is the only thing moving; restore 'end' after. (anchorTo is read live as
+  // this.options.anchorTo.) ADR 0007 / 0019; see useAppendReveal for the #66 rationale.
+  virtualizer.options.anchorTo =
+    morphingIndexRef.current === null && !revealing && !sendInFlight ? 'end' : 'start'
   // Suppress the virtualizer's own `followOnAppend` auto-scroll while a send is in
   // flight: on the send's append, virtual-core's `_willUpdate` would `scrollToEnd()`
   // to the new note's ESTIMATE-inflated bottom (and arm its `reconcileScroll` rAF
@@ -591,16 +595,12 @@ export function Feed({
               return (
                 <div
                   key={vItem.key}
-                  // Detach measureElement while this item is morphing OR while the
-                  // make-room reveal is unrolling the just-appended (last) row —
-                  // both drive the row's size via resizeItem instead, and tanstack
-                  // forbids mixing measureElement + resizeItem on one item (ADR 0007;
-                  // useAppendReveal). The reveal target is always the last index.
-                  ref={
-                    vItem.index === morphingIndex || (revealing && vItem.index === notes.length - 1)
-                      ? undefined
-                      : virtualizer.measureElement
-                  }
+                  // Detach measureElement only while this item is MORPHING — the morph
+                  // drives the row's size via resizeItem, and tanstack forbids mixing
+                  // measureElement + resizeItem on one item (ADR 0007). The make-room
+                  // reveal no longer resizes the row (it glides the scroll, keeping the
+                  // row full-size — useAppendReveal), so the revealing row stays measured.
+                  ref={vItem.index === morphingIndex ? undefined : virtualizer.measureElement}
                   data-index={vItem.index}
                   style={{
                     position: 'absolute',
