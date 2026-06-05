@@ -21,6 +21,7 @@ docs/Trace-*.json
 # Playwright-Electron harness screenshot output (regenerated each run).
 scripts/.morph-shots/
 scripts/.send-shots/
+scripts/.reveal-shots/
 
 # Allow markdown in docs/ and adrs/ even though *.md is globally gitignored (CLAUDE.md rule)
 *.md

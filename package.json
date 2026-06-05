@@ -21,11 +21,12 @@
     "smoke:capture": "node scripts/capture-smoke.mjs",
     "smoke:thread": "node scripts/thread-smoke.mjs",
     "harness:send": "xvfb-run -a node scripts/send-harness.mjs",
+    "harness:reveal": "xvfb-run -a node scripts/reveal-stress.mjs",
     "doctor": "npx react-doctor@latest"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.100.14",
-    "@tanstack/react-virtual": "^3.13.26",
+    "@tanstack/react-virtual": "^3.14.1",
     "better-sqlite3": "^12.10.0",
     "cmdk": "^1.1.1",
     "js-yaml": "^4.1.1",
