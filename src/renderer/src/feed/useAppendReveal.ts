@@ -5,23 +5,22 @@ import type { Note } from '../../../shared/types'
 
 /**
  * "Visual duration" (seconds) of the make-room reveal — how long the feed takes to
- * slide the new note up into place. Kept slightly SHORTER than the ghost flight
- * (`useSendAnimation`, ~0.46s) so the feed has settled by the time the ghost lands
- * and hands off. Dev slow-mo via `window.__morphSlow`.
+ * slide the new note up into place. Dev slow-mo via `window.__morphSlow`.
  */
 const REVEAL_VISUAL_DURATION = 0.4
 
 /**
  * Makes a newly-sent note **push the whole feed up** as it arrives — the iMessage
- * "the conversation makes room" half of the send animation (the ghost flight is the
- * other half, see `useSendAnimation`).
+ * "the conversation makes room" entrance. This IS the send animation: the note rises
+ * into view via the scroll-glide; there is no flying ghost (ADR 0020 supersedes the
+ * send-ghost ADR 0018).
  *
- * How (scroll-glide — NO per-frame `resizeItem`): the appended row mounts at its
- * FULL height (it's `opacity:0`, hidden by `Feed`, until the ghost lands, but it
- * occupies its real layout slot from frame 0, so the virtualizer measures it ONCE,
- * correctly). We then start the scroller one note-height short of the bottom (the
- * new row just below the fold) and animate `scrollTop` up to the true bottom, so the
- * whole feed glides up and the new note rises into view. The ghost dissolves onto it.
+ * How (scroll-glide — NO per-frame `resizeItem`): the appended row mounts at its FULL
+ * height, so the virtualizer measures it ONCE, correctly. We then start the scroller
+ * one note-height short of the bottom (the new row just below the fold) and animate
+ * `scrollTop` up to the true bottom, so the whole feed glides up and the new note
+ * rises into view. A bigger note glides a longer distance in the fixed duration — it
+ * scrolls faster, matching "bigger note ⇒ stronger push".
  *
  * Why NOT the old height-unroll (per-frame `virtualizer.resizeItem(index, h)`):
  * `resizeItem` has an UNCONDITIONAL `wasAtEnd` branch (when `anchorTo:'end'` + at
@@ -42,8 +41,7 @@ const REVEAL_VISUAL_DURATION = 0.4
  * bottom-anchored, so the note is fully visible — nothing to push).
  *
  * @see adrs/0019-motion-animation-library.md
- * @see src/renderer/src/composer/useSendAnimation.tsx (the ghost-flight half)
- * @see local_files/2026-06-03-send-animation-handoff.md (#66 root cause + why scroll-glide)
+ * @see adrs/0020-remove-send-ghost.md (why the flying clone was removed)
  */
 export function useAppendReveal(args: {
   // biome-ignore lint/suspicious/noExplicitAny: virtualizer is generic over the scroll element type; the hook only uses index-agnostic APIs.
@@ -124,9 +122,11 @@ export function useAppendReveal(args: {
 
     stop() // cancel + settle any previous in-flight reveal
 
-    // Scroll room to glide the new (full-size) row up into view. On a short,
-    // non-overflowing feed there is none — the row is already fully visible via the
-    // bottom-anchor — so skip the animation (the note simply appears).
+    // The new note mounts full-size; glide the scroll from one note-height short of the
+    // bottom up to the true bottom, so the feed pushes up and the note rises into view.
+    // The duration is FIXED, so a bigger note glides a LONGER distance in the same time
+    // — it scrolls FASTER, matching the "bigger note ⇒ stronger push" intuition. (On a
+    // short, non-overflowing feed there's no room; the note simply appears.)
     const endScroll = scroller.scrollHeight - scroller.clientHeight
     const startScroll = Math.max(0, endScroll - noteH)
     if (endScroll - startScroll < 1) return

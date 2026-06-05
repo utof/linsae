@@ -4,7 +4,6 @@ import { useHotkeys } from 'react-hotkeys-hook'
 import type { Note, NoteType } from '../../shared/types'
 import { BacklinksPane } from './backlinks/BacklinksPane'
 import { Composer } from './composer/Composer'
-import { useSendAnimation } from './composer/useSendAnimation'
 import { Feed } from './feed/Feed'
 import { api } from './lib/api'
 import { parseYouTubeUrl } from './lib/parse-youtube-url'
@@ -83,22 +82,31 @@ export function App() {
   // body-preservation contract).
   const [successCount, setSuccessCount] = useState(0)
 
-  // Send-note ghost animation: the create-mode composer's card is the liftoff
-  // anchor, the Feed's inner scroller is the landing-geometry source. `launch`
-  // fires the ghost optimistically at submit (before the create mutation), and
-  // `ghost` is the portaled SendGhost node rendered below. Reduced motion or a
-  // missing Feed (first-ever send → empty-state placeholder) → no-op.
-  // @see docs/specs/v0.2.1-send-animation.md
-  const composerCardRef = useRef<HTMLDivElement | null>(null)
+  // Send-in-progress flag: true from the moment the user submits a new note until
+  // shortly after it has glided into place. The Feed reads it to suppress the
+  // virtualizer's own auto-scroll (`anchorTo:'end'` / `followOnAppend`) during the
+  // window where the make-room scroll-glide (`useAppendReveal`) owns the scroll —
+  // without it, the new row's first measure rides the scroll up and rapid sends
+  // desync the rendered range (the #66 white wall). The note simply rises into view
+  // via the glide; there is no flying ghost (ADR 0020 supersedes ADR 0018).
   const feedScrollerRef = useRef<HTMLDivElement | null>(null)
-  const {
-    launch: launchSend,
-    ghost: sendGhost,
-    inFlight: sendInFlight,
-  } = useSendAnimation({
-    cardRef: composerCardRef,
-    scrollerRef: feedScrollerRef,
-  })
+  const [sendInFlight, setSendInFlight] = useState(false)
+  const sendingTimerRef = useRef<number | undefined>(undefined)
+  useEffect(
+    () => () => {
+      if (sendingTimerRef.current !== undefined) clearTimeout(sendingTimerRef.current)
+    },
+    [],
+  )
+  const beginSend = () => {
+    setSendInFlight(true)
+    if (sendingTimerRef.current !== undefined) clearTimeout(sendingTimerRef.current)
+    // Cover create (async) + the ~0.4s reveal; the Feed's own `revealing` flag takes
+    // over for the glide itself, so this only needs to bridge submit → append. Scales
+    // with the dev slow-mo so debugging at `__morphSlow` keeps the suppression on.
+    const ms = import.meta.env.DEV ? 700 * (window.__morphSlow ?? 1) : 700
+    sendingTimerRef.current = window.setTimeout(() => setSendInFlight(false), ms)
+  }
 
   // Clear submitError whenever the composer's context changes (user clicks
   // edit on a different note, opens a dangling-wikilink draft, etc.). Without
@@ -435,15 +443,14 @@ export function App() {
                 // key unchanged so the user's text + cursor survive.
                 <Composer
                   key={`${draftBody ?? 'fresh'}-${successCount}`}
-                  cardRef={composerCardRef}
                   initialBody={draftBody ?? ''}
                   initialMode="claim"
                   error={submitError}
                   onClearError={() => setSubmitError(null)}
-                  // Optimistic launch: fire the ghost (reads the card rect NOW,
-                  // before onSuccess remounts the composer) THEN mutate.
+                  // Flag the send so the Feed suppresses its auto-scroll while the new
+                  // note glides in (see `beginSend`), THEN create it.
                   onSubmit={({ body, type }) => {
-                    launchSend(body, type)
+                    beginSend()
                     createMut.mutate({ body, type })
                   }}
                   onCancel={() => setDraftBody(null)}
@@ -467,9 +474,6 @@ export function App() {
         onJump={setFocusedId}
       />
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      {/* Send-note ghost — portals to document.body itself, so its position in
-          the tree is irrelevant; render it once here while a flight is live. */}
-      {sendGhost}
     </div>
   )
 }

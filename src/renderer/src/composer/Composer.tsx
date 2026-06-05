@@ -54,13 +54,9 @@ interface Props {
    */
   onPasteText?: (text: string) => boolean
   /**
-   * Optional ref to the composer card-root element — the liftoff anchor for the
-   * send-note ghost animation (its `getBoundingClientRect()` is the ghost's
-   * fixed-position start). Only the create-mode composer wires this; the
-   * edit-mode composer leaves it undefined (no animation on edits).
-   *
-   * @see src/renderer/src/composer/useSendAnimation.tsx
-   * @see docs/specs/v0.2.1-send-animation.md
+   * Optional ref to the composer card-root element. Currently unused at the call
+   * site (the send ghost that needed it was removed — ADR 0020); kept as the natural
+   * anchor for the planned composer→note morph (the endgame send animation).
    */
   cardRef?: Ref<HTMLDivElement>
 }

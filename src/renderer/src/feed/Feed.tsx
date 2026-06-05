@@ -21,21 +21,20 @@ interface Props {
   /** Called when the user opens the thread panel for a source note. */
   onOpenThread?: (id: string) => void
   /**
-   * Optional ref to the inner scroller element — the geometry source for the
-   * send-note ghost's landing target (its rect + scrollHeight/clientHeight feed
-   * `sendTarget`). App owns it via `useSendAnimation`. Merged into the existing
-   * internal scroller setup inside `handleScrollerRef`, never as a second JSX
-   * ref, so the memoized-callback identity (ADR 0004) is preserved.
+   * Optional ref to the inner scroller element. Merged into the existing internal
+   * scroller setup inside `handleScrollerRef`, never as a second JSX ref, so the
+   * memoized-callback identity (ADR 0004) is preserved.
    *
-   * @see src/renderer/src/composer/useSendAnimation.tsx
    * @see adrs/0004-memoize-virtuoso-prop-callbacks.md
    */
   scrollerRef?: Ref<HTMLDivElement>
   /**
-   * True while the send ghost is flying (App's `useSendAnimation`). The feed
-   * hides the just-created note (renders it `opacity:0`) until this flips false
-   * on landing, so the ghost and the real note are never on screen together
-   * (no "double note", no cross-fade — the ghost hands off to the note).
+   * True from the moment the user submits a new note until shortly after it has
+   * glided into place (App owns it via `beginSend`). The feed reads it to suppress
+   * the virtualizer's own auto-scroll (`anchorTo:'end'` / `followOnAppend`) so the
+   * make-room scroll-glide (`useAppendReveal`) owns the scroll while the note rises
+   * in — without it, the new row's first measure rides the scroll up and rapid sends
+   * desync the rendered range (the #66 white wall). No ghost (ADR 0020).
    */
   sendInFlight?: boolean
 }
@@ -131,17 +130,6 @@ const SCROLL_END_THRESHOLD = 120
  * which an incoming divider pushes the floating scroll pill out.
  */
 const DAY_DIVIDER_H = 34
-
-/**
- * Wall-clock cap (ms) on how long a just-sent note may stay hidden behind its
- * flying ghost (see `hiddenId`). The normal hand-off reveals it at ~flight end
- * (~460ms); this only fires if the hand-off is stuck — so a CREATED note can
- * never be permanently invisible. Generous enough to clear the real flight,
- * short enough that a stuck note reappears fast. In dev it's scaled by
- * `window.__morphSlow` (at the call site) to stay behind the also-scaled flight
- * — so slowing the animation to debug it never reveals the note early (doubling).
- */
-const HIDE_FAILSAFE_MS = 900
 
 /**
  * Renders the rolling feed of notes — oldest at the top, newest at the
@@ -265,17 +253,6 @@ export function Feed({
   // anchorTo re-apply.
   const [revealing, setRevealing] = useState(false)
   const revealingRef = useRef(false)
-  // The just-sent note's id, hidden (opacity:0) while its ghost is in flight so
-  // the two are never on screen together. Set when a note appends during a send;
-  // gated by `sendInFlight` at render time, so it self-clears when the ghost lands.
-  const [hiddenId, setHiddenId] = useState<string | null>(null)
-  const prevLastIdRef = useRef<string | undefined>(notes[notes.length - 1]?.id)
-  // Fail-safe so a CREATED note is never invisible: a hidden note is force-revealed
-  // after HIDE_FAILSAFE_MS of wall-clock even if the hand-off (sendInFlight→false)
-  // is slow (`window.__morphSlow` in dev) or never fires. The normal hand-off at
-  // ~flight end (460ms) wins this race in production; the cap only catches the
-  // pathological case (the bug where a note was created but stayed hidden).
-  const hideTimerRef = useRef<number | undefined>(undefined)
   // Collapsed-state geometry (item height + constant chrome), captured for free
   // when a note is EXPANDED — at that instant the note is still rendered
   // collapsed, so its pre-swap layout IS the collapse target. Reused on collapse
@@ -292,9 +269,10 @@ export function Feed({
     setMorphingIndex,
     suppressThumbResizeRef,
   })
-  // iMessage make-room: a freshly-sent note pushes the whole feed up as it stuffs
-  // in, instead of popping in. Translates the content wrapper (no scrollTop fight
-  // — ADR 0019). The ghost-flight half is App's useSendAnimation.
+  // iMessage make-room: a freshly-sent note pushes the whole feed up as it glides
+  // into place at the bottom, instead of popping in. It animates `scrollTop`
+  // directly (no scrollTop fight — ADR 0019), so the note rises into view. There is
+  // no flying ghost: the note is its own entrance (ADR 0020 supersedes ADR 0018).
   useAppendReveal({
     virtualizer,
     scrollerEl,
@@ -303,38 +281,6 @@ export function Feed({
     setRevealing,
     suppressThumbResizeRef,
   })
-  // Hide the just-sent note until its ghost lands (no double note). When a note
-  // arrives during a send, mark it hidden; when the send ends, clear (reveal).
-  // Between launch and the note's arrival, hiddenId stays null (cleared by the
-  // previous send's end), so the gap never hides the PREVIOUS newest note.
-  useLayoutEffect(() => {
-    const last = notes[notes.length - 1]
-    const prevLast = prevLastIdRef.current
-    prevLastIdRef.current = last?.id
-    if (sendInFlight && last && last.id !== prevLast) {
-      setHiddenId(last.id)
-      if (hideTimerRef.current !== undefined) clearTimeout(hideTimerRef.current)
-      // Scale the fail-safe by the dev slow-mo so it stays a BACKSTOP behind the
-      // (also-scaled) ghost flight — otherwise at `__morphSlow=10` the fixed 900ms
-      // reveals the real note ~3.7s before the 4600ms ghost lands, doubling the
-      // note on screen while debugging. Same idiom as the flight/reveal durations.
-      const failMs = import.meta.env.DEV
-        ? HIDE_FAILSAFE_MS * (window.__morphSlow ?? 1)
-        : HIDE_FAILSAFE_MS
-      hideTimerRef.current = window.setTimeout(() => setHiddenId(null), failMs)
-    } else if (!sendInFlight) {
-      setHiddenId(null)
-      if (hideTimerRef.current !== undefined) clearTimeout(hideTimerRef.current)
-    }
-  }, [notes, sendInFlight])
-  // Clear the fail-safe timer on unmount so it can't setState an unmounted feed.
-  useEffect(
-    () => () => {
-      if (hideTimerRef.current !== undefined) clearTimeout(hideTimerRef.current)
-    },
-    [],
-  )
-
   // Prevent the virtualizer's own scroll-position correction from fighting the
   // manual bottom-anchor during an active morph OR make-room reveal. ADR 0007 /
   // ADR 0019. Both drive scrollTop themselves; an estimate→measured size
@@ -614,10 +560,6 @@ export function Feed({
                     // Same rationale as `6564a3d` carried forward.
                     paddingTop: 6,
                     paddingBottom: 6,
-                    // Hide the just-sent note (still occupies layout, so the
-                    // make-room reveal measures its real height) until its ghost
-                    // lands — no double note, no fade. Instant toggle, no transition.
-                    opacity: sendInFlight && note.id === hiddenId ? 0 : 1,
                   }}
                 >
                   {dayFirsts.has(vItem.index) && (
