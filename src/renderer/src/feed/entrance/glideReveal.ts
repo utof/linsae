@@ -68,9 +68,16 @@ function revealTween(noteH: number, viewportH: number): Tween {
  * @see adrs/0019-motion-animation-library.md
  * @see adrs/0020-remove-send-ghost.md (why the flying clone was removed)
  */
-export function useGlideReveal(args: Omit<EntranceCtx, 'setWaveSettling'>) {
-  const { virtualizer, scrollerEl, notes, revealingRef, setRevealing, suppressThumbResizeRef } =
-    args
+export function useGlideReveal(args: Omit<EntranceCtx, 'setWaveSettling'> & { enabled: boolean }) {
+  const {
+    virtualizer,
+    scrollerEl,
+    notes,
+    revealingRef,
+    setRevealing,
+    suppressThumbResizeRef,
+    enabled,
+  } = args
   const controlsRef = useRef<{ stop: () => void } | null>(null)
   const failTimerRef = useRef<number | undefined>(undefined)
   // Previous list shape, to detect a single append. Initialised to the first
@@ -109,6 +116,12 @@ export function useGlideReveal(args: Omit<EntranceCtx, 'setWaveSettling'>) {
     const count = notes.length
     const lastId = notes[count - 1]?.id
     prevRef.current = { count, lastId }
+
+    // Only the selected strategy acts: the dispatcher always calls every runner (Rules of
+    // Hooks), so glide early-returns unless it is the active entrance. `prevRef` is still
+    // advanced above so a later switch BACK to glide doesn't misread the skipped appends as
+    // one giant append.
+    if (!enabled) return
 
     // Single append at the end, by a genuine new id, on a non-empty prior list.
     const appended = count === prev.count + 1 && lastId !== prev.lastId && prev.count > 0
@@ -184,6 +197,7 @@ export function useGlideReveal(args: Omit<EntranceCtx, 'setWaveSettling'>) {
     if (failTimerRef.current !== undefined) clearTimeout(failTimerRef.current)
     failTimerRef.current = window.setTimeout(settle, duration * 1000 + 800)
   }, [
+    enabled,
     notes,
     scrollerEl,
     virtualizer,
