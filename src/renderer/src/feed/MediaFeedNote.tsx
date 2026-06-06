@@ -1,9 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
-import { ChevronRight, MessagesSquare, Play } from 'lucide-react'
+import { ChevronRight, Link2, MessagesSquare, Trash2 } from 'lucide-react'
+import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { api } from '../lib/api'
+import { useClock24 } from '../lib/clock-pref'
 import { formatClock } from '../lib/time'
+import { formatTimeOnly } from '../lib/wallclock'
 import { useThreadNotes } from '../thread/useThreadNotes'
+import { type ContextMenuPos, NoteContextMenu } from './ContextMenu'
 
 /**
  * Presentational card for a YouTube video source note in the chronological feed.
@@ -26,34 +30,16 @@ export interface MediaFeedNoteProps {
   thumbnailUrl: string | null
   noteCount: number
   openQuestionCount: number
-  /** Wall-clock epoch ms when this note entered the feed. */
+  /** Wall-clock epoch ms — shown as time-of-day only (the feed's day divider carries the date). */
   createdAt: number
   onOpenThread: () => void
-}
-
-/**
- * Telegram-style timestamp: same-day → time only, older → short date + time.
- * Why: MediaFeedNote lives in the same feed as NoteBubble; timestamps must follow
- * the same convention so the user's eye isn't confused by two formats in one scroll.
- * Why: duplicated from NoteBubble instead of extracted to lib/time — the wall-clock
- * format is presentational preference, not a domain invariant; extracting would
- * violate the inline-fix gate (exported symbol change, >4 impl files).
- */
-function formatTimestamp(ms: number): string {
-  const d = new Date(ms)
-  const now = new Date()
-  const sameDay =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  return sameDay
-    ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
-    : d.toLocaleString(undefined, {
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-      })
+  /**
+   * Hover-toolbar actions (parity with NoteBubble's edit/copy/delete bar). When
+   * omitted the toolbar is hidden. `edit` is intentionally absent — a source note
+   * has no editable body; you annotate inside the thread, not on the card.
+   */
+  onDelete?: () => void
+  onCopyLink?: () => void
 }
 
 /**
@@ -72,9 +58,13 @@ function formatTimestamp(ms: number): string {
 export function MediaFeedNoteContainer({
   note,
   onOpenThread,
+  onDelete,
+  onCopyLink,
 }: {
   note: Note
   onOpenThread?: (id: string) => void
+  onDelete?: () => void
+  onCopyLink?: () => void
 }) {
   const videoId = note.source_locator?.video_id ?? ''
   const { data: meta } = useQuery({
@@ -93,6 +83,8 @@ export function MediaFeedNoteContainer({
       openQuestionCount={openQuestionCount}
       createdAt={note.created_at}
       onOpenThread={() => onOpenThread?.(note.id)}
+      {...(onDelete ? { onDelete } : {})}
+      {...(onCopyLink ? { onCopyLink } : {})}
     />
   )
 }
@@ -106,10 +98,54 @@ export function MediaFeedNote({
   openQuestionCount,
   createdAt,
   onOpenThread,
+  onDelete,
+  onCopyLink,
 }: MediaFeedNoteProps) {
+  const clock24 = useClock24()
+  const [hover, setHover] = useState(false)
+  const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null)
+  // Two-click delete arm, mirroring NoteBubble: deleting a video card removes the
+  // whole source note, so a single misclick over the thumbnail shouldn't nuke it.
+  const [deleteArmed, setDeleteArmed] = useState(false)
+  const armTimer = useRef<number | null>(null)
+  // Clear a pending arm timer on unmount so it can't setState a virtualised-out card.
+  useEffect(
+    () => () => {
+      if (armTimer.current !== null) clearTimeout(armTimer.current)
+    },
+    [],
+  )
+  const showToolbar = hover && (onDelete != null || onCopyLink != null)
+  const handleTrashClick = (e: MouseEvent) => {
+    e.stopPropagation()
+    if (deleteArmed) {
+      if (armTimer.current !== null) clearTimeout(armTimer.current)
+      setDeleteArmed(false)
+      onDelete?.()
+      return
+    }
+    setDeleteArmed(true)
+    armTimer.current = window.setTimeout(() => setDeleteArmed(false), 2000)
+  }
+
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: the card root only tracks hover to reveal the action toolbar; the actionable targets are the inner <button>s (thumbnail / open-notes / copy / delete).
     <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => {
+        setHover(false)
+        setDeleteArmed(false)
+      }}
+      onContextMenu={
+        onDelete && onCopyLink
+          ? (e) => {
+              e.preventDefault()
+              setContextMenu({ x: e.clientX, y: e.clientY })
+            }
+          : undefined
+      }
       style={{
+        position: 'relative',
         maxWidth: 360,
         background: 'var(--bg-0)',
         border: '1px solid var(--border-0)',
@@ -118,16 +154,22 @@ export function MediaFeedNote({
         fontFamily: 'var(--font-sans)',
       }}
     >
-      {/* 16:9 thumbnail region — dark fallback, optional image, play badge, duration chip */}
-      <div
+      {/* 16:9 thumbnail — click anywhere to open the thread; dark fallback, optional
+          image, duration chip. The play-badge overlay was removed (no inline playback
+          here — the thumbnail is a thread affordance, not a player). */}
+      <button
+        type="button"
+        aria-label={title ? `open notes for ${title}` : 'open video notes'}
+        onClick={onOpenThread}
         style={{
+          display: 'block',
           width: '100%',
           aspectRatio: '16 / 9',
           background: '#1c1c1e',
           position: 'relative',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
+          border: 0,
+          padding: 0,
+          cursor: 'pointer',
           overflow: 'hidden',
         }}
       >
@@ -144,21 +186,6 @@ export function MediaFeedNote({
             }}
           />
         )}
-        {/* Play badge overlay */}
-        <div
-          style={{
-            position: 'relative',
-            width: 38,
-            height: 38,
-            borderRadius: '50%',
-            background: 'rgba(255,255,255,0.16)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <Play size={16} color="#fff" />
-        </div>
         {/* Duration chip — only when durationSec is known */}
         {durationSec != null && (
           <span
@@ -177,10 +204,13 @@ export function MediaFeedNote({
             {formatClock(durationSec)}
           </span>
         )}
-      </div>
+      </button>
 
-      {/* Title + meta + bottom-right timestamp */}
-      <div style={{ padding: '10px 12px' }}>
+      {/* Title + channel. The bigger top padding (var(--space-5) = 16px, up from 10px)
+          opens the gap between the thumbnail and the title — and therefore between the
+          thumbnail and the channel below it. No wall-clock here anymore: the feed's day
+          dividers carry the date now (this used to read e.g. "Jun 1, 11:09 PM"). */}
+      <div style={{ padding: 'var(--space-5) var(--space-4) var(--space-4)' }}>
         <div
           style={{
             fontSize: 14,
@@ -191,6 +221,8 @@ export function MediaFeedNote({
         >
           {title}
         </div>
+        {/* channel + post time. Time-of-day only — no date (the feed's day divider
+            carries the date); duration lives only on the thumbnail chip. */}
         <div
           style={{
             display: 'flex',
@@ -200,26 +232,11 @@ export function MediaFeedNote({
             marginTop: 4,
           }}
         >
-          {/* channel · duration meta line; duration part omitted when unknown */}
-          <div
-            style={{
-              fontSize: 12,
-              color: 'var(--fg-2)',
-              fontFamily: 'var(--font-mono)',
-            }}
-          >
+          <div style={{ fontSize: 12, color: 'var(--fg-2)', fontFamily: 'var(--font-mono)' }}>
             {channel}
-            {durationSec != null ? ` · ${formatClock(durationSec)}` : null}
           </div>
-          {/* wall-clock bottom-right (Telegram-style) — no view count per I-3 */}
-          <span
-            style={{
-              fontSize: 11,
-              color: 'var(--fg-3)',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {formatTimestamp(createdAt)}
+          <span style={{ fontSize: 11, color: 'var(--fg-3)', whiteSpace: 'nowrap' }}>
+            {formatTimeOnly(createdAt, !clock24)}
           </span>
         </div>
       </div>
@@ -258,6 +275,74 @@ export function MediaFeedNote({
         </span>
         <ChevronRight size={15} color="var(--fg-3)" />
       </button>
+
+      {/* Hover toolbar — copy-link + arm-to-confirm delete. Positioned INSIDE the
+          card (top:6) rather than NoteBubble's top:-10 because the card root is
+          overflow:hidden (to clip the thumbnail corners), which would clip an
+          outset bar. */}
+      {showToolbar && (
+        // biome-ignore lint/a11y/noStaticElementInteractions: wrapper only stops click propagation to the card; the real targets are the inner <button>s.
+        // biome-ignore lint/a11y/useKeyWithClickEvents: inner buttons own keyboard activation; the wrapper has no keyboard semantics.
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: 'absolute',
+            top: 6,
+            right: 6,
+            display: 'flex',
+            gap: 2,
+            background: '#fff',
+            border: '1px solid var(--border-0)',
+            borderRadius: 4,
+            padding: 2,
+            boxShadow: 'var(--shadow-1)',
+          }}
+        >
+          {onCopyLink && (
+            <button
+              type="button"
+              title="copy link"
+              aria-label="copy link"
+              onClick={(e) => {
+                e.stopPropagation()
+                onCopyLink()
+              }}
+              style={{ border: 0, background: 'transparent', cursor: 'pointer', padding: 4 }}
+            >
+              <Link2 size={14} />
+            </button>
+          )}
+          {onDelete && (
+            <button
+              type="button"
+              title="delete video"
+              aria-label={deleteArmed ? 'confirm delete' : 'delete'}
+              onClick={handleTrashClick}
+              style={{
+                border: 0,
+                background: deleteArmed ? '#FDECEC' : 'transparent',
+                cursor: 'pointer',
+                padding: 4,
+                color: deleteArmed ? '#E5484D' : 'inherit',
+              }}
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Right-click menu — same shared component as NoteBubble (copy + delete; no
+          edit on a source card). Portaled to body, so the card's overflow:hidden
+          and the feed's transformed wrapper don't clip / mis-place it. */}
+      {contextMenu && onCopyLink && onDelete && (
+        <NoteContextMenu
+          pos={contextMenu}
+          onCopyLink={onCopyLink}
+          onDelete={onDelete}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
     </div>
   )
 }

@@ -17,7 +17,7 @@ const BASE_PROPS = {
   thumbnailUrl: 'https://example.com/thumb.jpg',
   noteCount: 12,
   openQuestionCount: 2,
-  createdAt: 1737000000000,
+  createdAt: new Date(2026, 5, 3, 14, 23, 0).getTime(), // 2:23 PM local
   onOpenThread: vi.fn(),
 }
 
@@ -64,5 +64,60 @@ describe('MediaFeedNote', () => {
     render(<MediaFeedNote {...BASE_PROPS} durationSec={2240} />)
     // formatClock(2240) = "37:20"
     expect(screen.getByText(formatClock(2240))).toBeInTheDocument()
+  })
+
+  it('(f) clicking the thumbnail opens the thread', () => {
+    const onOpenThread = vi.fn()
+    render(<MediaFeedNote {...BASE_PROPS} onOpenThread={onOpenThread} />)
+    // The thumbnail is its own button, distinct from the bottom "open video notes" row.
+    fireEvent.click(screen.getByRole('button', { name: /open notes for/i }))
+    expect(onOpenThread).toHaveBeenCalledTimes(1)
+  })
+
+  it('(g) duration is shown once — on the thumbnail chip, not duplicated in the meta line', () => {
+    render(<MediaFeedNote {...BASE_PROPS} durationSec={2240} />)
+    expect(screen.getAllByText(formatClock(2240))).toHaveLength(1)
+  })
+
+  it('(h) no hover toolbar when onDelete / onCopyLink are omitted', () => {
+    const { container } = render(<MediaFeedNote {...BASE_PROPS} />)
+    fireEvent.mouseEnter(container.firstChild as Element)
+    expect(screen.queryByRole('button', { name: /^delete$/i })).toBeNull()
+  })
+
+  it('(i) hover reveals delete; arm-then-confirm fires onDelete once', () => {
+    const onDelete = vi.fn()
+    const { container } = render(<MediaFeedNote {...BASE_PROPS} onDelete={onDelete} />)
+    // Hidden until hover.
+    expect(screen.queryByRole('button', { name: /^delete$/i })).toBeNull()
+    fireEvent.mouseEnter(container.firstChild as Element)
+    // First click arms (no delete yet).
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
+    expect(onDelete).not.toHaveBeenCalled()
+    // Second click (now labelled "confirm delete") fires.
+    fireEvent.click(screen.getByRole('button', { name: /confirm delete/i }))
+    expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  it('(k) shows the post time, time-of-day only (no date)', () => {
+    render(<MediaFeedNote {...BASE_PROPS} />)
+    expect(screen.getByText(/2:23/)).toBeInTheDocument()
+    // The day comes from the feed divider, never the card.
+    expect(screen.queryByText(/Jun|2026/)).toBeNull()
+  })
+
+  it('(j) right-click opens a context menu — delete fires directly, no edit item', () => {
+    const onDelete = vi.fn()
+    const onCopyLink = vi.fn()
+    const { container } = render(
+      <MediaFeedNote {...BASE_PROPS} onDelete={onDelete} onCopyLink={onCopyLink} />,
+    )
+    fireEvent.contextMenu(container.firstChild as Element)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    // A source card has no editable body → no Edit item.
+    expect(screen.queryByRole('menuitem', { name: /edit/i })).toBeNull()
+    // Menu delete is direct (no arm), unlike the hover toolbar.
+    fireEvent.click(screen.getByRole('menuitem', { name: /delete/i }))
+    expect(onDelete).toHaveBeenCalledTimes(1)
   })
 })

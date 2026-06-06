@@ -27,7 +27,8 @@
 
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { app, BrowserWindow, Menu, shell } from 'electron'
+import { performance } from 'node:perf_hooks'
+import { app, BrowserWindow, Menu, screen, session, shell } from 'electron'
 import { openDb } from './db/client'
 import { runMigrations } from './db/migrate'
 import { reconcile } from './db/reconcile'
@@ -35,6 +36,7 @@ import { NotesDir } from './files/notes-dir'
 import { DEV_MEDIA_PORT, startLoopbackShell } from './http-shell'
 import { registerAllIpc } from './ipc'
 import { secureWebPreferences } from './security'
+import { importYoutubeCookies } from './yt-cookies'
 
 // Why: single-instance lock must precede everything. A second launch should
 // focus the running window and exit, NOT race the first instance on the DB.
@@ -48,6 +50,15 @@ if (!gotLock) {
 }
 
 let mainWindow: BrowserWindow | null = null
+
+// Boot timeline origin, set when app.whenReady() fires. Logged at each serial
+// boot step + at the renderer's first paint (ready-to-show) so the dev console
+// shows where startup time goes. ready-to-show now fires on the #boot-splash's
+// first paint (fast) rather than after React mounts — the delta makes that
+// improvement visible. @see src/renderer/index.html (#boot-splash)
+let bootStart = 0
+const bootMark = (label: string) =>
+  console.log(`[boot] ${label} +${Math.round(performance.now() - bootStart)}ms`)
 
 app.on('second-instance', () => {
   if (mainWindow) {
@@ -77,9 +88,22 @@ app.on('second-instance', () => {
  * @see src/main/http-shell.ts (startLoopbackShell)
  */
 function createWindow(origin: string): BrowserWindow {
+  // Open on whatever monitor the cursor is on, not the primary display.
+  // Electron can't know which terminal launched it, but the cursor is a reliable
+  // proxy for "the screen I'm working on". Without an explicit x/y the window
+  // centers on the primary display regardless of launch context.
+  // @see https://www.electronjs.org/docs/latest/api/screen
+  const width = 1280
+  const height = 800
+  const cursorDisplay = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const area = cursorDisplay.workArea
+  const x = Math.round(area.x + (area.width - width) / 2)
+  const y = Math.round(area.y + (area.height - height) / 2)
   const win = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    width,
+    height,
+    x,
+    y,
     minWidth: 720,
     minHeight: 400,
     show: false,
@@ -92,9 +116,32 @@ function createWindow(origin: string): BrowserWindow {
     // autoHideMenuBar would be a no-op and is omitted.
     frame: false,
     title: '',
+    // Match the #boot-splash / app canvas so the window's pre-paint frame isn't
+    // a white flash when we show it before ready-to-show (the dev cap below).
+    backgroundColor: '#FFFFFF',
     webPreferences: secureWebPreferences(join(__dirname, '../preload/index.js')),
   })
-  win.on('ready-to-show', () => win.show())
+  win.on('ready-to-show', () => {
+    bootMark('renderer first paint (ready-to-show)')
+    win.show()
+  })
+  win.webContents.once('dom-ready', () => bootMark('renderer dom-ready'))
+  win.webContents.once('did-finish-load', () => bootMark('renderer did-finish-load'))
+  // Dev: ready-to-show lags seconds behind the static #boot-splash's first paint
+  // while Vite compiles the renderer module graph on a cold start (~4.2s here vs
+  // ~67ms of main-process boot). Gating win.show() on ready-to-show therefore
+  // keeps the splash painting into an invisible window. Show after a short cap so
+  // the splash is visible during the compile; backgroundColor above keeps any
+  // pre-splash frame from flashing white. In prod ready-to-show fires fast, so
+  // we keep the clean ready-to-show path and skip the cap entirely.
+  if (process.env.ELECTRON_RENDERER_URL) {
+    setTimeout(() => {
+      if (!win.isDestroyed() && !win.isVisible()) {
+        bootMark('show (dev splash cap, pre-ready-to-show)')
+        win.show()
+      }
+    }, 500)
+  }
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: 'deny' }
@@ -108,6 +155,7 @@ function createWindow(origin: string): BrowserWindow {
 }
 
 app.whenReady().then(async () => {
+  bootStart = performance.now()
   const userData = app.getPath('userData')
   const notesDir = join(userData, 'notes')
   const logsDir = join(userData, 'logs')
@@ -119,12 +167,15 @@ app.whenReady().then(async () => {
   if (!existsSync(attachmentsDir)) mkdirSync(attachmentsDir, { recursive: true })
 
   const db = openDb(dbPath)
+  bootMark('db open')
   runMigrations(db)
+  bootMark('migrations')
   const nd = new NotesDir(notesDir)
   const report = reconcile(db, nd, logsDir)
   // Surfaces the reconciler bucket counts on every launch; renderer reads
   // `report.skipped` via `system:getReconcileSkipped` to drive the banner.
   console.log(`reconciled: ${JSON.stringify(report)}`)
+  bootMark(`reconcile (${report.scanned} notes)`)
 
   registerAllIpc(db, nd, notesDir, logsDir, report.skipped, attachmentsDir)
 
@@ -156,6 +207,7 @@ app.whenReady().then(async () => {
   app.on('will-quit', () => {
     void shell.close()
   })
+  bootMark('http-shell listening')
 
   // Role-only menu: no visible bar (frame:false has no menu slot), but the
   // editMenu / viewMenu / windowMenu roles register the standard keyboard
@@ -167,6 +219,34 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([{ role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' }]),
   )
+
+  // YouTube consent bypass for the player webview (ADR 0016 follow-up). A cold
+  // `persist:yt-player` partition 302-redirects youtube.com/watch through
+  // consent.youtube.com to the home page, so the requested video never loads (the
+  // "it redirected me to the YouTube main page" symptom). Pre-seeding the accept-all
+  // SOCS cookie skips that wall. Value + rationale mirror yt-dlp's _initialize_consent
+  // ("accept all (required for mixes)"). Order-independent: runs once at boot, while the
+  // webview only navigates on thread-open, long after this.
+  // @see https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube/_base.py (SOCS)
+  void session
+    .fromPartition('persist:yt-player')
+    .cookies.set({
+      url: 'https://www.youtube.com',
+      name: 'SOCS',
+      value: 'CAI',
+      domain: '.youtube.com',
+      path: '/',
+      secure: true,
+      httpOnly: false,
+      expirationDate: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 395,
+    })
+    .catch((e) => console.warn('[main] SOCS consent cookie set failed', e))
+
+  // Opt-in YouTube login via imported cookies (sidesteps Google's webview-login block).
+  // No-op unless a cookies file exists and the partition isn't already authenticated. The
+  // interactive sign-in window + cookie-replace live in Settings (youtube:* IPC, ADR 0017).
+  void importYoutubeCookies()
+
   mainWindow = createWindow(shell.origin)
   // Reuse the same shell when macOS re-activates the app with no windows open.
   // Do NOT restart the shell — it's already bound and listening.
@@ -177,4 +257,44 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+// Full webview security guard (ADR 0016): clamp guest webPreferences, reject
+// non-YouTube attaches, confine guest navigation, and deny all popups.
+// Why here (not in createWindow): web-contents-created fires for ALL windows
+// and guest webviews alike, so this is the correct attachment point per the
+// Electron security docs.
+// @see https://www.electronjs.org/docs/latest/tutorial/security#12-verify-webview-options-before-creation
+// Hostname-suffix allowlist for guest navigation. Anchored to the END of the
+// hostname so `evil-youtube.com.attacker.net` is rejected (a bare substring match
+// would let it through). Includes the Google sign-in/consent domains so the manual
+// consent / login flow (spec §8 — not automated) can complete inside the webview.
+const GUEST_HOST_ALLOW =
+  /(?:^|\.)(?:youtube\.com|youtube-nocookie\.com|youtu\.be|google\.com|googleapis\.com|gstatic\.com|ggpht\.com|googleusercontent\.com)$/
+
+app.on('web-contents-created', (_e, contents) => {
+  contents.on('will-attach-webview', (event, prefs, params) => {
+    delete prefs.preload
+    prefs.nodeIntegration = false
+    prefs.contextIsolation = true
+    prefs.sandbox = true
+    // The player webview is created src-less and navigated via load() afterwards,
+    // so an empty src at attach time is legitimate — only block a NON-empty src
+    // that isn't YouTube. Runtime navigation is confined by will-navigate below.
+    const src = params.src ?? ''
+    if (src && !/^https:\/\/(www\.)?youtube\.com\//.test(src)) event.preventDefault()
+  })
+  if (contents.getType() === 'webview') {
+    contents.on('will-navigate', (event, url) => {
+      let host = ''
+      try {
+        host = new URL(url).hostname
+      } catch {
+        event.preventDefault()
+        return
+      }
+      if (!GUEST_HOST_ALLOW.test(host)) event.preventDefault()
+    })
+    contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  }
 })

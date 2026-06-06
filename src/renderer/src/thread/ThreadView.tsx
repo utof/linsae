@@ -1,20 +1,32 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronLeft, Clock, Film } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { ChevronLeft, Clock, Columns2, Film, Rows2 } from 'lucide-react'
+import {
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
+import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
+import { ScrollDatePill } from '../feed/DatePills'
 import { api } from '../lib/api'
 import { mediaUrlFromPath } from '../lib/media-url'
-import { getPlayer } from '../yt/playerSingleton'
+import { getPlayer, setPlayerInteractive } from '../yt/playerSingleton'
 import { usePlayer } from '../yt/usePlayer'
 import { JumpPill } from './JumpPill'
 import { Rail } from './Rail'
-import { activeClusterIndex, jumpPillVisible, markerPositions } from './rail-layout'
+import { activeClusterIndex, jumpPillDirection, markerPositions } from './rail-layout'
 import { ThreadComposer } from './ThreadComposer'
 import { TransportBar } from './TransportBar'
 import { useThreadNotes } from './useThreadNotes'
 
 /** ms the accent flash ring stays on a cluster after follow-scroll / click-to-seek. */
 const FLASH_MS = 600
+
+/** Playback-rate cycle for the transport speed badge. */
+const RATES = [1, 1.25, 1.5, 1.75, 2]
 
 /**
  * Centered content column width — matches ThreadView.jsx in the design-system
@@ -24,6 +36,20 @@ const FLASH_MS = 600
  * align correctly when the Rail lands in D4.
  */
 const COL = 520
+
+/** Smallest the player unit (video + transport) can be dragged down to. */
+const MIN_VIDEO_W = 240
+
+/** Split-view left-pane bounds (px). Max is `rowWidth - MIN_NOTES_W` at drag time. */
+const MIN_SPLIT_W = 320
+const MIN_NOTES_W = 360
+const DEFAULT_SPLIT_W = 480
+
+/**
+ * Spring-overshoot easing for the resize-handle thicken-on-hover, matched to the
+ * custom scrollbar thumb (ScrollArea) so the divider grows with the same feel.
+ */
+const SPRING_EASE = 'cubic-bezier(0.34, 1.56, 0.64, 1)'
 
 /**
  * ThreadView — shell for a single video-annotation thread.
@@ -93,7 +119,11 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   useEffect(() => {
     if (!videoId || duration == null || durationWrittenRef.current) return
     durationWrittenRef.current = true
-    void api.videoSources.upsert(videoId, { durationSec: duration })
+    // Round: the guest reports video.duration as a float (e.g. 213.04) but the
+    // VideoSourcesUpsertInput Zod schema requires an int (zod-schemas.ts §durationSec).
+    // The float is kept everywhere else (the scrubber needs sub-second precision); we
+    // only round at the persist boundary.
+    void api.videoSources.upsert(videoId, { durationSec: Math.round(duration) })
   }, [videoId, duration])
 
   // ── sort + thread notes ───────────────────────────────────────────────────
@@ -105,15 +135,115 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
 
   const [followOn, setFollowOn] = useState(true)
 
+  // ── resizable player ────────────────────────────────────────────────────────
+  // Drag the handle below the player to scale the whole player unit (video +
+  // transport) between MIN_VIDEO_W and COL. The video keeps 16:9, so a narrower
+  // unit is also shorter — that frees vertical space the notes column (flex:1)
+  // immediately absorbs. Width-based (not height-based) keeps the image whole
+  // and the transport bar aligned to the video. Drag DOWN = grow, UP = shrink.
+  const [videoW, setVideoW] = useState<number | null>(null)
+  const videoWidth = videoW ?? COL
+  const onResizeStart = useCallback(
+    (e: ReactPointerEvent) => {
+      e.preventDefault()
+      // Make the <webview> click-through for the drag so it can't swallow the pointer
+      // stream (frozen drag + stuck pointerup). Restored in onUp. See setPlayerInteractive.
+      setPlayerInteractive(false)
+      const startY = e.clientY
+      const startW = videoW ?? COL
+      const onMove = (ev: PointerEvent) => {
+        const dy = ev.clientY - startY
+        setVideoW(Math.max(MIN_VIDEO_W, Math.min(COL, startW + dy * (16 / 9))))
+      }
+      const onUp = () => {
+        setPlayerInteractive(true)
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+      }
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+    },
+    [videoW],
+  )
+
+  // ── layout: stacked (video over notes) vs split (video beside notes) ─────────
+  // Split anticipates a future left sidebar — the player becomes a left pane the
+  // user can size with a vertical divider, leaving the notes pane to flex. The
+  // <webview> is pinned to <body> and NEVER re-parented (moving it destroys its
+  // guest — electron#9529); the toggle remounts the host placeholder, so we just
+  // re-point the position-sync at the new placeholder after each switch.
+  const [layout, setLayout] = useState<'stacked' | 'split'>('stacked')
+  const [splitW, setSplitW] = useState<number | null>(null)
+  const splitWidth = splitW ?? DEFAULT_SPLIT_W
+  const rowRef = useRef<HTMLDivElement>(null)
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-point sync on layout switch; hostRef is stable
+  useEffect(() => {
+    if (hostRef.current) player.mount(hostRef.current)
+  }, [layout])
+
+  const onSplitResizeStart = useCallback(
+    (e: ReactPointerEvent) => {
+      e.preventDefault()
+      // Same webview click-through guard as the stacked handle — this is the layout
+      // where the handle sits right beside the video, so the drag crosses it constantly.
+      setPlayerInteractive(false)
+      const startX = e.clientX
+      const startW = splitW ?? DEFAULT_SPLIT_W
+      const rowW = rowRef.current?.getBoundingClientRect().width ?? 1200
+      const max = Math.max(MIN_SPLIT_W, rowW - MIN_NOTES_W)
+      const onMove = (ev: PointerEvent) => {
+        setSplitW(Math.max(MIN_SPLIT_W, Math.min(max, startW + (ev.clientX - startX))))
+      }
+      const onUp = () => {
+        setPlayerInteractive(true)
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+      }
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+    },
+    [splitW],
+  )
+
+  // ── playback rate (F1) ──────────────────────────────────────────────────────
+  // Cycle through a fixed sequence on each speed-badge click and push the new
+  // rate to the player. Kept here (not in TransportBar) so the badge stays a
+  // pure presentational readout.
+  const [rate, setRate] = useState(1)
+  const cycleRate = useCallback(() => {
+    setRate((r) => {
+      const next = RATES[(RATES.indexOf(r) + 1) % RATES.length] ?? 1
+      void player.setPlaybackRate(next)
+      return next
+    })
+  }, [player])
+
   // ── follow auto-scroll · jump-pill · flash (spec §319–322) ──────────────────
   // The active cluster is the one the playhead currently sits in. `scrollRef`
   // owns the scrolling notes column; `flashClusterIdx` paints a transient accent
   // ring on a cluster after follow-scroll / click-to-seek (cleared after FLASH_MS).
   const activeIdx = activeClusterIndex(clusters, currentTime)
   const scrollRef = useRef<HTMLDivElement>(null)
+  // The notes scroller, captured as state so the custom-scrollbar driver can
+  // attach to it. The ref mirror (scrollRef) stays for scrollIntoView/measure.
+  // The scroller is full-width (so the rail gutter's negative offsets aren't
+  // clipped); the native bar is hidden and the custom thumb is drawn over the
+  // centered column instead — matching the feed's center-only scrollbar.
+  const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null)
+  const setScroller = useCallback((el: HTMLDivElement | null) => {
+    scrollRef.current = el
+    setScrollerEl(el)
+    if (el) {
+      el.classList.add('scroll-area-inner')
+      el.style.scrollbarWidth = 'none'
+    }
+  }, [])
+  const thumb = useScrollThumb(scrollerEl)
   const [flashClusterIdx, setFlashClusterIdx] = useState(-1)
   const flashTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const [pillVisible, setPillVisible] = useState(false)
+  // null = hidden; 'up'/'down' = playhead is above/below the viewport.
+  const [pillDir, setPillDir] = useState<'up' | 'down' | null>(null)
 
   // Scroll a cluster's row into view by its data-cluster-index, then flash it.
   // Why a selector (not refs): the row lives inside Rail; addressing it by a
@@ -145,13 +275,13 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     const container = scrollRef.current
     const row = container?.querySelector(`[data-cluster-index="${activeIdx}"]`)
     if (!container || !row) {
-      setPillVisible(false)
+      setPillDir(null)
       return
     }
     const view = container.getBoundingClientRect()
     const playheadY = row.getBoundingClientRect().top
-    setPillVisible(
-      jumpPillVisible({
+    setPillDir(
+      jumpPillDirection({
         mode: sortMode,
         followOn,
         playheadY,
@@ -165,6 +295,33 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   useEffect(() => {
     measurePill()
   }, [measurePill])
+
+  // ── floating date pill (capture view only) ──────────────────────────────────
+  // Capture order is chronological, so the notes carry `data-day` (Rail) and we
+  // label the pill with the topmost visible note's day, fading 800ms after scroll
+  // stops — same idea as the feed's ScrollDatePill, but DOM-measured (the thread
+  // isn't virtualized). Video order has no date monotonicity, so the pill is off there.
+  const [datePill, setDatePill] = useState<string | null>(null)
+  const [datePillVisible, setDatePillVisible] = useState(false)
+  const datePillIdleRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const updateDatePill = useCallback(() => {
+    if (sortMode !== 'capture') return
+    const el = scrollRef.current
+    if (!el) return
+    const top = el.getBoundingClientRect().top
+    const days = Array.from(el.querySelectorAll<HTMLElement>('[data-day]'))
+    const topDay = days.find((d) => d.getBoundingClientRect().bottom > top + 1)
+    setDatePill(topDay?.dataset.day ?? null)
+    setDatePillVisible(true)
+    clearTimeout(datePillIdleRef.current)
+    datePillIdleRef.current = setTimeout(() => setDatePillVisible(false), 800)
+  }, [sortMode])
+  const onNotesScroll = useCallback(() => {
+    measurePill()
+    updateDatePill()
+  }, [measurePill, updateDatePill])
+  // Clear the date-pill idle timer on unmount.
+  useEffect(() => () => clearTimeout(datePillIdleRef.current), [])
 
   // Unmount cleanup: clear the flash timer so a pending setTimeout cannot call
   // setFlashClusterIdx on an unmounted tree. React 19 makes this a no-op in
@@ -182,16 +339,19 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     thumbnailUrl: string
     t: number
   } | null>(null)
+  // Surfaces the last failed post (e.g. duplicate-slug) in the composer, mirroring
+  // the feed's inline error UX. Cleared on the next keystroke via onClearError.
+  const [postError, setPostError] = useState<string | null>(null)
 
-  // ⌘⇧C / camera button: screenshot the live iframe rect at the current time.
-  // No-op when no player is mounted (getIframeRect → null). On failure (e.g. the
+  // ⌘⇧C / camera button: screenshot the live webview rect at the current time.
+  // No-op when no player is mounted (getMediaRect → null). On failure (e.g. the
   // main-process 0-area guard, #34) we leave pendingFrame untouched so no junk
   // chip appears. Why enableOnFormTags is OMITTED: the hotkey must NOT fire while
   // the composer textarea is focused (contrast App.tsx's mod+k which opts in).
   // @issue utof/linsae#34
   const onCapture = async () => {
     const player = getPlayer()
-    const rect = player.getIframeRect()
+    const rect = player.getMediaRect()
     if (!rect) return
     try {
       const t = await player.getCurrentTime()
@@ -236,149 +396,95 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     },
     onSuccess: () => {
       setPendingFrame(null)
+      setPostError(null)
       void queryClient.invalidateQueries({ queryKey: ['notes'] })
       void queryClient.invalidateQueries({ queryKey: ['thread', noteId] })
     },
+    // Surface failures (duplicate slug, empty-body gate, etc.) inline in the
+    // composer instead of failing silently — same contract as the feed.
+    onError: (err: Error) => setPostError(err.message),
   })
 
   // ── derived transport values ──────────────────────────────────────────────
 
-  const markers = markerPositions(sorted, duration).map((m) => m.t)
+  // Memoized so the array identity is stable across playhead ticks (sorted is
+  // now memoized in useThreadNotes); otherwise TransportBar gets a fresh markers
+  // array every ~5Hz tick. See #51.
+  const markers = useMemo(
+    () => markerPositions(sorted, duration).map((m) => m.t),
+    [sorted, duration],
+  )
 
   // ── render ────────────────────────────────────────────────────────────────
 
-  return (
-    <div
-      style={{
-        height: '100%',
-        minHeight: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        position: 'relative',
-        background: 'var(--bg-0)',
-      }}
-    >
-      {/* ── 1. Slim top bar ─────────────────────────────────────────────── */}
-      <header
-        style={{
-          flex: '0 0 auto',
-          height: 46,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 10,
-          padding: '0 16px',
-          borderBottom: '1px solid var(--border-0)',
-        }}
-      >
-        <button
-          type="button"
-          aria-label="back"
-          onClick={onClose}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: 28,
-            height: 28,
-            border: 0,
-            background: 'transparent',
-            cursor: 'pointer',
-            borderRadius: 'var(--r-2)',
-            color: 'var(--fg-2)',
-            padding: 0,
-            flexShrink: 0,
-          }}
-        >
-          <ChevronLeft size={17} />
-        </button>
-        <div style={{ minWidth: 0 }}>
-          <div
-            style={{
-              fontSize: 13,
-              fontWeight: 500,
-              color: 'var(--fg-0)',
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-          >
-            {title}
-          </div>
-        </div>
-      </header>
-
-      {/* ── 2. Pinned player region ─────────────────────────────────────── */}
+  // Player (video + transport) — rendered once in whichever layout is active.
+  const playerContent = (
+    <>
       <div
         style={{
-          flex: '0 0 auto',
-          padding: '14px 24px 12px',
-          borderBottom: '1px solid var(--border-0)',
+          width: '100%',
+          aspectRatio: '16 / 9',
+          background: '#1c1c1e',
+          borderRadius: 'var(--r-4) var(--r-4) 0 0',
+          overflow: 'hidden',
         }}
       >
-        <div style={{ maxWidth: COL, margin: '0 auto' }}>
-          {/* 16:9 container — the singleton's iframe re-parents into hostRef */}
-          <div
-            style={{
-              width: '100%',
-              aspectRatio: '16 / 9',
-              background: '#1c1c1e',
-              borderRadius: 'var(--r-4) var(--r-4) 0 0',
-              overflow: 'hidden',
-            }}
-          >
-            <div
-              ref={hostRef}
-              data-testid="player-host"
-              style={{ width: '100%', height: '100%' }}
-            />
-          </div>
-          <TransportBar
-            state={state}
-            currentTime={currentTime}
-            duration={duration}
-            rate={1}
-            markers={markers}
-            followOn={followOn}
-            onPlayPause={() => {
-              if (state === 'playing') {
-                player.pause()
-              } else {
-                player.play()
-              }
-            }}
-            onSeek={(s) => {
-              void player.seekTo(s)
-            }}
-            onRate={() => {
-              // Rate cycling deferred to F1; no-op shell here.
-            }}
-            onToggleFollow={() => {
-              setFollowOn((v) => !v)
-            }}
-          />
-        </div>
+        <div ref={hostRef} data-testid="player-host" style={{ width: '100%', height: '100%' }} />
       </div>
+      <TransportBar
+        state={state}
+        currentTime={currentTime}
+        duration={duration}
+        rate={rate}
+        markers={markers}
+        followOn={followOn}
+        onPlayPause={() => {
+          if (state === 'playing') {
+            player.pause()
+          } else {
+            player.play()
+          }
+        }}
+        onSeek={(s) => {
+          void player.seekTo(s)
+        }}
+        onRate={cycleRate}
+        onToggleFollow={() => {
+          setFollowOn((v) => !v)
+        }}
+        onFullscreen={() => {
+          // Trigger YouTube's native fullscreen (the guest's own button) — see
+          // playerSingleton.toggleFullscreen. Fullscreening the host wrapper instead
+          // left the page chrome visible: the player's fixed-fill is trapped in an
+          // ancestor stacking context in-page, and native fullscreen escapes it.
+          player.toggleFullscreen()
+        }}
+      />
+    </>
+  )
 
-      {/* ── 3. Scrollable content column (relative frame anchors the pill) ── */}
-      <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex' }}>
+  // Sort row + scrollable notes + composer — the right side in split layout, the
+  // lower stack in stacked. Internals are identical in both layouts.
+  const notesPane = (
+    <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      <div
+        // overflow:hidden CONTAINS the feed: the video-rail gutter (negative-offset
+        // timestamps/dots) and the active-note box-shadow rings draw outside the inner
+        // scroller, and without this they spilled left over the divider line and down
+        // over the composer's top border (worst in the narrow split pane). The inner
+        // scroller still owns the actual scrolling; this only clips the overflow.
+        style={{ flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden' }}
+        onPointerEnter={thumb.onAreaEnter}
+        onPointerLeave={thumb.onAreaLeave}
+        onPointerMove={thumb.onAreaPointerMove}
+      >
         <div
-          ref={scrollRef}
+          ref={setScroller}
           data-testid="thread-scroll"
-          onScroll={measurePill}
-          style={{
-            flex: 1,
-            minHeight: 0,
-            overflowY: 'auto',
-            padding: '16px 24px 10px',
-          }}
+          onScroll={onNotesScroll}
+          style={{ height: '100%', overflowY: 'auto', padding: '4px 24px 10px' }}
         >
           <div style={{ maxWidth: COL, margin: '0 auto' }}>
-            {/* SortPill: toggles between video-time and capture-time order */}
-            <SortPill
-              sortMode={sortMode}
-              onToggle={() => setSortMode((m) => (m === 'video' ? 'capture' : 'video'))}
-            />
-
             {/* The thread rendering: video-order rail (default) or capture feed. */}
             <Rail
               clusters={clusters}
@@ -397,29 +503,92 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
           </div>
         </div>
 
-        {/* Jump-to-now pill — anchored to the outer (non-scrolling) frame so it
-            stays pinned above the composer. Shown only when the playhead is
-            off-screen with follow off (video mode); clicking re-syncs the view. */}
-        {pillVisible && (
+        {/* Custom scrollbar, constrained to the centered COL column. */}
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            justifyContent: 'center',
+            pointerEvents: 'none',
+          }}
+        >
+          <div style={{ position: 'relative', width: '100%', maxWidth: COL, height: '100%' }}>
+            <ScrollThumb
+              geometry={thumb.geometry}
+              thumbHovered={thumb.thumbHovered}
+              areaHovered={thumb.areaHovered}
+              pointerNear={thumb.pointerNear}
+              resizing={thumb.resizing}
+              dragging={thumb.dragging}
+              setThumbHovered={thumb.setThumbHovered}
+              onPointerDown={thumb.onThumbPointerDown}
+            />
+          </div>
+        </div>
+
+        {/* Floating sort pill — overlays the notes' top-right (no dedicated row, so
+            the notes reclaim that vertical space; the feed scrolls under it). */}
+        <div
+          style={{
+            position: 'absolute',
+            top: 8,
+            left: 0,
+            right: 0,
+            display: 'flex',
+            justifyContent: 'center',
+            pointerEvents: 'none',
+          }}
+        >
+          <div
+            style={{
+              width: '100%',
+              maxWidth: COL,
+              boxSizing: 'border-box',
+              padding: '0 24px',
+              display: 'flex',
+              justifyContent: 'flex-end',
+            }}
+          >
+            <div style={{ pointerEvents: 'auto' }}>
+              <SortPill
+                sortMode={sortMode}
+                onToggle={() => setSortMode((m) => (m === 'video' ? 'capture' : 'video'))}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Floating date pill (capture view only) — names the topmost visible day. */}
+        {sortMode === 'capture' && datePill && (
+          <ScrollDatePill label={datePill} push={0} visible={datePillVisible} />
+        )}
+
+        {/* Jump-to-now pill — top (arrow up) when "now" is above the viewport,
+            bottom (arrow down) when below. */}
+        {pillDir && (
           <div
             style={{
               position: 'absolute',
               left: 0,
               right: 0,
-              bottom: 14,
+              ...(pillDir === 'up' ? { top: 14 } : { bottom: 14 }),
               display: 'flex',
               justifyContent: 'center',
               pointerEvents: 'none',
             }}
           >
             <span style={{ pointerEvents: 'auto' }}>
-              <JumpPill seconds={currentTime} onJump={() => scrollClusterIntoView(activeIdx)} />
+              <JumpPill
+                seconds={currentTime}
+                direction={pillDir}
+                onJump={() => scrollClusterIntoView(activeIdx)}
+              />
             </span>
           </div>
         )}
       </div>
 
-      {/* ── 4. Pinned composer slot ─────────────────────────────────────── */}
       <div
         style={{
           flex: '0 0 auto',
@@ -431,6 +600,9 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
         <div style={{ maxWidth: COL, margin: '0 auto' }}>
           <ThreadComposer
             livePlayhead={currentTime}
+            duration={duration}
+            error={postError}
+            onClearError={() => setPostError(null)}
             pendingFrame={
               pendingFrame ? { thumbnailUrl: pendingFrame.thumbnailUrl, t: pendingFrame.t } : null
             }
@@ -446,6 +618,151 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
           />
         </div>
       </div>
+    </div>
+  )
+
+  return (
+    <div
+      style={{
+        // flex:1 + minWidth:0 so ThreadView fills the body row in App.tsx — without
+        // it the root shrinks to content width and pins left, leaving the centered
+        // (margin:0 auto) columns hugging the left edge with dead space at right.
+        flex: 1,
+        minWidth: 0,
+        height: '100%',
+        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        position: 'relative',
+        background: 'var(--bg-0)',
+      }}
+    >
+      {/* ── 1. Slim top bar ─────────────────────────────────────────────── */}
+      {/* Inner content shares the centered COL column with the player, notes,
+          and composer so the whole view reads as one column instead of a
+          left-floating title beside a centered body. */}
+      <header
+        style={{
+          flex: '0 0 auto',
+          height: 46,
+          padding: '0 24px',
+          borderBottom: '1px solid var(--border-0)',
+        }}
+      >
+        <div
+          style={{
+            maxWidth: COL,
+            margin: '0 auto',
+            height: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+          }}
+        >
+          <button
+            type="button"
+            aria-label="back"
+            onClick={onClose}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 28,
+              height: 28,
+              border: 0,
+              background: 'transparent',
+              cursor: 'pointer',
+              borderRadius: 'var(--r-2)',
+              color: 'var(--fg-2)',
+              padding: 0,
+              flexShrink: 0,
+              marginLeft: -8,
+            }}
+          >
+            <ChevronLeft size={17} />
+          </button>
+          <div style={{ minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 500,
+                color: 'var(--fg-0)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {title}
+            </div>
+          </div>
+          <div style={{ flex: 1 }} />
+          {/* Layout toggle: stacked (video over notes) ↔ split (side-by-side).
+              Icon shows the layout you'll switch TO. */}
+          <button
+            type="button"
+            aria-label="toggle layout"
+            title={layout === 'stacked' ? 'side-by-side view' : 'stacked view'}
+            onClick={() => setLayout((l) => (l === 'stacked' ? 'split' : 'stacked'))}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 28,
+              height: 28,
+              border: 0,
+              background: 'transparent',
+              cursor: 'pointer',
+              borderRadius: 'var(--r-2)',
+              color: 'var(--fg-2)',
+              padding: 0,
+              flexShrink: 0,
+              marginRight: -8,
+            }}
+          >
+            {layout === 'stacked' ? <Columns2 size={16} /> : <Rows2 size={16} />}
+          </button>
+        </div>
+      </header>
+
+      {layout === 'stacked' ? (
+        <>
+          {/* ── Player on top ─────────────────────────────────────────────── */}
+          <div style={{ flex: '0 0 auto', padding: '14px 24px 12px' }}>
+            <div style={{ maxWidth: videoWidth, margin: '0 auto' }}>{playerContent}</div>
+          </div>
+          {/* Horizontal resize handle — drag to scale the player; notes take the
+              freed vertical space. */}
+          <ResizeHandle
+            orientation="row"
+            onPointerDown={onResizeStart}
+            testId="player-resize"
+            title="drag to resize the player"
+          />
+          {notesPane}
+        </>
+      ) : (
+        // ── Side-by-side: player pane | vertical divider | notes pane ────────
+        <div ref={rowRef} style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+          <div
+            style={{
+              width: splitWidth,
+              flexShrink: 0,
+              minWidth: 0,
+              overflowY: 'auto',
+              padding: '14px 16px',
+            }}
+          >
+            {playerContent}
+          </div>
+          <ResizeHandle
+            orientation="col"
+            onPointerDown={onSplitResizeStart}
+            testId="player-resize-v"
+            title="drag to resize the video"
+          />
+          {notesPane}
+        </div>
+      )}
     </div>
   )
 }
@@ -468,7 +785,7 @@ interface SortPillProps {
  */
 function SortPill({ sortMode, onToggle }: SortPillProps) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
+    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
       <button
         type="button"
         aria-label="sort mode"
@@ -495,6 +812,71 @@ function SortPill({ sortMode, onToggle }: SortPillProps) {
         )}
         {sortMode === 'video' ? 'by video time' : 'by capture time'}
       </button>
+    </div>
+  )
+}
+
+// ── ResizeHandle ───────────────────────────────────────────────────────────────
+
+/**
+ * The draggable divider between the player and the notes. The line IS the handle —
+ * drag anywhere along it — and it thickens + tints on hover/drag with the same
+ * spring-overshoot as the custom scrollbar thumb (ScrollArea). Used in both layouts
+ * (`row` = horizontal divider in stacked, `col` = vertical divider in split).
+ *
+ * `dragging` keeps it thick for the whole drag even when the cursor leaves the strip
+ * (the pointer roams over the webview/notes), cleared on the window-level pointerup.
+ */
+function ResizeHandle({
+  orientation,
+  onPointerDown,
+  testId,
+  title,
+}: {
+  orientation: 'row' | 'col'
+  onPointerDown: (e: ReactPointerEvent) => void
+  testId: string
+  title: string
+}) {
+  const [hover, setHover] = useState(false)
+  const [dragging, setDragging] = useState(false)
+  const row = orientation === 'row'
+  const hot = hover || dragging
+  const thick = hot ? 6 : 2
+  const start = (e: ReactPointerEvent) => {
+    setDragging(true)
+    const up = () => {
+      setDragging(false)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointerup', up)
+    onPointerDown(e)
+  }
+  return (
+    <div
+      onPointerDown={start}
+      onPointerEnter={() => setHover(true)}
+      onPointerLeave={() => setHover(false)}
+      title={title}
+      aria-hidden
+      data-testid={testId}
+      style={{
+        flex: '0 0 auto',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        touchAction: 'none',
+        ...(row ? { height: 11, cursor: 'row-resize' } : { width: 11, cursor: 'col-resize' }),
+      }}
+    >
+      <span
+        style={{
+          borderRadius: 4,
+          background: hot ? 'var(--fg-3)' : 'var(--border-1)',
+          transition: `height 240ms ${SPRING_EASE}, width 240ms ${SPRING_EASE}, background 140ms ease`,
+          ...(row ? { width: '100%', height: thick } : { height: '100%', width: thick }),
+        }}
+      />
     </div>
   )
 }

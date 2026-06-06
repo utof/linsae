@@ -1,9 +1,12 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { type Ref, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import type { Note } from '../../../shared/types'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
+import { dayKey, formatDayLabel } from '../lib/day'
+import { DayDivider, ScrollDatePill } from './DatePills'
 import { NoteBubble } from './NoteBubble'
+import { useAppendReveal } from './useAppendReveal'
 import { useExpandCollapseMorph } from './useExpandCollapseMorph'
 
 interface Props {
@@ -17,6 +20,23 @@ interface Props {
   onCopyLink: (id: string) => void
   /** Called when the user opens the thread panel for a source note. */
   onOpenThread?: (id: string) => void
+  /**
+   * Optional ref to the inner scroller element. Merged into the existing internal
+   * scroller setup inside `handleScrollerRef`, never as a second JSX ref, so the
+   * memoized-callback identity (ADR 0004) is preserved.
+   *
+   * @see adrs/0004-memoize-virtuoso-prop-callbacks.md
+   */
+  scrollerRef?: Ref<HTMLDivElement>
+  /**
+   * True from the moment the user submits a new note until shortly after it has
+   * glided into place (App owns it via `beginSend`). The feed reads it to suppress
+   * the virtualizer's own auto-scroll (`anchorTo:'end'` / `followOnAppend`) so the
+   * make-room scroll-glide (`useAppendReveal`) owns the scroll while the note rises
+   * in — without it, the new row's first measure rides the scroll up and rapid sends
+   * desync the rendered range (the #66 white wall). No ghost (ADR 0020).
+   */
+  sendInFlight?: boolean
 }
 
 /** Returns a new Set with `id` toggled — immutable so React sees a new ref. */
@@ -104,6 +124,14 @@ function estimateBubbleHeight(note: Note): number {
 const SCROLL_END_THRESHOLD = 120
 
 /**
+ * Height (px) the inline {@link DayDivider} adds to a first-of-day item's wrapper.
+ * Seeds the virtualizer's size estimate for unmeasured day-boundary items (the real
+ * height arrives via measureElement on first paint) and defines the top zone within
+ * which an incoming divider pushes the floating scroll pill out.
+ */
+const DAY_DIVIDER_H = 34
+
+/**
  * Renders the rolling feed of notes — oldest at the top, newest at the
  * bottom — using `@tanstack/react-virtual`'s headless virtualizer with
  * its chat-shaped `anchorTo: 'end'` mode.
@@ -158,17 +186,39 @@ export function Feed({
   onDelete,
   onCopyLink,
   onOpenThread,
+  scrollerRef,
+  sendInFlight = false,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null)
+  // Holder for the external scrollerRef so `handleScrollerRef` can stay
+  // `[]`-memoized (ADR 0004): reading a ref of stable identity inside the
+  // callback avoids putting the changing `scrollerRef` prop in its deps.
+  const externalScrollerRef = useRef<Ref<HTMLDivElement> | undefined>(scrollerRef)
+  externalScrollerRef.current = scrollerRef
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set())
+
+  // Indices that begin a new calendar day → an inline DayDivider renders above them
+  // and their size estimate gains DAY_DIVIDER_H. Recomputed only when the list changes.
+  const dayFirsts = useMemo(() => {
+    const set = new Set<number>()
+    let prevKey: string | null = null
+    notes.forEach((n, i) => {
+      const k = dayKey(n.created_at)
+      if (k !== prevKey) set.add(i)
+      prevKey = k
+    })
+    return set
+  }, [notes])
 
   const virtualizer = useVirtualizer({
     count: notes.length,
     getScrollElement: () => scrollerEl,
     estimateSize: (index) => {
       const n = notes[index]
-      return n ? estimateBubbleHeight(n) : 80
+      const base = n ? estimateBubbleHeight(n) : 80
+      return dayFirsts.has(index) ? base + DAY_DIVIDER_H : base
     },
     // Stable key per note (uuidv7 id). Critical for prepend stability under
     // `anchorTo: 'end'`: tanstack captures the visible item by key before a
@@ -195,25 +245,73 @@ export function Feed({
   const morphingIndexRef = useRef<number | null>(null)
   morphingIndexRef.current = morphingIndex
   const suppressThumbResizeRef = useRef<boolean>(false)
+  // `revealing` is true while the make-room reveal (useAppendReveal) slides a
+  // freshly-sent note up into place by translating the content wrapper. Like
+  // `morphingIndex` it gates the virtualizer's scroll-correction below (so a
+  // measure correction can't jump scrollTop out from under the transform); the
+  // ref is read live in the `shouldAdjust` closure, the state forces the
+  // anchorTo re-apply.
+  const [revealing, setRevealing] = useState(false)
+  const revealingRef = useRef(false)
+  // Collapsed-state geometry (item height + constant chrome), captured for free
+  // when a note is EXPANDED — at that instant the note is still rendered
+  // collapsed, so its pre-swap layout IS the collapse target. Reused on collapse
+  // so we DON'T re-render the heavy `<Markdown>` (full markdown + KaTeX) just to
+  // measure: the old full→truncated→full measure-swap froze the animation for
+  // hundreds of ms on KaTeX-heavy notes in dev (#48, #50). `expandedIds` is
+  // ephemeral, so every collapse follows an expand this session → the cache is
+  // populated; the measure-swap stays as a fallback. Stale geometry (resize/edit
+  // between expand and collapse) is reconciled by the morph's final remeasure.
+  const collapsedGeomRef = useRef<Map<string, { itemH: number; nonBodyH: number }>>(new Map())
   const { run: runMorph, cancel: cancelMorph } = useExpandCollapseMorph({
     virtualizer,
     scrollerEl,
     setMorphingIndex,
     suppressThumbResizeRef,
   })
-
-  // Prevent the virtualizer's own scroll-position correction from fighting
-  // the manual bottom-anchor during an active morph. ADR 0007.
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => morphingIndexRef.current === null
+  // iMessage make-room: a freshly-sent note pushes the whole feed up as it glides
+  // into place at the bottom, instead of popping in. It animates `scrollTop`
+  // directly (no scrollTop fight — ADR 0019), so the note rises into view. There is
+  // no flying ghost: the note is its own entrance (ADR 0020 supersedes ADR 0018).
+  useAppendReveal({
+    virtualizer,
+    scrollerEl,
+    notes,
+    revealingRef,
+    setRevealing,
+    suppressThumbResizeRef,
+  })
+  // Prevent the virtualizer's own scroll-position correction from fighting the
+  // manual bottom-anchor during an active morph OR make-room reveal. ADR 0007 /
+  // ADR 0019. Both drive scrollTop themselves; an estimate→measured size
+  // correction mid-animation would yank it.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () =>
+    morphingIndexRef.current === null && !revealingRef.current
   // shouldAdjust above does NOT gate virtual-core's `anchorTo:'end'` "wasAtEnd"
   // path: in resizeItem the `if (wasAtEnd) applyScrollAdjustment(...)` branch is
   // unconditional (dist/esm/index.js). When collapsing a note near the bottom,
   // that branch rides the scroll up by the size delta AT THE SAME TIME as our
   // manual bottom-anchor — double-applying, so the viewport overshoots above all
-  // content and the feed blanks for the morph. Drop anchorTo to 'start' for the
-  // morph window so OUR bottom-anchor is the only thing moving scroll; restore
-  // 'end' after. (anchorTo is read live as this.options.anchorTo.) ADR 0007.
-  virtualizer.options.anchorTo = morphingIndexRef.current === null ? 'end' : 'start'
+  // content and the feed blanks for the morph. The make-room reveal hits the same
+  // hazard the instant the new full-size row is FIRST measured (that one `wasAtEnd`
+  // would ride the scroll up by ~noteH and never be cleared — the #66 white wall).
+  // Drop anchorTo to 'start' for the morph AND the whole send (`sendInFlight`, which
+  // is true from ghost-launch THROUGH the append, so it covers the new row's first
+  // measure too — not just `revealing`, which is set only AFTER the append) so OUR
+  // scroll is the only thing moving; restore 'end' after. (anchorTo is read live as
+  // this.options.anchorTo.) ADR 0007 / 0019; see useAppendReveal for the #66 rationale.
+  virtualizer.options.anchorTo =
+    morphingIndexRef.current === null && !revealing && !sendInFlight ? 'end' : 'start'
+  // Suppress the virtualizer's own `followOnAppend` auto-scroll while a send is in
+  // flight: on the send's append, virtual-core's `_willUpdate` would `scrollToEnd()`
+  // to the new note's ESTIMATE-inflated bottom (and arm its `reconcileScroll` rAF
+  // loop) one frame before the make-room reveal's frame 0 collapses the row — a
+  // visible pre-roll scroll blip. The reveal (`useAppendReveal`) drives the scroll
+  // itself, so the virtualizer must not also chase the bottom here. `sendInFlight`
+  // is false under reduced-motion (no ghost), so normal auto-follow is unaffected.
+  // Re-applied every render (like anchorTo) so useVirtualizer's setOptions can't
+  // reset it mid-send.
+  virtualizer.options.followOnAppend = !sendInFlight
 
   // Initial scroll-to-bottom once the scroller is available. Layout
   // effect (not effect) so the bottom-pinned position is set BEFORE the
@@ -235,6 +333,11 @@ export function Feed({
     const el = containerRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
+      // Don't re-pin during a morph or make-room reveal — they drive scrollTop
+      // themselves, and `scrollToEnd()` here would arm virtual-core's
+      // `reconcileScroll` rAF loop against them (sending clears the composer →
+      // the feed grows → this fires mid-reveal, a one-frame scroll blip).
+      if (morphingIndexRef.current !== null || revealingRef.current) return
       if (virtualizer.isAtEnd()) {
         virtualizer.scrollToEnd()
       }
@@ -271,18 +374,41 @@ export function Feed({
       const scrollTopStart = scroller.scrollTop
 
       // Detach measureElement + switch anchorTo to 'start' (render-body overrides
-      // keyed on morphingIndex) BEFORE the measurement swaps, so they don't
-      // trigger the virtualizer's own resize/scroll reactions.
+      // keyed on morphingIndex) BEFORE any measurement, so they don't trigger the
+      // virtualizer's own resize/scroll reactions. This re-render does NOT change
+      // the morphing bubble's props, so its memoized `<Markdown>` is untouched.
       flushSync(() => setMorphingIndex(index))
       const startItemH = itemEl.getBoundingClientRect().height
 
-      // Commit the END content to measure its true size + chrome.
-      flushSync(() => setExpandedIds((prev) => (collapsing ? removeId(prev, id) : addId(prev, id))))
-      const endItemH = itemEl.getBoundingClientRect().height
-      const nonBodyH = endItemH - bodyEl.getBoundingClientRect().height
-      // Collapse: restore FULL content so the roll-up animates over real text;
-      // finish() re-commits the collapse. Expand: leave it expanded (end state).
-      if (collapsing) flushSync(() => setExpandedIds((prev) => addId(prev, id)))
+      let endItemH: number
+      let nonBodyH: number
+      const cachedCollapsed = collapsedGeomRef.current.get(id)
+      if (collapsing && cachedCollapsed) {
+        // Collapse via geometry cached at expand time — NO content swap, so the
+        // heavy full `<Markdown>` (already mounted) is not re-rendered. The full
+        // content stays mounted for the roll-up; `onCommit` truncates at finish
+        // and the final remeasure reconciles any staleness. See #50.
+        endItemH = cachedCollapsed.itemH
+        nonBodyH = cachedCollapsed.nonBodyH
+      } else {
+        // Expand (or a collapse with no cached geometry — note wasn't on screen
+        // when expanded). On expand, capture the CURRENT (collapsed) geometry for
+        // a future collapse before swapping; then commit the END content to
+        // measure its true size + chrome.
+        if (!collapsing) {
+          collapsedGeomRef.current.set(id, {
+            itemH: startItemH,
+            nonBodyH: startItemH - bodyEl.getBoundingClientRect().height,
+          })
+        }
+        flushSync(() =>
+          setExpandedIds((prev) => (collapsing ? removeId(prev, id) : addId(prev, id))),
+        )
+        endItemH = itemEl.getBoundingClientRect().height
+        nonBodyH = endItemH - bodyEl.getBoundingClientRect().height
+        // Collapse fallback: restore FULL content so the roll-up animates over real text.
+        if (collapsing) flushSync(() => setExpandedIds((prev) => addId(prev, id)))
+      }
 
       runMorph(
         {
@@ -313,9 +439,59 @@ export function Feed({
       el.classList.add('scroll-area-inner')
       el.style.scrollbarWidth = 'none'
     }
+    // Forward to the optional external scrollerRef (send-animation geometry).
+    // Handles both function- and object-ref forms; read via the stable holder
+    // so this callback's identity stays frozen (ADR 0004).
+    const ext = externalScrollerRef.current
+    if (typeof ext === 'function') ext(el)
+    else if (ext) ext.current = el
   }, [])
 
   const thumb = useScrollThumb(scrollerEl, suppressThumbResizeRef)
+
+  // ── floating "scroll date" pill (Telegram-style) ───────────────────────────
+  // On scroll: label = the topmost visible note's day; push = how far the next
+  // day's inline divider has risen into the top zone (it shoves the old pill out
+  // as it arrives, and the label flips to the new day exactly as the old pill
+  // clears the top — so they never overlap); visible = true, fading 800ms after
+  // scrolling stops. Reading geometry here never moves the list (no feedback loop):
+  // it only updates the overlay. The pillKeyRef guard skips setState on frames
+  // where neither the label nor the rounded push changed.
+  const [scrollPill, setScrollPill] = useState<{ label: string; push: number } | null>(null)
+  const [pillVisible, setPillVisible] = useState(false)
+  const pillKeyRef = useRef('')
+  const pillIdleRef = useRef<number | undefined>(undefined)
+  const onFeedScroll = useCallback(() => {
+    const el = scrollerEl
+    if (!el) return
+    const top = el.scrollTop
+    const items = virtualizer.getVirtualItems()
+    const firstVisible = items.find((it) => it.end > top + 1) ?? items[items.length - 1]
+    const note = firstVisible ? notes[firstVisible.index] : undefined
+    // Next day-boundary still below the top edge: as it rises within DAY_DIVIDER_H,
+    // push the current (older-day) pill up by the overlap.
+    let push = 0
+    const incoming = items.find((it) => dayFirsts.has(it.index) && it.start > top)
+    if (incoming && incoming.start - top < DAY_DIVIDER_H) {
+      push = Math.round(DAY_DIVIDER_H - (incoming.start - top))
+    }
+    const label = note ? formatDayLabel(note.created_at) : ''
+    const key = note ? `${label}|${push}` : ''
+    if (key !== pillKeyRef.current) {
+      pillKeyRef.current = key
+      setScrollPill(note ? { label, push } : null)
+    }
+    setPillVisible(true)
+    if (pillIdleRef.current !== undefined) clearTimeout(pillIdleRef.current)
+    pillIdleRef.current = window.setTimeout(() => setPillVisible(false), 800)
+  }, [scrollerEl, virtualizer, notes, dayFirsts])
+  // Clear the idle timer on unmount so it can't setState an unmounted feed.
+  useEffect(
+    () => () => {
+      if (pillIdleRef.current !== undefined) clearTimeout(pillIdleRef.current)
+    },
+    [],
+  )
 
   return (
     <div
@@ -328,18 +504,35 @@ export function Feed({
       <div style={{ maxWidth: 720, margin: '0 auto', height: '100%', position: 'relative' }}>
         <div
           ref={handleScrollerRef}
-          style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}
+          onScroll={onFeedScroll}
+          style={{
+            height: '100%',
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            // Bottom-anchor (chat-style): with the content wrapper's
+            // `margin-top:auto` below, a short feed sits flush at the bottom by
+            // the composer (not top-aligned with a gap), so a new note pushes the
+            // whole stack UP. When content overflows, the auto-margin collapses to
+            // 0 and normal top-down scrolling resumes.
+            display: 'flex',
+            flexDirection: 'column',
+          }}
         >
           {/* Inner spacer: tanstack-virtual sets this element's height to
              the exact total content size (sum of measured sizes plus
              estimates for unmeasured items). The browser's `scrollHeight`
              on the outer scroller equals this inner height — that's what
-             makes the custom scrollbar thumb stable. */}
+             makes the custom scrollbar thumb stable. `marginTop:auto` bottom-
+             anchors it; `flexShrink:0` keeps its exact getTotalSize height in the
+             flex column; `contentRef` is the element useAppendReveal translates. */}
           <div
+            ref={contentRef}
             style={{
               height: virtualizer.getTotalSize(),
               width: '100%',
               position: 'relative',
+              marginTop: 'auto',
+              flexShrink: 0,
             }}
           >
             {virtualizer.getVirtualItems().map((vItem) => {
@@ -348,9 +541,11 @@ export function Feed({
               return (
                 <div
                   key={vItem.key}
-                  // Detach measureElement while this item is morphing — the
-                  // morph drives its size via resizeItem instead (ADR 0007;
-                  // tanstack: don't use both on one item).
+                  // Detach measureElement only while this item is MORPHING — the morph
+                  // drives the row's size via resizeItem, and tanstack forbids mixing
+                  // measureElement + resizeItem on one item (ADR 0007). The make-room
+                  // reveal no longer resizes the row (it glides the scroll, keeping the
+                  // row full-size — useAppendReveal), so the revealing row stays measured.
                   ref={vItem.index === morphingIndex ? undefined : virtualizer.measureElement}
                   data-index={vItem.index}
                   style={{
@@ -367,6 +562,9 @@ export function Feed({
                     paddingBottom: 6,
                   }}
                 >
+                  {dayFirsts.has(vItem.index) && (
+                    <DayDivider label={formatDayLabel(note.created_at)} />
+                  )}
                   <NoteBubble
                     note={note}
                     focused={note.id === focusedId}
@@ -400,6 +598,9 @@ export function Feed({
           setThumbHovered={thumb.setThumbHovered}
           onPointerDown={thumb.onThumbPointerDown}
         />
+        {scrollPill && (
+          <ScrollDatePill label={scrollPill.label} push={scrollPill.push} visible={pillVisible} />
+        )}
       </div>
     </div>
   )

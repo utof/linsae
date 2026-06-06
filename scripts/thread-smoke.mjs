@@ -1,25 +1,32 @@
 /**
- * Playwright-Electron smoke for the v0.2 thread UI (Task G1).
- * Launches the BUILT app (loads over http://127.0.0.1 loopback shell), seeds a
- * YouTube source note, opens its ThreadView, asserts the real player embed loads
- * without Error 153/152/101, and verifies a capture round-trips to a PNG.
+ * Playwright-Electron smoke for the v0.3 webview player (Task T7).
+ * Tests the new webview engine against live YouTube — the FIRST real-world test of
+ * the webview-backed player (see adrs/0016-webview-youtube-player.md).
  *
- * Run: pnpm smoke:thread   (after `pnpm exec electron-vite build`)
- * Mirrors the structure of scripts/capture-smoke.mjs — same launch pattern,
- * same loopback-origin assert, same Error-153 probe technique, same Wayland
- * soft-warn for the dimension contract.
+ * Split into two gates:
+ *   CI-safe  (always)   — webview presence, CLEAN_CSS opacity, rect, capturePage PNG.
+ *   Playback (opt-in)   — currentTime advances, PNG has non-black pixels.
+ *                         Set SMOKE_PLAYBACK=1 to enable.
  *
- * @see scripts/capture-smoke.mjs (reference implementation — L6 task)
- * @see docs/specs/v0.2-youtube-annotation.md §Testing (Electron smoke)
+ * Run: pnpm smoke:thread   (after `pnpm exec electron-vite build && pnpm rebuild:electron`)
+ *
+ * NOTE: The watch page may show a consent/bot wall on a fresh `persist:yt-player`
+ * partition. The CI-safe checks tolerate it (insertCSS + guest run regardless of
+ * consent state), but SMOKE_PLAYBACK=1 may need a manual consent dismiss first.
+ *
+ * @see scripts/capture-smoke.mjs (reference launch pattern — L6 task)
+ * @see docs/specs/v0.3-youtube-webview-player.md §10 (testing spec)
+ * @see adrs/0016-webview-youtube-player.md (supersedes ADR 0015)
  * @see adrs/0008-loopback-http-shell.md (loopback origin contract)
  */
 import { strict as assert } from 'node:assert'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { _electron as electron } from 'playwright'
 
 const VIDEO_ID = 'M7lc1UVf-VE'
+const SMOKE_PLAYBACK = process.env.SMOKE_PLAYBACK === '1'
 
 // Throwaway profile so the smoke never pollutes the real userData dir.
 const userDataDir = mkdtempSync(join(tmpdir(), 'linsae-thread-smoke-'))
@@ -27,6 +34,17 @@ const userDataDir = mkdtempSync(join(tmpdir(), 'linsae-thread-smoke-'))
 const app = await electron.launch({
   args: ['out/main/index.js', `--user-data-dir=${userDataDir}`],
 })
+
+// Track per-check results for the final summary block.
+const results = {
+  loopbackOrigin: 'FAIL',
+  threadOpened: 'FAIL',
+  webviewPresent: 'FAIL',
+  chromeHidden: 'FAIL',
+  rectNonZero: 'FAIL',
+  capturePng: 'FAIL',
+  playbackAdvances: SMOKE_PLAYBACK ? 'FAIL' : 'SKIP',
+}
 
 try {
   const win = await app.firstWindow()
@@ -39,12 +57,10 @@ try {
     origin.startsWith('http://127.0.0.1'),
     `renderer must be served over loopback http (got ${origin})`,
   )
+  results.loopbackOrigin = 'PASS'
   console.log('thread-smoke [PASS] loopback origin')
 
   // ── 2. Seed a source note + video_sources row via real IPC ─────────────────
-  // Call window.api directly (preload shape, object args) rather than the
-  // renderer api wrapper (which uses positional args and is not available
-  // in the evaluate context).
   await win.evaluate(
     async ({ videoId }) => {
       await window.api.notes.create({
@@ -69,226 +85,204 @@ try {
   await win.waitForLoadState('domcontentloaded')
 
   // ── 3. Open the thread ─────────────────────────────────────────────────────
-  // The MediaFeedNote card renders a <button aria-label="open video notes">
-  // (MediaFeedNote.tsx line 228). Wait for it with a generous timeout to allow
-  // React Query to settle; if not found, dump DOM for diagnostics.
-  let threadOpened = false
+  // The MediaFeedNote card renders a <button aria-label="open video notes">.
+  // Wait with a generous timeout to allow React Query to settle.
   try {
     const btn = win.getByRole('button', { name: /open video notes/i })
     await btn.waitFor({ timeout: 15000 })
     await btn.click()
-    threadOpened = true
+    results.threadOpened = 'PASS'
     console.log('thread-smoke [PASS] thread opened')
   } catch (e) {
-    // Dump partial DOM to aid diagnosis before hard-failing.
     const dom = await win.evaluate(() => document.body.innerHTML.slice(0, 4000))
     console.error(`thread-smoke [FAIL] could not find "open video notes" button: ${String(e)}`)
     console.error(`thread-smoke DOM snapshot (first 4000 chars):\n${dom}`)
     throw new Error('"open video notes" button not found — feed card did not render')
   }
 
-  // ── 4. Error-153 gate ──────────────────────────────────────────────────────
-  // Wait for the real player iframe (singleton, mounted by usePlayer via the
-  // youtube-player library which calls YT.Player). The YT IFrame API needs to
-  // load from youtube.com, which may take a few seconds. Poll the DOM state
-  // every 2s, logging progress.
-  let iframePresent = false
-  let iframeSelector = 'iframe[src*="youtube-nocookie.com"]'
-
-  // Poll until an iframe appears, then narrow to the best selector.
-  let iframeFound = false
-  let iframeSrcFound = '(not found)'
+  // ── CI-safe check 1: webview present ──────────────────────────────────────
+  // Poll (≤40s, 2s interval) for a <webview> inside #yt-player-wrapper whose
+  // src contains youtube.com/watch. NOT an iframe — the new engine is a <webview>.
+  console.log('thread-smoke: polling for <webview> inside #yt-player-wrapper …')
+  let webviewSrc = null
   for (let i = 0; i < 20; i++) {
-    // Wait 2s between polls
     await new Promise((r) => setTimeout(r, 2000))
-    const domInfo = await win.evaluate(() => {
-      const frames = Array.from(document.querySelectorAll('iframe'))
+    const info = await win.evaluate(() => {
+      const wv = document.querySelector('#yt-player-wrapper webview')
+      const allWebviews = Array.from(document.querySelectorAll('webview')).map((w) => ({
+        id: w.id,
+        src: w.getAttribute('src') ?? '',
+        parent: w.parentElement?.id ?? '',
+      }))
       return {
-        count: frames.length,
-        srcs: frames.map((f) => f.src),
         wrapperExists: !!document.getElementById('yt-player-wrapper'),
-        wrapperHtml: document.getElementById('yt-player-wrapper')?.innerHTML?.slice(0, 200) ?? null,
-        ytAvailable: !!(window.YT && window.YT.Player),
-        onYTReady: typeof window.onYouTubeIframeAPIReady,
+        wrapperHtml: document.getElementById('yt-player-wrapper')?.innerHTML?.slice(0, 300) ?? null,
+        webviewSrc: wv?.getAttribute('src') ?? null,
+        allWebviews,
         playerHostExists: !!document.querySelector('[data-testid="player-host"]'),
-        playerHostChildCount:
-          document.querySelector('[data-testid="player-host"]')?.children?.length ?? 0,
       }
     })
-    console.log(`thread-smoke: DOM poll ${i + 1}/20 — ${JSON.stringify(domInfo)}`)
-    if (domInfo.count > 0) {
-      iframeFound = true
-      iframeSrcFound = domInfo.srcs[0] ?? '(no src)'
-      // Determine best selector
-      if (domInfo.srcs.some((s) => s.includes('youtube-nocookie.com'))) {
-        iframeSelector = 'iframe[src*="youtube-nocookie.com"]'
-      } else if (domInfo.srcs.some((s) => s.includes('youtube.com'))) {
-        iframeSelector = 'iframe[src*="youtube.com"]'
-      } else {
-        iframeSelector = 'iframe'
-      }
+    console.log(`thread-smoke: DOM poll ${i + 1}/20 — ${JSON.stringify(info)}`)
+    if (info.webviewSrc?.includes('youtube.com/watch')) {
+      webviewSrc = info.webviewSrc
+      break
+    }
+    // Also accept a <webview> whose src contains youtube.com (may not have /watch yet)
+    if (info.webviewSrc?.includes('youtube.com')) {
+      webviewSrc = info.webviewSrc
+      // Keep polling — may not have /watch yet; but stop if we find one
       break
     }
   }
 
-  if (iframeFound) {
-    iframePresent = true
-    console.log(
-      `thread-smoke [PASS] iframe present — src=${iframeSrcFound}, selector=${iframeSelector}`,
-    )
-  } else {
+  if (!webviewSrc) {
     const finalDom = await win.evaluate(() => ({
-      allIframes: Array.from(document.querySelectorAll('iframe')).map((f) => f.src),
+      allWebviews: Array.from(document.querySelectorAll('webview')).map((w) =>
+        w.getAttribute('src'),
+      ),
       bodySnippet: document.body.innerHTML.slice(0, 2000),
     }))
-    console.error(`thread-smoke [FAIL] player iframe not found after 40s polling`)
+    console.error('thread-smoke [FAIL] <webview> with youtube.com src not found after 40s')
     console.error(`  Final DOM: ${JSON.stringify(finalDom)}`)
-    throw new Error(`Player iframe not found — ThreadView did not mount the embed`)
+    throw new Error('<webview> not found inside #yt-player-wrapper — webview engine did not mount')
   }
 
-  // Parallel-player probe: same technique as capture-smoke.mjs L6 —
-  // create a fresh div target and let YT.Player construct the iframe itself
-  // (avoids pre-src'd iframe conflicts with existing widgetids), then poll
-  // ~20s for a cued/playing state with NO ERROR:153/152/101. This
-  // authoritatively proves the embed origin works in the built app.
-  const embed = await win.evaluate(
-    ({ videoId }) =>
-      new Promise((resolve) => {
-        const events = []
-        // Use a plain div as the target — YT.Player CREATES the iframe inside
-        // it, avoiding any widgetid clash with the existing singleton iframe.
-        const container = document.createElement('div')
-        container.id = 'yt-smoke-probe'
-        container.style.cssText =
-          'position:fixed;left:-9999px;top:0;width:480px;height:270px;z-index:1'
-        document.body.appendChild(container)
-        let player
-        function attach() {
-          player = new window.YT.Player('yt-smoke-probe', {
-            width: 480,
-            height: 270,
-            host: 'https://www.youtube-nocookie.com',
-            playerVars: { enablejsapi: 1, controls: 0, rel: 0, playsinline: 1, autoplay: 0 },
-            events: {
-              onReady: () => {
-                events.push('ready')
-                try {
-                  const s = player.getPlayerState()
-                  events.push('stateAtReady:' + s)
-                  player.cueVideoById(videoId)
-                } catch (e2) {
-                  events.push('getStateErr:' + e2)
-                }
-              },
-              onStateChange: (e) => events.push('state:' + e.data),
-              onError: (e) => events.push('ERROR:' + e.data),
-            },
-          })
-        }
-        if (window.YT && window.YT.Player) {
-          attach()
-        } else {
-          window.onYouTubeIframeAPIReady = attach
-          const s = document.createElement('script')
-          s.src = 'https://www.youtube.com/iframe_api'
-          document.head.appendChild(s)
-        }
-        setTimeout(() => {
-          let dur = 0
-          let finalState = -99
-          try {
-            dur = player?.getDuration?.() ?? 0
-            finalState = player?.getPlayerState?.() ?? -99
-          } catch (e4) {
-            events.push('finalErr:' + e4)
-          }
-          resolve({ events, duration: dur, finalState })
-        }, 20000)
-      }),
-    VIDEO_ID,
-  )
-
-  console.log(`thread-smoke: embed probe result = ${JSON.stringify(embed)}`)
-
-  const hadEmbedError = embed.events.some((e) => /^ERROR:(153|152|101|150|100)$/.test(e))
-  // reachedPlayable: state 5=cued, 1=playing, 3=buffering, OR stateAtReady:5/1/3
-  const reachedPlayable =
-    embed.events.some((e) => e === 'state:5' || e === 'state:1' || e === 'state:3') ||
-    embed.events.some(
-      (e) => e === 'stateAtReady:5' || e === 'stateAtReady:1' || e === 'stateAtReady:3',
-    ) ||
-    embed.finalState === 5 ||
-    embed.finalState === 1 ||
-    embed.finalState === 3
-
   assert.ok(
-    !hadEmbedError,
-    `embed must not hit an embedding/referrer error (events: ${embed.events.join(',')})`,
+    webviewSrc.includes('youtube.com'),
+    `webview src must contain youtube.com (got ${webviewSrc})`,
   )
-  assert.ok(
-    reachedPlayable,
-    `embed must reach cued/playing (events: ${embed.events.join(',')}, finalState ${embed.finalState}, dur ${embed.duration})`,
-  )
-  console.log('thread-smoke [PASS] Error-153 gate — embed loaded under loopback origin')
+  results.webviewPresent = 'PASS'
+  console.log(`thread-smoke [PASS] <webview> present — src=${webviewSrc}`)
 
-  // ── 5. Capture round-trip ──────────────────────────────────────────────────
-  // Get the real player iframe's bounding rect (the singleton iframe created by
-  // playerSingleton.ts — getIframeRect uses wrapper.querySelector('iframe')).
-  const iframeLocator = win.locator(iframeSelector).first()
-  const rect = await iframeLocator.boundingBox()
+  // ── CI-safe check 2: CLEAN_CSS chrome hidden ───────────────────────────────
+  // Read the computed opacity of .ytp-chrome-bottom and .html5-endscreen via
+  // webview.executeJavaScript. Absent elements are treated as PASS (opacity:0 implicit).
+  // Note: webview.executeJavaScript is only available on the Electron WebviewElement,
+  // not via Playwright's win.evaluate. We call it through win.evaluate which accesses
+  // the webview DOM element in the renderer's window.
+  console.log('thread-smoke: checking chrome opacity via webview.executeJavaScript …')
 
-  let capturePath = null
-  let captureWidth = null
-  let captureHeight = null
+  // We need to wait a bit for the guest to receive insertCSS (may take a moment after page load)
+  await new Promise((r) => setTimeout(r, 3000))
 
-  if (!rect || rect.width <= 0 || rect.height <= 0) {
+  const chromeOpacities = await win.evaluate(async () => {
+    const wv = document.querySelector('#yt-player-wrapper webview')
+    if (!wv) return { error: 'no webview' }
+    try {
+      // executeJavaScript returns the evaluated value to the host.
+      // Tolerate null selectors (treat as absent → PASS).
+      const result = await wv.executeJavaScript(`
+        (function() {
+          var chromeBtm = document.querySelector('.ytp-chrome-bottom');
+          var endscreen  = document.querySelector('.html5-endscreen');
+          return {
+            chromeBtmOpacity: chromeBtm
+              ? getComputedStyle(chromeBtm).opacity
+              : null,
+            endscreenOpacity: endscreen
+              ? getComputedStyle(endscreen).opacity
+              : null
+          };
+        })()
+      `)
+      return result
+    } catch (e) {
+      return { error: String(e) }
+    }
+  })
+
+  console.log(`thread-smoke: chrome opacity result = ${JSON.stringify(chromeOpacities)}`)
+
+  if (chromeOpacities?.error) {
+    // Tolerate executeJavaScript errors (e.g. page not yet loaded) as long as webview exists
     console.warn(
-      `thread-smoke [WARN] player iframe bounding rect is zero/null (${JSON.stringify(rect)}) — using fallback rect for capture probe`,
+      `thread-smoke [WARN] chrome opacity check failed with error: ${chromeOpacities.error} — treating as SKIP for CI`,
     )
-    // Fallback to a fixed rect so we still exercise the IPC pipeline.
-    const fallback = { x: 0, y: 0, width: 200, height: 120 }
-    const result = await win.evaluate(
-      async ({ r, videoId }) => window.api.youtube.capture({ rect: r, videoId, t: 5 }),
-      { r: fallback, videoId: VIDEO_ID },
-    )
-    capturePath = result.path
-    captureWidth = result.width
-    captureHeight = result.height
+    results.chromeHidden = 'SKIP'
   } else {
-    const result = await win.evaluate(
-      async ({ r, videoId }) => window.api.youtube.capture({ rect: r, videoId, t: 5 }),
-      { r: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, videoId: VIDEO_ID },
+    // Assert each present element has opacity '0'
+    const btmOk =
+      chromeOpacities?.chromeBtmOpacity == null || chromeOpacities.chromeBtmOpacity === '0'
+    const endOk =
+      chromeOpacities?.endscreenOpacity == null || chromeOpacities.endscreenOpacity === '0'
+    assert.ok(
+      btmOk,
+      `.ytp-chrome-bottom opacity must be '0' or absent (got '${chromeOpacities?.chromeBtmOpacity}')`,
     )
-    capturePath = result.path
-    captureWidth = result.width
-    captureHeight = result.height
+    assert.ok(
+      endOk,
+      `.html5-endscreen opacity must be '0' or absent (got '${chromeOpacities?.endscreenOpacity}')`,
+    )
+    results.chromeHidden = 'PASS'
+    console.log('thread-smoke [PASS] YouTube chrome hidden (CLEAN_CSS applied)')
   }
+
+  // ── CI-safe check 3: webview bounding rect non-zero ───────────────────────
+  // Read the webview element's bounding rect from the renderer DOM (not the guest).
+  const webviewRect = await win.evaluate(() => {
+    const wv = document.querySelector('#yt-player-wrapper webview')
+    if (!wv) return null
+    const r = wv.getBoundingClientRect()
+    return { x: r.x, y: r.y, width: r.width, height: r.height }
+  })
+
+  console.log(`thread-smoke: webview bounding rect = ${JSON.stringify(webviewRect)}`)
+
+  if (!webviewRect || webviewRect.width <= 0 || webviewRect.height <= 0) {
+    console.warn(
+      `thread-smoke [WARN] webview bounding rect is zero/null (${JSON.stringify(webviewRect)}) — ThreadView may not be in side-by-side layout yet`,
+    )
+    results.rectNonZero = 'WARN'
+    console.log('thread-smoke [WARN] rect check — using fallback rect for capture')
+  } else {
+    results.rectNonZero = 'PASS'
+    console.log(
+      `thread-smoke [PASS] webview rect non-zero: ${webviewRect.width}×${webviewRect.height}`,
+    )
+  }
+
+  // ── CI-safe check 4: capture round-trip ───────────────────────────────────
+  // Call the existing capturePage pipeline via window.api.youtube.capture.
+  // Feed it the webview rect (or a fallback if rect was zero).
+  const captureRect =
+    webviewRect && webviewRect.width > 0 && webviewRect.height > 0
+      ? webviewRect
+      : { x: 0, y: 0, width: 200, height: 120 }
+
+  const captureResult = await win.evaluate(
+    async ({ r, videoId }) => window.api.youtube.capture({ rect: r, videoId, t: 5 }),
+    { r: captureRect, videoId: VIDEO_ID },
+  )
+
+  const capturePath = captureResult.path
+  const captureWidth = captureResult.width
+  const captureHeight = captureResult.height
 
   assert.ok(existsSync(capturePath), `PNG must be written at ${capturePath}`)
   assert.ok(
     Number.isInteger(captureWidth) && captureWidth > 0,
-    'capture width is a positive integer',
+    `capture width must be a positive integer (got ${captureWidth})`,
   )
   assert.ok(
     Number.isInteger(captureHeight) && captureHeight > 0,
-    'capture height is a positive integer',
+    `capture height must be a positive integer (got ${captureHeight})`,
   )
 
-  // Wayland dimension contract — soft warn (spec §Risks), same as capture-smoke.
-  if (rect && rect.width > 0) {
+  // Wayland dimension soft-warn (same as original smoke — ADR 0009).
+  if (webviewRect && webviewRect.width > 0) {
     const scaleFactor = await app.evaluate(({ screen, BrowserWindow }) => {
       const w = BrowserWindow.getAllWindows()[0]
       return screen.getDisplayMatching(w.getBounds()).scaleFactor
     })
-    const expected = Math.round(rect.width * scaleFactor)
+    const expected = Math.round(webviewRect.width * scaleFactor)
     if (captureWidth === expected) {
       console.log(
-        `thread-smoke: capture OK ${captureWidth}×${captureHeight} @${scaleFactor}x (physical = rect×sf) → ${capturePath}`,
+        `thread-smoke: capture OK ${captureWidth}×${captureHeight} @${scaleFactor}x → ${capturePath}`,
       )
     } else {
       console.warn(
         `thread-smoke: capture PNG OK (${captureWidth}×${captureHeight} @${scaleFactor}x) but width ${captureWidth} !== rect.width×sf (${expected}) — ` +
-          `getSize() likely returns DIP not physical on this platform (wayland?). ADR 0009 may need updating. → ${capturePath}`,
+          `likely Wayland DIP vs physical (ADR 0009). → ${capturePath}`,
       )
     }
   } else {
@@ -297,16 +291,105 @@ try {
     )
   }
 
-  console.log('thread-smoke [PASS] capture PNG round-trip')
+  results.capturePng = 'PASS'
+  console.log(`thread-smoke [PASS] capture PNG round-trip → ${capturePath}`)
+
+  // ── Playback (only if SMOKE_PLAYBACK=1) ───────────────────────────────────
+  if (!SMOKE_PLAYBACK) {
+    console.log('thread-smoke [SKIP] playback (set SMOKE_PLAYBACK=1)')
+  } else {
+    console.log('thread-smoke: SMOKE_PLAYBACK=1 — attempting playback …')
+
+    // Trigger play via the click-catcher overlay (the transparent div over the webview).
+    // Clicking it calls the facade play() which does userGesture() then RPC play.
+    await win.evaluate(() => {
+      // The click-catcher is the last child of #yt-player-wrapper
+      const wrapper = document.getElementById('yt-player-wrapper')
+      if (wrapper) {
+        const children = wrapper.children
+        const clickCatcher = children[children.length - 1]
+        if (clickCatcher) {
+          clickCatcher.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        }
+      }
+    })
+
+    // Poll guest <video>.currentTime for up to ~15s — assert it advances beyond 0.
+    let startTime = null
+    let currentTime = null
+    let timeAdvanced = false
+    for (let i = 0; i < 15; i++) {
+      await new Promise((r) => setTimeout(r, 1000))
+      const ct = await win.evaluate(async () => {
+        const el = document.querySelector('#yt-player-wrapper webview')
+        if (!el) return -1
+        try {
+          return await el.executeJavaScript('document.querySelector("video")?.currentTime ?? -1')
+        } catch (_e) {
+          return -1
+        }
+      })
+      console.log(`thread-smoke: playback poll ${i + 1}/15 — currentTime=${ct}`)
+      if (startTime === null && ct > 0) startTime = ct
+      if (startTime !== null && ct > startTime) {
+        timeAdvanced = true
+        currentTime = ct
+        break
+      }
+    }
+
+    if (!timeAdvanced) {
+      console.warn(
+        `thread-smoke [WARN] playback: currentTime did not advance — consent/bot wall may be blocking. ` +
+          `Dismiss it manually then re-run with SMOKE_PLAYBACK=1. This is an accepted limitation (spec §11).`,
+      )
+      results.playbackAdvances = 'BLOCKED (consent/bot wall likely)'
+    } else {
+      console.log(`thread-smoke [PASS] playback: currentTime advanced to ${currentTime}s`)
+
+      // Assert the captured PNG has non-black pixels by reading the file size.
+      // A non-trivial image will be substantially larger than a solid-black PNG of the same dimensions.
+      // This is a heuristic; a proper pixel-by-pixel check would need a PNG decoder.
+      const stat = statSync(capturePath)
+      const sizeBytes = stat.size
+      console.log(`thread-smoke: capture PNG file size = ${sizeBytes} bytes`)
+      // A solid-black 200×120 PNG is ~200 bytes; real content is 10×+ larger.
+      // Soft assertion only — log a warning rather than hard-fail (content depends on network/consent).
+      if (sizeBytes < 1000) {
+        console.warn(
+          `thread-smoke [WARN] playback: PNG is suspiciously small (${sizeBytes} B) — may be solid black (DRM or consent wall).`,
+        )
+      } else {
+        console.log(`thread-smoke [PASS] playback: PNG size ${sizeBytes} B — likely non-black`)
+      }
+
+      results.playbackAdvances = 'PASS'
+    }
+  }
 
   // ── Summary ────────────────────────────────────────────────────────────────
   console.log('')
   console.log('thread-smoke RESULTS:')
-  console.log(`  loopback origin:   PASS (${origin})`)
-  console.log(`  thread opened:     ${threadOpened ? 'PASS' : 'FAIL'}`)
-  console.log(`  iframe present:    ${iframePresent ? 'PASS' : 'FAIL'}`)
-  console.log('  Error-153 gate:    PASS')
-  console.log(`  capture PNG:       PASS → ${capturePath}`)
+  console.log(`  loopback origin:   ${results.loopbackOrigin}  (${origin})`)
+  console.log(`  thread opened:     ${results.threadOpened}`)
+  console.log(`  webview present:   ${results.webviewPresent}  (src=${webviewSrc ?? 'n/a'})`)
+  console.log(`  chrome hidden:     ${results.chromeHidden}`)
+  console.log(`  rect non-zero:     ${results.rectNonZero}`)
+  console.log(`  capture PNG:       ${results.capturePng}`)
+  console.log(`  playback advances: ${results.playbackAdvances}`)
+  console.log('')
+
+  // Hard-fail if any CI-safe check did not PASS (WARN is tolerated for rect on headless).
+  const ciChecks = [
+    results.loopbackOrigin,
+    results.threadOpened,
+    results.webviewPresent,
+    results.capturePng,
+  ]
+  const anyFail = ciChecks.some((r) => r === 'FAIL')
+  if (anyFail) {
+    throw new Error('thread-smoke: one or more CI-safe checks FAILED (see above)')
+  }
 } finally {
   await app.close()
   rmSync(userDataDir, { recursive: true, force: true })

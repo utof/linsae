@@ -118,10 +118,15 @@ export function useExpandCollapseMorph(args: {
 
       suppressThumbResizeRef.current = true
       applyFrame(startItemH) // first painted frame at the start height — no flash
+      // Dev-only slow-mo: `window.__morphSlow = 8` in DevTools stretches the
+      // tween Nx so the easing can be felt frame-by-frame while tuning. Computed
+      // once per morph; `import.meta.env.DEV` is a literal `false` in prod, so
+      // this collapses to `MORPH_MS` and tree-shakes out. See GH #49.
+      const duration = import.meta.env.DEV ? MORPH_MS * (window.__morphSlow ?? 1) : MORPH_MS
       let startTs: number | null = null
       const tick = (ts: number) => {
         if (startTs === null) startTs = ts
-        const t = Math.min(1, (ts - startTs) / MORPH_MS)
+        const t = Math.min(1, (ts - startTs) / duration)
         applyFrame(lerp(startItemH, endItemH, easeMorph(t)))
         if (t < 1) rafRef.current = requestAnimationFrame(tick)
         else finish()

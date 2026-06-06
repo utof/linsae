@@ -1,5 +1,6 @@
 import { resolve } from 'node:path'
-import react from '@vitejs/plugin-react'
+import babel from '@rolldown/plugin-babel'
+import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import { DEV_MEDIA_PORT } from './src/main/http-shell'
 
@@ -27,18 +28,41 @@ export default defineConfig({
       },
     },
     plugins: [
+      react(),
       // React Compiler (babel-plugin-react-compiler 1.0) auto-memoizes
-      // components and stabilizes callbacks at build time, so the rolling
-      // feed reconciles only the bubbles that actually changed during a
-      // scroll instead of every visible one each frame. This is the classic-
-      // Babel form valid for @vitejs/plugin-react v5; v6 (Vite 8, oxc) would
-      // instead need @rolldown/plugin-babel. No `target` or runtime package
-      // is needed on React 19 — `react/compiler-runtime` ships with React.
+      // components and stabilizes callbacks at build time, so the rolling feed
+      // reconciles only the bubbles that changed during a scroll. On
+      // @vitejs/plugin-react v6 (Vite 8 / oxc) the classic-Babel pipeline
+      // (react({ babel: { plugins: [...] } })) is gone, so the compiler runs via
+      // @rolldown/plugin-babel + reactCompilerPreset. The `await` works around
+      // electron-vite's deepClone choking on the babel factory's Promise<Plugin>
+      // (electron-vite#902). No runtime package needed on React 19 —
+      // `react/compiler-runtime` ships with React.
       // @see adrs/0006-react-compiler.md
-      // @see https://react.dev/learn/react-compiler/installation
-      react({ babel: { plugins: ['babel-plugin-react-compiler'] } }),
+      // @see https://github.com/alex8088/electron-vite/issues/902
+      await babel({ presets: [reactCompilerPreset()] }),
     ],
     server: {
+      // Warm up the first-paint module graph at dev-server start so the
+      // renderer's first request doesn't waterfall through ~50 source files
+      // (each paying the Babel react-compiler pass) on a cold `pnpm dev`. This
+      // overlaps the transform with main-process boot + Electron window startup.
+      // Paths are relative to the renderer root (`src/renderer`, set by
+      // electron-vite). Only OUR source is listed — node_modules deps are
+      // already pre-bundled (node_modules/.vite/deps shows `discovered: none`),
+      // so `optimizeDeps.include` would be redundant. Measured: cold first paint
+      // ~4.2s vs warm ~1.2s, so the cold source-transform is the target here.
+      // @see https://vite.dev/guide/performance#warm-up-frequently-used-files
+      warmup: {
+        clientFiles: [
+          './src/main.tsx',
+          './src/App.tsx',
+          './src/feed/Feed.tsx',
+          './src/feed/NoteBubble.tsx',
+          './src/lib/markdown.tsx',
+          './src/composer/Composer.tsx',
+        ],
+      },
       // Proxy /_media/ to the loopback shell's fixed dev port so attachment
       // images are same-origin (relative /_media/<tail>) in the dev renderer.
       // In prod the loopback shell serves both the renderer bundle and /_media/

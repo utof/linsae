@@ -14,6 +14,7 @@ import type { NotesDir } from '../files/notes-dir'
 import { registerMediaIpc } from './media'
 import { registerNotesIpc } from './notes'
 import { registerSystemIpc } from './system'
+import { registerYoutubeAuthIpc } from './youtube-auth'
 
 type DB = Database.Database
 
@@ -46,4 +47,5 @@ export function registerAllIpc(
   registerNotesIpc(db, nd)
   registerSystemIpc(notesDir, logsDir, reconcileSkipped)
   registerMediaIpc(db, attachmentsDir)
+  registerYoutubeAuthIpc()
 }

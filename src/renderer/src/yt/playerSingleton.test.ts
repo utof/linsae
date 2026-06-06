@@ -1,64 +1,95 @@
-// @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest'
+// @vitest-environment happy-dom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// `on` returns a sister listener token that `off` must receive verbatim (the
-// real youtube-player/sister contract — see playerSingleton's onStateChange).
-const { ctor, onMock, offMock, LISTENER } = vi.hoisted(() => {
-  const LISTENER = { token: 'stateChange-listener' }
-  return { ctor: vi.fn(), onMock: vi.fn(() => LISTENER), offMock: vi.fn(), LISTENER }
+function stubWebview(el: HTMLElement) {
+  const ex = vi.fn(async (_code: string, _gesture?: boolean) => undefined)
+  Object.assign(el, {
+    executeJavaScript: ex,
+    insertCSS: vi.fn(async () => 'key'),
+    setUserAgent: vi.fn(),
+  })
+  el.getBoundingClientRect = () =>
+    ({
+      x: 1,
+      y: 2,
+      width: 320,
+      height: 180,
+      top: 2,
+      left: 1,
+      right: 321,
+      bottom: 182,
+      toJSON() {},
+    }) as DOMRect
+}
+
+beforeEach(() => {
+  const orig = document.createElement.bind(document)
+  vi.spyOn(document, 'createElement').mockImplementation(((
+    tag: string,
+    opts?: ElementCreationOptions,
+  ) => {
+    const el = orig(tag, opts)
+    if (tag === 'webview') stubWebview(el)
+    return el
+  }) as typeof document.createElement)
 })
 
-vi.mock('youtube-player', () => ({
-  default: (el: HTMLElement) => {
-    ctor(el)
-    return {
-      loadVideoById: vi.fn().mockResolvedValue(undefined),
-      seekTo: vi.fn().mockResolvedValue(undefined),
-      getCurrentTime: vi.fn().mockResolvedValue(0),
-      getDuration: vi.fn().mockResolvedValue(0),
-      playVideo: vi.fn().mockResolvedValue(undefined),
-      pauseVideo: vi.fn().mockResolvedValue(undefined),
-      setPlaybackRate: vi.fn().mockResolvedValue(undefined),
-      on: onMock,
-      off: offMock,
-      getIframe: vi.fn().mockResolvedValue(document.createElement('iframe')),
-      destroy: vi.fn().mockResolvedValue(undefined),
-    }
-  },
-}))
-
-import { destroyPlayer, getPlayer } from './playerSingleton'
+import { destroyPlayer, getPlayer, setPlayerInteractive } from './playerSingleton'
 
 afterEach(() => {
   destroyPlayer()
-  vi.clearAllMocks()
+  vi.restoreAllMocks()
 })
 
-describe('playerSingleton', () => {
-  it('constructs the underlying player exactly once across getPlayer calls', () => {
+describe('playerSingleton (webview)', () => {
+  it('constructs the wrapper+webview exactly once', () => {
     const a = getPlayer()
-    const b = getPlayer()
-    expect(a).toBe(b)
-    expect(ctor).toHaveBeenCalledTimes(1)
+    expect(getPlayer()).toBe(a)
+    expect(a.wrapper.querySelectorAll('webview').length).toBe(1)
   })
-  it('delegates seekTo/getCurrentTime to the wrapped player', async () => {
+  it('load sets the canonical watch src', async () => {
     const p = getPlayer()
-    await p.seekTo(42)
+    await p.load('M7lc1UVf-VE')
+    const wv = p.wrapper.querySelector('webview') as unknown as { src: string }
+    expect(wv.src).toBe('https://www.youtube.com/watch?v=M7lc1UVf-VE')
+    expect(p.videoId).toBe('M7lc1UVf-VE')
+  })
+  it('play() grants a user gesture via executeJavaScript(code, true)', async () => {
+    const p = getPlayer()
+    const wv = p.wrapper.querySelector('webview') as unknown as {
+      executeJavaScript: ReturnType<typeof vi.fn>
+    }
+    await p.play()
+    expect(wv.executeJavaScript).toHaveBeenCalledWith(expect.any(String), true)
+  })
+  it('getCurrentTime resolves from the cache with no RPC handshake', async () => {
+    const p = getPlayer()
     expect(await p.getCurrentTime()).toBe(0)
   })
-  it('onStateChange subscribes via on() and the unsubscribe passes the listener token to off()', () => {
-    const p = getPlayer()
-    const unsub = p.onStateChange(() => {})
-    expect(onMock).toHaveBeenCalledWith('stateChange', expect.any(Function))
-    expect(offMock).not.toHaveBeenCalled()
-    unsub()
-    // off() must receive the value on() returned (a no-op if the handler fn were passed instead).
-    expect(offMock).toHaveBeenCalledWith(LISTENER)
+  it('getMediaRect returns the webview rect', () => {
+    expect(getPlayer().getMediaRect()?.width).toBe(320)
   })
-  it('reconstructs a fresh player after destroyPlayer()', () => {
-    getPlayer()
+  it('setPlayerInteractive toggles the wrapper pointer-events (drag click-through)', () => {
+    const p = getPlayer()
+    setPlayerInteractive(false)
+    expect(p.wrapper.style.pointerEvents).toBe('none')
+    setPlayerInteractive(true)
+    expect(p.wrapper.style.pointerEvents).toBe('')
+  })
+  it('reconstructs after destroyPlayer()', () => {
+    const a = getPlayer()
     destroyPlayer()
-    getPlayer()
-    expect(ctor).toHaveBeenCalledTimes(2)
+    expect(getPlayer()).not.toBe(a)
+  })
+  it('mount/unmount keeps the wrapper attached to <body> (never re-parented)', () => {
+    const p = getPlayer()
+    expect(p.wrapper.parentElement).toBe(document.body)
+    const hostEl = document.createElement('div')
+    p.mount(hostEl)
+    // Positioned OVER the host, not moved into it (moving a <webview> destroys
+    // its guest — electron#9529).
+    expect(p.wrapper.parentElement).toBe(document.body)
+    p.unmount()
+    expect(p.wrapper.parentElement).toBe(document.body)
   })
 })

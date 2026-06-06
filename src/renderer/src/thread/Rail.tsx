@@ -28,10 +28,15 @@
  */
 
 import { PinOff } from 'lucide-react'
+import { Fragment } from 'react'
 import type { Attachment, Note } from '../../../shared/types'
+import { DayDivider } from '../feed/DatePills'
+import { useClock24 } from '../lib/clock-pref'
+import { dayKey, formatDayLabel } from '../lib/day'
 import { Markdown } from '../lib/markdown'
 import { mediaUrlFromPath } from '../lib/media-url'
 import { formatClock } from '../lib/time'
+import { formatTimeOnly } from '../lib/wallclock'
 import { activeClusterIndex, logGapHeight } from './rail-layout'
 
 // ── layout constants (shared column + its left rail gutter) ─────────────────
@@ -83,16 +88,30 @@ export interface RailProps {
 }
 
 /** A neutral note bubble: screenshot frame (if any) fills the bubble, body below. */
-function NoteBubble({ item, active }: { item: RailItem; active: boolean }) {
+function NoteBubble({
+  item,
+  active,
+  dataDay,
+}: {
+  item: RailItem
+  active: boolean
+  /** Day label (capture mode only) — read by ThreadView's floating date pill. */
+  dataDay?: string
+}) {
+  const clock24 = useClock24()
   return (
     <div
       data-testid="rail-note"
+      data-day={dataDay}
       style={{
         background: '#fff',
         border: `1px solid ${active ? 'var(--accent)' : 'var(--border-0)'}`,
         borderRadius: 'var(--r-5)',
         padding: '9px 11px',
         boxShadow: active ? '0 0 0 3px var(--accent-tint)' : 'none',
+        // Break long unbroken tokens (URLs, no-space pastes) instead of overflowing
+        // the card to the right — matches the feed NoteBubble.
+        overflowWrap: 'anywhere',
       }}
     >
       {item.attachment && (
@@ -114,10 +133,25 @@ function NoteBubble({ item, active }: { item: RailItem; active: boolean }) {
         </div>
       )}
       {item.note.body && (
-        <div style={{ fontSize: 14, lineHeight: 'var(--lh-normal)', color: 'var(--fg-1)' }}>
+        <div
+          data-testid="rail-note-body"
+          style={{ fontSize: 14, lineHeight: 'var(--lh-normal)', color: 'var(--fg-1)' }}
+        >
           <Markdown body={item.note.body} onWikilinkClick={NOOP} />
         </div>
       )}
+      {/* Wall-clock post time — the thread note had none; matches the feed bubble. */}
+      <div
+        style={{
+          marginTop: 4,
+          textAlign: 'right',
+          fontSize: 11,
+          color: 'var(--fg-3)',
+          fontFamily: 'var(--font-sans)',
+        }}
+      >
+        {formatTimeOnly(item.createdAt, !clock24)}
+      </div>
     </div>
   )
 }
@@ -160,9 +194,12 @@ function ClusterRow({
         aria-label={`seek to ${formatClock(cluster.t)}`}
         onClick={() => onSeek(cluster.t)}
         style={{
+          // Aligned to the first note's first text line: bubble padding-top (9) +
+          // half a 1.5×14px line ≈ 19.5px center. The 11px mono label centers
+          // there at top 13; the dot below centers there at top 15.
           position: 'absolute',
           left: -76,
-          top: 11,
+          top: 13,
           width: 44,
           textAlign: 'right',
           border: 0,
@@ -183,9 +220,10 @@ function ClusterRow({
         aria-label={`seek to ${formatClock(cluster.t)}`}
         onClick={() => onSeek(cluster.t)}
         style={{
+          // top 15 → dot center 19.5 = first-line center (see rail-time above).
           position: 'absolute',
           left: DOTC - 4.5,
-          top: 13,
+          top: 15,
           width: 9,
           height: 9,
           borderRadius: '50%',
@@ -303,11 +341,22 @@ export function Rail({
   flashClusterIdx = -1,
 }: RailProps) {
   if (mode === 'capture') {
+    // Capture order is chronological by creation, so the feed's Telegram-style day
+    // dividers fit here. They make NO sense in video-time order (which has no date
+    // monotonicity), which is why this is the only thread view that gets them.
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {sorted.map((it) => (
-          <NoteBubble key={it.id} item={it} active={false} />
-        ))}
+        {sorted.map((it, i) => {
+          const prev = sorted[i - 1]
+          const newDay = prev === undefined || dayKey(it.createdAt) !== dayKey(prev.createdAt)
+          const label = formatDayLabel(it.createdAt)
+          return (
+            <Fragment key={it.id}>
+              {newDay && <DayDivider label={label} />}
+              <NoteBubble item={it} active={false} dataDay={label} />
+            </Fragment>
+          )
+        })}
       </div>
     )
   }

@@ -96,3 +96,28 @@ full content as it grows), so it swaps content up front as before.
 - tanstack-virtual `resizeItem` / `shouldAdjustScrollPositionOnItemSizeChange` —
   https://tanstack.com/virtual/latest/docs/api/virtualizer
 - virtual-core 3.16 source (`dist/esm/index.js`) — confirms the instance-property read.
+
+## Amendment (2026-05-31) — collapse reuses cached geometry instead of the measure-swap
+
+The original "measure the collapsed target up front via a no-paint `flushSync`
+content swap" had a sharp cost: the swap toggles `<Markdown body={displayBody}>`'s
+`body` prop, and `Markdown` is `memo`'d on a shallow body compare — so a collapse
+re-rendered the expensive markdown + KaTeX subtree **3×** (full→truncated to
+measure, truncated→full to restore, full→truncated at `onCommit`). On KaTeX-heavy
+notes that froze the animation for hundreds of ms (~1.1s measured) in the
+electron-vite dev build; prod absorbs it (~97ms) but it grows with note size. See
+GH #50 (and #48 for the separate StrictMode/flushSync dev-amplification).
+
+**Collapse now reuses cached geometry, not a swap.** When a note is *expanded*,
+its pre-swap layout *is* the collapse target, so `Feed` caches the collapsed
+`{ itemH, nonBodyH }` then (`collapsedGeomRef`). On collapse it reads the cache and
+runs the morph with the full content left mounted — **zero up-front Markdown
+re-render**. `expandedIds` is ephemeral, so every collapse follows an expand →
+the cache is populated; the measure-swap remains as a fallback for the rare
+cache-miss (note off-screen when expanded). Stale geometry (resize/edit between
+expand and collapse) is reconciled by the existing final remeasure on finish.
+
+Unchanged: the full content stays mounted for the roll-up; `onCommit` still
+truncates at finish (one remaining truncation render, bounded by the
+`BODY_TRUNCATE_AT` cap). Expand is untouched — it must render the full content it
+reveals, so its single full render is inherent.

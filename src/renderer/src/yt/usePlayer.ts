@@ -8,9 +8,11 @@ import { getPlayer } from './playerSingleton'
  * non-null (getDuration() returns 0/null until the video is cued — a one-shot
  * would leave duration null forever, breaking scrubber markers).
  *
- * Why: singleton pattern documented in playerSingleton.ts + ADR 0008.
- * Cleanup cancels the rAF and unsubscribes state listener but does NOT destroy
- * the singleton — it persists across React mounts so the iframe never reloads.
+ * Why: singleton pattern documented in playerSingleton.ts + ADR 0008/0016.
+ * The webview is NEVER re-parented (moving a <webview> destroys its guest —
+ * electron#9529); usePlayer only mount()s it (show + position-sync over hostRef)
+ * and unmount()s it (hide) on cleanup. The singleton persists, so the guest is
+ * never torn down and the page never reloads on StrictMode double-mount.
  *
  * @see src/renderer/src/yt/playerSingleton.ts
  */
@@ -22,7 +24,7 @@ export function usePlayer(videoId: string, hostRef: React.RefObject<HTMLElement 
 
   useEffect(() => {
     const player = playerRef.current
-    hostRef.current?.appendChild(player.wrapper)
+    if (hostRef.current) player.mount(hostRef.current)
     player.load(videoId)
     const unsub = player.onStateChange(setState)
     let raf = 0
@@ -48,7 +50,8 @@ export function usePlayer(videoId: string, hostRef: React.RefObject<HTMLElement 
     return () => {
       cancelAnimationFrame(raf)
       unsub()
-    } // singleton persists; only this view's listeners stop
+      player.unmount() // park the (persistent) webview off-screen; guest is NOT destroyed
+    }
   }, [videoId, hostRef])
 
   return { player: playerRef.current, currentTime, state, duration }

@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 /**
  * Component tests for ThreadComposer.
  *
@@ -159,6 +159,18 @@ describe('ThreadComposer', () => {
     expect(screen.getByTestId('composer-chip')).toHaveTextContent('0:30')
   })
 
+  it('(g) renders the error message and turns the border red', () => {
+    render(<ThreadComposer {...makeProps()} error="a note with that title already exists" />)
+    expect(screen.getByRole('alert')).toHaveTextContent(/already exists/i)
+  })
+
+  it('(g) typing clears the error via onClearError', () => {
+    const onClearError = vi.fn()
+    render(<ThreadComposer {...makeProps({ onClearError })} error="duplicate" />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'x' } })
+    expect(onClearError).toHaveBeenCalledOnce()
+  })
+
   it('pendingFrame thumbnail renders when prop is set', () => {
     render(
       <ThreadComposer
@@ -173,6 +185,61 @@ describe('ThreadComposer', () => {
   it('pendingFrame thumbnail absent when prop is null', () => {
     render(<ThreadComposer {...makeProps()} pendingFrame={null} />)
     expect(screen.queryByRole('img', { name: /frame/i })).toBeNull()
+  })
+
+  it('(e) bare digits resolve right-to-left (1234 → 12:34)', () => {
+    const onManualSeekEntry = vi.fn()
+    render(<ThreadComposer {...makeProps({ livePlayhead: 30, onManualSeekEntry })} />)
+
+    fireEvent.click(screen.getByTestId('composer-chip'))
+    const input = screen.getByTestId('chip-time-input')
+    fireEvent.change(input, { target: { value: '1234' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('12:34')
+    expect(onManualSeekEntry).toHaveBeenCalledWith(12 * 60 + 34)
+  })
+
+  it('(e) entry beyond the video duration is clamped to the end', () => {
+    const onManualSeekEntry = vi.fn()
+    // 8:21 video (501 s); entering 9:00 (540 s) must clamp to 8:21.
+    render(
+      <ThreadComposer {...makeProps({ livePlayhead: 30, duration: 501, onManualSeekEntry })} />,
+    )
+
+    fireEvent.click(screen.getByTestId('composer-chip'))
+    const input = screen.getByTestId('chip-time-input')
+    fireEvent.change(input, { target: { value: '900' } }) // 9:00
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('8:21')
+    expect(onManualSeekEntry).toHaveBeenCalledWith(501)
+  })
+
+  it('(e) live-clamps to duration while typing (before Enter)', () => {
+    // 3:24 video (204 s). Hammering 9s must cap the displayed input at 3:24 as
+    // you type, not only on commit.
+    render(<ThreadComposer {...makeProps({ livePlayhead: 30, duration: 204 })} />)
+
+    fireEvent.click(screen.getByTestId('composer-chip'))
+    const input = screen.getByTestId('chip-time-input') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '9999' } })
+    expect(input.value).toBe('3:24')
+    // More digits still frozen at the cap.
+    fireEvent.change(input, { target: { value: '99999' } })
+    expect(input.value).toBe('3:24')
+  })
+
+  it('(e) non-digit characters are ignored in the input', () => {
+    render(<ThreadComposer {...makeProps({ livePlayhead: 30 })} />)
+
+    fireEvent.click(screen.getByTestId('composer-chip'))
+    const input = screen.getByTestId('chip-time-input')
+    // letters interleaved with digits → only the digits survive (1, 1, 5 → 1:15)
+    fireEvent.change(input, { target: { value: 'a1b1c5' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:15')
   })
 
   it('onManualSeekEntry called when chip time is updated via the input', () => {

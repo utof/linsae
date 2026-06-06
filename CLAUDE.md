@@ -41,15 +41,14 @@
 
 **Review-round cap (per artifact):** spec reviews = **1**, plan reviews = **1**. After the cap, accept residual nits, queue them for `gh issue create -l nit`, and proceed. (Numbers literal — bump to 2 if drift is observed.)
 
-**Nit threshold:** see `## Inline-fix gate` below. **Never** mention Claude Code / sessions / AI authorship in issue / PR / commit text.
+**Nit threshold:** see `## Inline-fix gate` below. **Never** mention Claude Code / sessions / AI authorship in issue / PR.
 
-## Inline-fix gate (ALL must hold; else `gh issue create -R utof/linsae -l nit`)
+## Inline-fix gate (ALL must hold; else `gh issue create -R utof/linsae -l nit`) p.s. REMINDER - DONT FORGET ABOUT THIS. also, if issue - check & include relevant tags
 **Scope: nits only.** Blockers (failing tests, spec / ADR violations, security regressions, hard-gate breaches) fix on the branch regardless of size — gate doesn't apply.
 
 **Hard gates (never relax — independent of model power):**
 - Diff touches no exported symbol, no public type, no config schema, no Zod schema, no DB/migration/ADR.
 - No new dep, no version bump, no lockfile churn.
-- No public-network surface (env var / secret / route / cron / webhook) added or renamed.
 
 **Capability-bounded gates (Opus-era ceilings; relax further only with measurement):**
 - ≤4 impl files (tests / docs / fixtures don't count).
@@ -89,7 +88,7 @@ Cover both library choice AND named-API correctness. Don't reflex-audit.
 **NEVER** gate on self-rated confidence — verbalised probabilities are uncalibrated (Xiong ICLR 2024).
 
 ## Stack
-pnpm · Electron 30+ via electron-vite · React 19 + TypeScript strict · better-sqlite3 (raw SQL migrations via Vite `import.meta.glob('./migrations/*.sql', { query: '?raw', eager: true })`; no Drizzle at v0.1) · FTS5 with `bm25()`+`snippet()` · `@tanstack/react-virtual` (MIT) for the rolling feed — see ADR 0005; `react-virtuoso` was used through v0.1.2 and replaced after the OSS package's chat-stability limit (petyosi/react-virtuoso#1240) burned through nine fix attempts · cmdk · react-markdown + remark-gfm/math + rehype-katex + a custom `remark-wikilinks` plugin · lucide-react · react-hotkeys-hook · @tanstack/react-query · uuidv7 · js-yaml · Zod at IPC boundaries · @electron/rebuild (NOT deprecated `electron-rebuild`) · Vitest + RTL + jsdom · Biome · knip · lefthook. Tauri ruled out (YouTube iframe + screenshot-at-timestamp). No Tailwind at v0.1 — inline `style` with v21 CSS-variable tokens.
+pnpm · Electron 30+ via electron-vite · React 19 + TypeScript strict · better-sqlite3 (raw SQL migrations via Vite `import.meta.glob('./migrations/*.sql', { query: '?raw', eager: true })`; no Drizzle at v0.1) · FTS5 with `bm25()`+`snippet()` · `@tanstack/react-virtual` (MIT) for the rolling feed — see ADR 0005; `react-virtuoso` was used through v0.1.2 and replaced after the OSS package's chat-stability limit (petyosi/react-virtuoso#1240) burned through nine fix attempts · cmdk · react-markdown + remark-gfm/math + rehype-katex + a custom `remark-wikilinks` plugin · lucide-react · react-hotkeys-hook · @tanstack/react-query · uuidv7 · js-yaml · Zod at IPC boundaries · @electron/rebuild (NOT deprecated `electron-rebuild`) · Vitest + RTL + happy-dom (jsdom dropped for ~2× faster suite — see ADR 0014; node-env tests pin `// @vitest-environment node`) · Biome · knip · lefthook. Tauri ruled out (YouTube iframe + screenshot-at-timestamp). No Tailwind at v0.1 — inline `style` with v21 CSS-variable tokens.
 
 ## Precommit (lefthook · order matters)
 1. `biome check --apply` (format + lint)
@@ -101,7 +100,7 @@ pnpm · Electron 30+ via electron-vite · React 19 + TypeScript strict · better
 Any step fails → commit blocked. **Never** `--no-verify`. Add `"prepare": "lefthook install"` to `package.json` so fresh clones install hooks on `pnpm install`.
 
 ## Tests every batch
-- **Unit (Vitest, jsdom)** for pure logic (parsers, query wrappers, resolvers, normalizers, atomic-write).
+- **Unit (Vitest)** for pure logic (parsers, query wrappers, resolvers, normalizers, atomic-write) — node-env tests pin `// @vitest-environment node`; the rest inherit the global happy-dom env.
 - **Component (Vitest + React Testing Library)** via `tests/setup.tsx`'s `renderWithProviders` (wraps in `QueryClientProvider`) + `installMockApi` (mocks `window.api`).
 - **Integration (Vitest, real disk + real SQLite file in `mkdtempSync` tmpdirs)** for file↔DB round-trip, reconciler malformed-skip behavior, and external-edit-between-sessions.
 - **Visual regression — Playwright `toHaveScreenshot()`** against a fixed-viewport Electron window with seed data — starts at **v0.2**, deliberately deferred from v0.1.

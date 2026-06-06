@@ -75,8 +75,37 @@ in single component-body closures the compiler *can* memoize.
 - **Verification:** the optimization is perf, not behavior, so it is confirmed
   with the dev FPS meter (`DevFpsMeter`), not the unit suite.
 
+## Amendment (2026-06-01) — Vite 8 / plugin-react v6 (Oxc)
+
+The "Upgrade note" above is now done (commit `580adf0`). On `@vitejs/plugin-react`
+v6 the inline `react({ babel: {...} })` option is gone: JSX + Fast Refresh
+transform via **Oxc** (Rust). The React Compiler still runs through **Babel**, so
+it is wired separately via `@rolldown/plugin-babel` + `reactCompilerPreset()`:
+
+```ts
+plugins: [react(), await babel({ presets: [reactCompilerPreset()] })]
+```
+
+- `reactCompilerPreset()` ships a build-performance filter that narrows the
+  (still-Babel) compiler pass — the sanctioned way to bound its cost.
+- The `await` is required: `electron-vite` deep-clones the config and chokes on
+  the babel factory's `Promise<Plugin>` ([electron-vite#902]); awaiting resolves
+  the plugin before the clone.
+- **SWC** (`@vitejs/plugin-react-swc`) was evaluated and rejected: the project is
+  de-emphasizing SWC toward Oxc, and the React Compiler's supported path is Babel
+  on every current config — so the win was "move JSX/Refresh to Oxc" (done by the
+  upgrade), not "swap Babel for SWC".
+- Versions: vite 8.0.14, electron-vite 6.0.0-beta.1 (**pinned — beta**),
+  @vitejs/plugin-react 6.0.2, @rolldown/plugin-babel 0.2.3. Validated: build
+  (compiler-runtime in bundle), tsc web+node, vitest 383/383, prod launch, dev
+  serve, knip (`@rolldown/plugin-babel` added to `ignoreDependencies`).
+
+[electron-vite#902]: https://github.com/alex8088/electron-vite/issues/902
+
 ## Sources
 
+- electron-vite #902 (deepClone of async babel plugin) — https://github.com/alex8088/electron-vite/issues/902
+- `@rolldown/plugin-babel` — https://www.npmjs.com/package/@rolldown/plugin-babel
 - React Compiler v1.0 announcement — https://react.dev/blog/2025/10/07/react-compiler-1
 - Installation (Vite, classic Babel form) — https://react.dev/learn/react-compiler/installation
 - `babel-plugin-react-compiler` — https://www.npmjs.com/package/babel-plugin-react-compiler

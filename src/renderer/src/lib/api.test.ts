@@ -23,7 +23,14 @@ describe('api.youtube/attachments/videoSources facade', () => {
     })
     // @ts-expect-error test stub
     window.api = {
-      youtube: { capture, fetchOEmbed: vi.fn() },
+      youtube: {
+        capture,
+        fetchOEmbed: vi.fn(),
+        authStatus: vi.fn(),
+        signIn: vi.fn(),
+        signOut: vi.fn(),
+        importCookies: vi.fn(),
+      },
       attachments: { list: vi.fn(), attachToNote: vi.fn() },
       videoSources: { upsert: vi.fn(), get: vi.fn() },
     }
@@ -40,7 +47,14 @@ describe('api.youtube/attachments/videoSources facade', () => {
     const upsert = vi.fn().mockResolvedValue(undefined)
     // @ts-expect-error test stub
     window.api = {
-      youtube: { capture: vi.fn(), fetchOEmbed: vi.fn() },
+      youtube: {
+        capture: vi.fn(),
+        fetchOEmbed: vi.fn(),
+        authStatus: vi.fn(),
+        signIn: vi.fn(),
+        signOut: vi.fn(),
+        importCookies: vi.fn(),
+      },
       attachments: { list: vi.fn(), attachToNote: vi.fn() },
       videoSources: { upsert, get: vi.fn() },
     }

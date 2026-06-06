@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 /**
  * Component tests for the video-order Rail.
  *
@@ -22,6 +22,7 @@ import { fireEvent, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../../../tests/setup'
 import type { Attachment, Note } from '../../../shared/types'
+import { formatDayLabel } from '../lib/day'
 import { Rail } from './Rail'
 import { clusterByPause, logGapHeight } from './rail-layout'
 
@@ -212,5 +213,30 @@ describe('Rail (capture mode)', () => {
     expect(screen.queryByTestId('rail-gap')).not.toBeInTheDocument()
     expect(screen.queryByTestId('rail-playhead')).not.toBeInTheDocument()
     expect(screen.queryByTestId('rail-dot')).not.toBeInTheDocument()
+  })
+
+  it('inserts a date divider when the capture day changes', () => {
+    // Fixed 2024 dates → stable month/day labels (never today/yesterday).
+    const day1 = new Date(2024, 0, 15, 9, 0, 0).getTime()
+    const day2 = new Date(2024, 0, 16, 9, 0, 0).getTime()
+    const mk = (id: string, createdAt: number) => ({
+      id,
+      t: null,
+      createdAt,
+      note: baseNote(id, null),
+      attachment: null,
+    })
+    renderWithProviders(
+      <Rail
+        clusters={[]}
+        anchorless={[]}
+        sorted={[mk('d1', day1), mk('d2', day2)]}
+        mode="capture"
+        playheadT={0}
+        onSeekNote={vi.fn()}
+      />,
+    )
+    expect(screen.getByText(formatDayLabel(day1))).toBeInTheDocument()
+    expect(screen.getByText(formatDayLabel(day2))).toBeInTheDocument()
   })
 })

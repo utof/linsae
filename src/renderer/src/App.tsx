@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import type { Note, NoteType } from '../../shared/types'
 import { BacklinksPane } from './backlinks/BacklinksPane'
@@ -8,8 +8,18 @@ import { Feed } from './feed/Feed'
 import { api } from './lib/api'
 import { parseYouTubeUrl } from './lib/parse-youtube-url'
 import { CommandPalette } from './palette/CommandPalette'
+import { SettingsPanel } from './settings/SettingsPanel'
 import { ThreadView } from './thread/ThreadView'
 import { WindowFrame } from './topbar/WindowFrame'
+
+// Reveal-animation playground (mod+shift+R) — a dev tool. Enabled in `pnpm dev`, and in
+// a build via `VITE_PLAYGROUND=1 electron-vite build` (so it can be harness-driven); a
+// normal production build tree-shakes it out (both flags statically false).
+// @see src/renderer/src/dev/RevealPlayground.tsx
+const DEV_PLAYGROUND = import.meta.env.DEV || !!import.meta.env.VITE_PLAYGROUND
+const RevealPlayground = DEV_PLAYGROUND
+  ? lazy(() => import('./dev/RevealPlayground').then((m) => ({ default: m.RevealPlayground })))
+  : null
 
 /**
  * Root shell for v0.1 — composes Topbar, Feed, Composer, BacklinksPane, and
@@ -50,15 +60,18 @@ import { WindowFrame } from './topbar/WindowFrame'
  */
 export function App() {
   const queryClient = useQueryClient()
-  const { data: notes = [] } = useQuery({
+  const { data: notes = [], isPending: notesPending } = useQuery({
     queryKey: ['notes'],
-    // limit: defaults to 100 via the Zod schema. The plan literal said 5000 but
-    // NotesListInputSchema caps limit at 500 (zod-schemas.ts:60), so 5000 throws.
-    // True infinite scroll / pagination is tracked in issue #20 for v0.1.1+.
+    // limit defaults to 500 (the Zod max) — the NEWEST 500 notes, oldest-first
+    // (listNotes). A new note is always in this page; older notes beyond 500 wait
+    // on scroll-back pagination (issue #20). The plan literal said 5000 but the
+    // schema caps at 500.
     queryFn: () => api.notes.list(),
   })
   const [focusedId, setFocusedId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [playgroundOpen, setPlaygroundOpen] = useState(false)
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null)
   const [draftBody, setDraftBody] = useState<string | null>(null)
   const [skipBannerDismissed, setSkipBannerDismissed] = useState(false)
@@ -79,6 +92,32 @@ export function App() {
   // body-preservation contract).
   const [successCount, setSuccessCount] = useState(0)
 
+  // Send-in-progress flag: true from the moment the user submits a new note until
+  // shortly after it has glided into place. The Feed reads it to suppress the
+  // virtualizer's own auto-scroll (`anchorTo:'end'` / `followOnAppend`) during the
+  // window where the make-room scroll-glide (`useAppendReveal`) owns the scroll —
+  // without it, the new row's first measure rides the scroll up and rapid sends
+  // desync the rendered range (the #66 white wall). The note simply rises into view
+  // via the glide; there is no flying ghost (ADR 0020 supersedes ADR 0018).
+  const feedScrollerRef = useRef<HTMLDivElement | null>(null)
+  const [sendInFlight, setSendInFlight] = useState(false)
+  const sendingTimerRef = useRef<number | undefined>(undefined)
+  useEffect(
+    () => () => {
+      if (sendingTimerRef.current !== undefined) clearTimeout(sendingTimerRef.current)
+    },
+    [],
+  )
+  const beginSend = () => {
+    setSendInFlight(true)
+    if (sendingTimerRef.current !== undefined) clearTimeout(sendingTimerRef.current)
+    // Cover create (async) + the ~0.4s reveal; the Feed's own `revealing` flag takes
+    // over for the glide itself, so this only needs to bridge submit → append. Scales
+    // with the dev slow-mo so debugging at `__morphSlow` keeps the suppression on.
+    const ms = import.meta.env.DEV ? 700 * (window.__morphSlow ?? 1) : 700
+    sendingTimerRef.current = window.setTimeout(() => setSendInFlight(false), ms)
+  }
+
   // Clear submitError whenever the composer's context changes (user clicks
   // edit on a different note, opens a dangling-wikilink draft, etc.). Without
   // this, an unrelated create error from a previous attempt would briefly
@@ -87,6 +126,23 @@ export function App() {
   useEffect(() => {
     setSubmitError(null)
   }, [editingNoteId, draftBody])
+
+  // Remove the static boot splash (index.html #boot-splash) once the notes
+  // query has settled. The splash paints on the first frame — before the JS
+  // module graph mounts — so the window appears immediately instead of after
+  // React is ready; keeping it until `notesPending` flips false also covers the
+  // post-mount notes-IPC gap, so the feed crossfades straight in with no
+  // "nothing yet" flash. The splash lives outside React's #root (createRoot
+  // never touches it), so we remove it imperatively. This effect runs after the
+  // commit that rendered the feed has painted, so we reveal a painted feed.
+  useEffect(() => {
+    if (notesPending) return
+    const splash = document.getElementById('boot-splash')
+    if (!splash) return
+    splash.classList.add('boot-splash--hide')
+    const t = window.setTimeout(() => splash.remove(), 360)
+    return () => window.clearTimeout(t)
+  }, [notesPending])
 
   // Synchronous slug-only resolver for the Markdown component's dangling
   // class pass. The full alias-aware resolver runs only on click (below).
@@ -196,6 +252,10 @@ export function App() {
   useHotkeys(
     'esc',
     () => {
+      if (settingsOpen) {
+        setSettingsOpen(false)
+        return
+      }
       if (paletteOpen) {
         setPaletteOpen(false)
         return
@@ -205,7 +265,16 @@ export function App() {
       }
     },
     { enableOnFormTags: ['textarea', 'input'] },
-    [paletteOpen, focusedId],
+    [settingsOpen, paletteOpen, focusedId],
+  )
+  // DEV: toggle the reveal-animation playground (mod+shift+R).
+  useHotkeys(
+    'mod+shift+r',
+    (e) => {
+      e.preventDefault()
+      setPlaygroundOpen((o) => !o)
+    },
+    { enabled: DEV_PLAYGROUND, enableOnFormTags: ['textarea', 'input'] },
   )
 
   /**
@@ -253,7 +322,10 @@ export function App() {
         background: 'var(--bg-0)',
       }}
     >
-      <WindowFrame onOpenPalette={() => setPaletteOpen(true)} />
+      <WindowFrame
+        onOpenPalette={() => setPaletteOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
       {/* Body row: position:relative so BacklinksPane can absolutely overlay
          it without pushing the feed left when the pane opens (the previous
          flex-sibling layout shifted the entire feed; user feedback called
@@ -349,6 +421,8 @@ export function App() {
               ) : (
                 <Feed
                   notes={notes}
+                  scrollerRef={feedScrollerRef}
+                  sendInFlight={sendInFlight}
                   focusedId={focusedId}
                   // Toggle behaviour: clicking an unfocused bubble focuses it (opens
                   // BacklinksPane); clicking the already-focused bubble unfocuses it
@@ -392,7 +466,12 @@ export function App() {
                   initialMode="claim"
                   error={submitError}
                   onClearError={() => setSubmitError(null)}
-                  onSubmit={({ body, type }) => createMut.mutate({ body, type })}
+                  // Flag the send so the Feed suppresses its auto-scroll while the new
+                  // note glides in (see `beginSend`), THEN create it.
+                  onSubmit={({ body, type }) => {
+                    beginSend()
+                    createMut.mutate({ body, type })
+                  }}
                   onCancel={() => setDraftBody(null)}
                   onPasteText={handlePasteText}
                 />
@@ -413,6 +492,12 @@ export function App() {
         onClose={() => setPaletteOpen(false)}
         onJump={setFocusedId}
       />
+      <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {DEV_PLAYGROUND && playgroundOpen && RevealPlayground && (
+        <Suspense fallback={null}>
+          <RevealPlayground onClose={() => setPlaygroundOpen(false)} />
+        </Suspense>
+      )}
     </div>
   )
 }

@@ -55,7 +55,10 @@ const SourceLocatorSchema = z.object({
  * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 6
  */
 export const NotesListInputSchema = z.object({
-  limit: z.number().int().positive().max(500).default(100),
+  // Default to the max page size: `listNotes` returns the NEWEST `limit` notes, so
+  // a small default would hide a user's older notes behind the most recent N. 500
+  // covers most personal vaults in one page until scroll-back pagination (#20).
+  limit: z.number().int().positive().max(500).default(500),
   before: z.number().int().nonnegative().optional(),
 })
 

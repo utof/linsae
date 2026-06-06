@@ -1,157 +1,11 @@
 import { ChevronDown, Link2, Pen, Trash2 } from 'lucide-react'
 import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
+import { useClock24 } from '../lib/clock-pref'
 import { Markdown } from '../lib/markdown'
+import { formatTimeOnly } from '../lib/wallclock'
+import { type ContextMenuPos, NoteContextMenu } from './ContextMenu'
 import { MediaFeedNoteContainer } from './MediaFeedNote'
-
-interface ContextMenuPos {
-  x: number
-  y: number
-}
-
-/**
- * Floating context menu shown on right-click of a NoteBubble.
- *
- * Why custom React (not native Electron Menu.popup via IPC): testable in jsdom
- * without a new IPC channel, matches the v21 inline-style aesthetic, and avoids
- * the async round-trip that would prevent synchronous callback assertions in RTL.
- *
- * Why single-click delete (no arm pattern): the labeled menu item is itself the
- * confirmation surface — the user explicitly chose "Delete" from a named list,
- * unlike the hover toolbar where the trash icon is 14px next to copy-link.
- *
- * Why right-click does NOT also fire onFocus: this app wires `focusedId` to
- * the BacklinksPane's visibility (App.tsx), so opening a context menu would
- * silently open the backlinks panel as a side-effect. The menu's actions
- * capture bubble identity via closure, so selection is implicit anyway.
- *
- * @see docs/specs/v0.1-rolling-feed-and-search.md §Feed bubble
- */
-function BubbleContextMenu({
-  pos,
-  onEdit,
-  onCopyLink,
-  onDelete,
-  onClose,
-}: {
-  pos: ContextMenuPos
-  onEdit: () => void
-  onCopyLink: () => void
-  onDelete: () => void
-  onClose: () => void
-}) {
-  const menuRef = useRef<HTMLDivElement | null>(null)
-
-  // Close on Escape key and mousedown-outside via document listeners.
-  // Why document-level (not window): document captures events before window in
-  // the bubbling phase, matching the expected "click outside" contract in jsdom.
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    const handleMouseDown = (e: globalThis.MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onClose()
-      }
-    }
-    document.addEventListener('keydown', handleKey)
-    document.addEventListener('mousedown', handleMouseDown)
-    return () => {
-      document.removeEventListener('keydown', handleKey)
-      document.removeEventListener('mousedown', handleMouseDown)
-    }
-  }, [onClose])
-
-  const itemStyle: React.CSSProperties = {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    width: '100%',
-    padding: '6px 12px',
-    fontSize: 13,
-    fontFamily: 'var(--font-sans)',
-    color: 'var(--fg-0)',
-    border: 0,
-    background: 'transparent',
-    cursor: 'pointer',
-    textAlign: 'left',
-    borderRadius: 2,
-  }
-
-  const makeHandler = (cb: () => void) => (e: MouseEvent) => {
-    e.stopPropagation()
-    cb()
-    onClose()
-  }
-
-  return (
-    <div
-      ref={menuRef}
-      role="menu"
-      style={{
-        position: 'fixed',
-        top: pos.y,
-        left: pos.x,
-        zIndex: 1000,
-        background: '#fff',
-        border: '1px solid var(--border-1)',
-        borderRadius: 4,
-        padding: 4,
-        boxShadow: 'var(--shadow-1)',
-        minWidth: 140,
-      }}
-    >
-      <button
-        type="button"
-        role="menuitem"
-        aria-label="edit"
-        style={itemStyle}
-        onClick={makeHandler(onEdit)}
-        onMouseEnter={(e) => {
-          ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-3)'
-        }}
-        onMouseLeave={(e) => {
-          ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
-        }}
-      >
-        <Pen size={14} />
-        Edit
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        aria-label="copy link"
-        style={itemStyle}
-        onClick={makeHandler(onCopyLink)}
-        onMouseEnter={(e) => {
-          ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-3)'
-        }}
-        onMouseLeave={(e) => {
-          ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
-        }}
-      >
-        <Link2 size={14} />
-        Copy link
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        aria-label="delete"
-        style={{ ...itemStyle, color: 'var(--status-wtf)' }}
-        onClick={makeHandler(onDelete)}
-        onMouseEnter={(e) => {
-          ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-3)'
-        }}
-        onMouseLeave={(e) => {
-          ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
-        }}
-      >
-        <Trash2 size={14} />
-        Delete
-      </button>
-    </div>
-  )
-}
 
 /**
  * Hard cap on the rendered body length before the fade-out + expand
@@ -161,32 +15,6 @@ function BubbleContextMenu({
  * pasted 10k-char log doesn't dominate the feed's visual rhythm.
  */
 const BODY_TRUNCATE_AT = 4096
-
-/**
- * Telegram-style timestamp for the bubble footer.
- *
- * Today → just the time ("14:23" or "2:23 PM" depending on OS locale).
- * Older → month-day prefix ("May 27, 2:23 PM") so a bubble from days ago
- * isn't ambiguous with one from this morning. linsae has no day-separator
- * row (unlike Telegram) so the bubble itself must carry the date for
- * non-today entries.
- */
-function formatTimestamp(ms: number): string {
-  const d = new Date(ms)
-  const now = new Date()
-  const sameDay =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  return sameDay
-    ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
-    : d.toLocaleString(undefined, {
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-      })
-}
 
 interface Props {
   note: Note
@@ -262,6 +90,8 @@ export function NoteBubble({
   // window.setTimeout returns number in renderer (DOM lib); Node's setTimeout
   // returns NodeJS.Timeout. Tests run in jsdom — the number variant is correct.
   const armTimer = useRef<number | null>(null)
+  // 12h/24h wall-clock pref — re-renders this bubble when toggled in Settings.
+  const clock24 = useClock24()
 
   // Bind the id-taking action callbacks to this bubble's id. These are single
   // component-body closures (not per-`.map()`-iteration), so the React
@@ -353,7 +183,14 @@ export function NoteBubble({
     note.source_kind === 'youtube' &&
     note.source_locator?.video_id != null
   if (isSource) {
-    return <MediaFeedNoteContainer note={note} {...(onOpenThread ? { onOpenThread } : {})} />
+    return (
+      <MediaFeedNoteContainer
+        note={note}
+        {...(onOpenThread ? { onOpenThread } : {})}
+        onDelete={handleDelete}
+        onCopyLink={handleCopyLink}
+      />
+    )
   }
 
   return (
@@ -482,7 +319,7 @@ export function NoteBubble({
               </span>
             )}
             <span title={new Date(note.created_at).toLocaleString()}>
-              {formatTimestamp(note.created_at)}
+              {formatTimeOnly(note.created_at, !clock24)}
             </span>
           </span>
         </div>
@@ -521,7 +358,7 @@ export function NoteBubble({
             </span>
           )}
           <span title={new Date(note.created_at).toLocaleString()}>
-            {formatTimestamp(note.created_at)}
+            {formatTimeOnly(note.created_at, !clock24)}
           </span>
         </div>
       )}
@@ -581,7 +418,7 @@ export function NoteBubble({
       )}
 
       {contextMenu && (
-        <BubbleContextMenu
+        <NoteContextMenu
           pos={contextMenu}
           onEdit={handleEdit}
           onCopyLink={handleCopyLink}

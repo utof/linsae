@@ -1,5 +1,5 @@
 import type { PlayerState } from '@shared/player'
-import { LocateFixed, Pause, Play } from 'lucide-react'
+import { LocateFixed, Maximize, Pause, Play } from 'lucide-react'
 import { formatClock } from '../lib/time'
 
 /**
@@ -38,6 +38,8 @@ export interface TransportBarProps {
   onRate: () => void
   /** Toggle follow-playback scroll lock. */
   onToggleFollow: () => void
+  /** Enter fullscreen on the player. */
+  onFullscreen: () => void
 }
 
 /**
@@ -109,6 +111,7 @@ export function TransportBar({
   onSeek,
   onRate,
   onToggleFollow,
+  onFullscreen,
 }: TransportBarProps) {
   const safeD = duration !== null && duration > 0 ? duration : 0
   const fillPct = safeD > 0 ? (currentTime / safeD) * 100 : 0
@@ -174,6 +177,9 @@ export function TransportBar({
                 onSeek(t)
               }}
               style={{
+                // 12px-tall click target centered on the 4px track (top -4 →
+                // button center at 2 = track center), wider than the tick for
+                // an easy hit. The visible tick is the inner span.
                 position: 'absolute',
                 left: `${(t / safeD) * 100}%`,
                 top: -4,
@@ -181,7 +187,6 @@ export function TransportBar({
                 height: 12,
                 padding: 0,
                 border: 0,
-                borderRadius: 1,
                 background: 'transparent',
                 cursor: 'pointer',
                 transform: 'translateX(-50%)',
@@ -189,10 +194,13 @@ export function TransportBar({
             >
               <span
                 style={{
+                  // Thinner (1.5px) + longer (12px) tick, vertically centered on
+                  // the track: the span fills the button height so it's centered
+                  // around the track's mid-line, not sticking out the bottom.
                   display: 'block',
-                  width: 2,
-                  height: 8,
-                  margin: '2px auto 0',
+                  width: 1.5,
+                  height: 12,
+                  margin: '0 auto',
                   borderRadius: 1,
                   background: 'var(--fg-3)',
                 }}
@@ -204,6 +212,17 @@ export function TransportBar({
       {/* Playback speed badge */}
       <button type="button" aria-label="playback speed" onClick={onRate} style={SPEED_BTN}>
         {rate}×
+      </button>
+
+      {/* Fullscreen */}
+      <button
+        type="button"
+        aria-label="fullscreen"
+        title="fullscreen"
+        onClick={onFullscreen}
+        style={ICON_BTN}
+      >
+        <Maximize size={15} />
       </button>
 
       {/* Follow-playback toggle */}
