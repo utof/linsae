@@ -141,10 +141,16 @@ export function useAppendReveal(args: {
     if (noteH <= 0) return
 
     // Only reveal when the user was pinned to the bottom (not browsing history). The
-    // append already grew getTotalSize by ~noteH but the scroll hasn't followed, so
-    // distance-from-end reads ≈ noteH; widen the threshold by noteH so the test
-    // reflects the PRE-append distance (a tall note alone exceeds the bare 120 floor).
-    if (!virtualizer.isAtEnd(noteH + virtualizer.options.scrollEndThreshold)) return
+    // append grew getTotalSize by the virtualizer's size for the still-UNMEASURED new
+    // row — which is its content-aware ESTIMATE, not its real height — so the
+    // distance-from-end reads ≈ that estimate; widen the threshold by it so the test
+    // reflects the PRE-append distance. Cancelling the real `noteH` instead under-shot:
+    // a tall note's estimate overshoots its real height by >scrollEndThreshold (the
+    // estimate counts more, shorter lines), so the bottom-pinned user read as "not at
+    // end" and the reveal was skipped entirely. `max` also covers the row already
+    // being measured (then growth == real >= estimate).
+    const grewBy = Math.max(noteH, virtualizer.options.estimateSize(count - 1))
+    if (!virtualizer.isAtEnd(grewBy + virtualizer.options.scrollEndThreshold)) return
 
     stop() // cancel + settle any previous in-flight reveal
 
