@@ -14,6 +14,8 @@
  */
 import { X } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import type { FeedEntrance } from '../feed/entrance/types'
+import { setFeedEntrance, useFeedEntrance } from '../lib/anim-pref'
 import { api } from '../lib/api'
 import { setClock24, useClock24 } from '../lib/clock-pref'
 import { isYoutubeChromeShown, setYoutubeChrome } from '../yt/playerSingleton'
@@ -147,27 +149,43 @@ function YoutubeAccountSection() {
   )
 }
 
-/** Display preferences: 12h/24h wall-clock toggle (more to come — appearance, etc.). */
+/** Display preferences: 12h/24h wall-clock toggle + feed entrance animation picker. */
 function DisplaySection() {
   const clock24 = useClock24()
+  const entrance = useFeedEntrance()
+  const labelStyle = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    fontSize: 13,
+    color: 'var(--fg-2)',
+    cursor: 'pointer',
+  } as const
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--fg-1)' }}>display</h3>
-      <label
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          fontSize: 13,
-          color: 'var(--fg-2)',
-          cursor: 'pointer',
-        }}
-      >
+      <label style={labelStyle}>
         <input type="checkbox" checked={clock24} onChange={(e) => setClock24(e.target.checked)} />
         24-hour time
       </label>
       <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: -4 }}>
         show timestamps as 14:23 instead of 2:23 PM (feed + video cards).
+      </div>
+      <label style={labelStyle}>
+        feed entrance
+        <select
+          aria-label="feed entrance animation"
+          value={entrance}
+          onChange={(e) => setFeedEntrance(e.target.value as FeedEntrance)}
+          style={{ ...btn, padding: '3px 8px' }}
+        >
+          <option value="glide">glide (slide up)</option>
+          <option value="flip">flip (magnet, soft overlap)</option>
+          <option value="pbd">pbd (magnet, no overlap)</option>
+        </select>
+      </label>
+      <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: -4 }}>
+        how a sent note enters the feed.
       </div>
     </section>
   )
