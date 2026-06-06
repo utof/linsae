@@ -149,7 +149,8 @@ export function useAppendReveal(args: {
     // estimate counts more, shorter lines), so the bottom-pinned user read as "not at
     // end" and the reveal was skipped entirely. `max` also covers the row already
     // being measured (then growth == real >= estimate).
-    const grewBy = Math.max(noteH, virtualizer.options.estimateSize(count - 1))
+    const estRow = virtualizer.options.estimateSize(count - 1)
+    const grewBy = Math.max(noteH, estRow)
     if (!virtualizer.isAtEnd(grewBy + virtualizer.options.scrollEndThreshold)) return
 
     stop() // cancel + settle any previous in-flight reveal
@@ -159,7 +160,11 @@ export function useAppendReveal(args: {
     // The duration is FIXED, so a bigger note glides a LONGER distance in the same time
     // — it scrolls FASTER, matching the "bigger note ⇒ stronger push" intuition. (On a
     // short, non-overflowing feed there's no room; the note simply appears.)
-    const endScroll = scroller.scrollHeight - scroller.clientHeight
+    // `scrollHeight` still counts the new row at `estRow` (unmeasured this frame); for a
+    // tall note that overshoots its real height, so the raw target would aim PAST the true
+    // bottom and bump-stop as measureElement corrects scrollHeight mid-glide. Subtract the
+    // estimate error so the glide lands on the real bottom (`settle` re-pins after measure).
+    const endScroll = scroller.scrollHeight - scroller.clientHeight - (estRow - noteH)
     const startScroll = Math.max(0, endScroll - noteH)
     if (endScroll - startScroll < 1) return
 
