@@ -102,6 +102,9 @@ export function App() {
   const feedScrollerRef = useRef<HTMLDivElement | null>(null)
   const [sendInFlight, setSendInFlight] = useState(false)
   const sendingTimerRef = useRef<number | undefined>(undefined)
+  // Records notes.length at the moment of submit so the append-coupled effect
+  // can detect when the new note has landed (notes.length > pendingFromLen).
+  const pendingFromLenRef = useRef<number | null>(null)
   useEffect(
     () => () => {
       if (sendingTimerRef.current !== undefined) clearTimeout(sendingTimerRef.current)
@@ -110,13 +113,29 @@ export function App() {
   )
   const beginSend = () => {
     setSendInFlight(true)
+    pendingFromLenRef.current = notes.length
     if (sendingTimerRef.current !== undefined) clearTimeout(sendingTimerRef.current)
-    // Cover create (async) + the ~0.4s reveal; the Feed's own `revealing` flag takes
-    // over for the glide itself, so this only needs to bridge submit → append. Scales
+    // Fail-safe only: the append-coupled effect (below) clears sendInFlight the moment
+    // the new note lands. This timeout is a backstop for the rare case where the
+    // refetch never grows the list (e.g. a background delete raced the create). Scales
     // with the dev slow-mo so debugging at `__morphSlow` keeps the suppression on.
-    const ms = import.meta.env.DEV ? 700 * (window.__morphSlow ?? 1) : 700
+    const ms = import.meta.env.DEV ? 4000 * (window.__morphSlow ?? 1) : 4000
     sendingTimerRef.current = window.setTimeout(() => setSendInFlight(false), ms)
   }
+  // Append-coupled clear: the moment the new note lands, hand off to the Feed's own
+  // revealing/waveSettling (which carry suppression through the settle).
+  // Why: createMut is non-optimistic (onSuccess → invalidate → refetch), so the append
+  // render can arrive after an unbounded round-trip; a wave needs `suppressFollow` TRUE
+  // on that render or virtual-core's reconcileScroll re-arms.
+  // @see docs/specs/v0.2.2-repulsion-wave.md §Guard
+  useEffect(() => {
+    const from = pendingFromLenRef.current
+    if (from !== null && notes.length > from) {
+      pendingFromLenRef.current = null
+      if (sendingTimerRef.current !== undefined) clearTimeout(sendingTimerRef.current)
+      setSendInFlight(false)
+    }
+  }, [notes.length])
 
   // Clear submitError whenever the composer's context changes (user clicks
   // edit on a different note, opens a dangling-wikilink draft, etc.). Without

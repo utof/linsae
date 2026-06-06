@@ -43,8 +43,16 @@ vi.mock('./thread/ThreadView', () => ({
 // can navigate to specific threads. Avoids the full virtualizer + DOM measurement
 // path in jsdom.
 vi.mock('./feed/Feed', () => ({
-  Feed: ({ onOpenThread, notes }: { onOpenThread?: (id: string) => void; notes: Note[] }) => (
-    <div data-testid="feed-sentinel">
+  Feed: ({
+    onOpenThread,
+    notes,
+    sendInFlight,
+  }: {
+    onOpenThread?: (id: string) => void
+    notes: Note[]
+    sendInFlight?: boolean
+  }) => (
+    <div data-testid="feed-sentinel" data-send-in-flight={String(!!sendInFlight)}>
       {notes.map((n) => (
         <button
           key={n.id}
@@ -350,5 +358,58 @@ describe('App — ThreadView nav (mutual exclusivity)', () => {
     // Feed and composer must be absent while thread B is open.
     expect(screen.queryByTestId('feed-sentinel')).not.toBeInTheDocument()
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  })
+})
+
+describe('App — sendInFlight append-coupled clear', () => {
+  it('arms sendInFlight on submit and clears it once the append lands (not on a fixed timer)', async () => {
+    // Seed one note so Feed renders (not the "nothing yet" fallback).
+    mockApi.notes.list.mockResolvedValueOnce([FEED_NOTE]) // initial load
+    mockApi.notes.create.mockResolvedValueOnce({ ...FEED_NOTE, id: 'n2' })
+    // After create → invalidate → refetch the list grows to two notes.
+    mockApi.notes.list.mockResolvedValue([FEED_NOTE, { ...FEED_NOTE, id: 'n2' }])
+
+    renderWithProviders(<App />)
+
+    // Wait for Feed to render (initial query settled). Done before freezing timers
+    // so React Query's own setTimeout-based machinery can run normally.
+    const feed = await screen.findByTestId('feed-sentinel')
+
+    // Now freeze time so the fail-safe (4000ms) cannot fire. The append-coupled
+    // effect (notes.length grows 1→2) must be the only way sendInFlight clears.
+    vi.useFakeTimers()
+    try {
+      // Type a body in the create-composer. Change only — no submit yet.
+      const ta = screen.getByRole('textbox')
+      fireEvent.change(ta, { target: { value: 'hello world' } })
+
+      // Press Enter to submit. Use non-async act so React flushes state changes
+      // (beginSend → setSendInFlight(true)) synchronously before we assert.
+      act(() => {
+        fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+      })
+
+      // sendInFlight must be armed immediately after submit (before the async append).
+      // The create mock has not yet resolved — notes.length is still 1.
+      expect(feed.getAttribute('data-send-in-flight')).toBe('true')
+
+      // Flush the create mutation's microtask chain (promises resolve under fake timers).
+      // createMut.mutate → api.notes.create → onSuccess → invalidate → notes.list refetch
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+        await Promise.resolve()
+        await Promise.resolve()
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      // After the refetch the notes list grew to 2. The append-coupled effect fires
+      // synchronously on the notes.length dependency change. Timers are still at 0ms —
+      // the fail-safe at 4000ms cannot be the cause of the clear.
+      expect(screen.getByTestId('feed-sentinel').getAttribute('data-send-in-flight')).toBe('false')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
