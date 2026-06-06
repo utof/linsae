@@ -1,25 +1,52 @@
-import { animate } from 'motion'
-import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import { animate, cancelFrame, frame } from 'motion'
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
+import { BezierTuner, type Cubic } from './BezierTuner'
+import { btn, COL, input, Row, Slider } from './playgroundKit'
 
 /**
- * DEV-ONLY playground for iterating on the feed "make-room" entrance: the scrollTop
- * glide that pushes the feed up when a note arrives (the real one lives in
- * useAppendReveal). It reproduces that glide faithfully (the same motion animate(start
- * to end) on a real scroller's scrollTop) on a throwaway feed of dummy notes, so you
- * can shape a custom cubic-bezier and replay instantly to feel which one you want,
- * without sending real notes.
+ * DEV-ONLY spike for the "repulsion wave" feed entrance (v0.2.2). When a note is sent it
+ * should NOT scroll the whole feed up as one rigid block — instead each note behaves like
+ * a same-polarity magnet: the arriving note pushes its neighbour up, the wave ripples UP
+ * the stack, and no two notes ever intersect.
  *
- * Tween (custom cubic-bezier) only: presets are just starting points you then tweak.
- * NOTE: this animates SCROLL, which the browser clamps to the bottom, so an OVERSHOOT
- * bezier (a control-point y above 1) will NOT bounce: the scroll just clamps. The curve
- * preview still shows the overshoot for reference. A real bounce needs a transform, not
- * scroll (a separate mechanism).
+ * This harness reproduces the real feed faithfully so we can FEEL it and MEASURE it. A
+ * headless sim (local_files/wave-sim.mjs) already proved the key result: a staggered
+ * make-room settle ("flip") overlaps for ANY stagger and no spring tuning rescues it — the
+ * punchy magnet feel genuinely needs a hard non-overlap constraint. So model A (PBD) is the
+ * default here, and `flip` is kept as a toggle to watch that overlap happen live.
  *
- * Open with the dev hotkey (App). Replay with Space or R, close with Esc. The
- * "transition" readout is the exact motion options to paste into useAppendReveal.
+ * Architecture under test (see local_files/2026-06-06-repulsion-wave-research.md):
+ *   - The virtualizer owns each row's REST position via `transform: translateY(start)`.
+ *   - We layer a per-row dynamic OFFSET on top: `translateY(calc(start + var(--wy)))`. The
+ *     offset rides a CSS custom property set imperatively each frame, so it composes with
+ *     the virtualizer's base transform WITHOUT either fighting the other and WITHOUT a React
+ *     re-render per frame. `measureElement` reads `offsetHeight` (transform-immune) so the
+ *     size tree / scroll-anchoring never see the offset.
+ *   - Offset state lives in a `Map<noteId, …>` OUTSIDE the rows, so it survives recycling.
+ *   - One `frame.update` loop (Motion's public frameloop, real `delta`) integrates a spring
+ *     per offset back toward 0, then — for model A — runs a few Gauss-Seidel projection
+ *     passes that forbid any adjacent gap from going negative. The projection also
+ *     PROPAGATES the impulse: shoving an overlapping pair apart nudges the next row up, so
+ *     the wave emerges from the constraint, not from a hand-tuned stagger.
+ *   - Models: `pbd` (flip seed + projection — punchy + non-overlapping, the target),
+ *     `flip` (seed only, no projection — overlaps; demonstrates why A is needed), `glide`
+ *     (the OLD rigid-block scrollTop tween + the editable `BezierTuner`, for comparison and
+ *     so the bezier tool survives for future animations / reverts).
+ *   - NO scrollTop animation in the wave models (that was the rigid block + the #66
+ *     white-wall bug class).
  *
- * Not shipped in production: App only mounts it behind import.meta.env.DEV.
+ * Open with the dev hotkey (App, mod+shift+R). Space/R sends a note (replays), Esc closes.
+ * Watch the "min row gap" readout — it turns red the instant any two notes overlap. Not
+ * shipped: App only mounts it behind import.meta.env.DEV.
  */
 
 const para = (n: number) => {
@@ -30,45 +57,36 @@ const para = (n: number) => {
   return lines.join('\n\n')
 }
 
+// Literal-keyed (no index signature) so `ARRIVING[size]` is `string`, not `string | undefined`.
 const ARRIVING = {
   short: 'a short note',
-  medium: 'a medium note whose body wraps across two or three lines in the bubble',
+  medium: para(3),
   big: para(8),
   huge: para(24),
 }
 type Size = keyof typeof ARRIVING
 const SIZE_KEYS = Object.keys(ARRIVING) as Size[]
 
-// Cubic-bezier control points for quick-start presets - selecting one loads it into the
-// editable curve below. Everything is a custom bezier under the hood (no opaque named
-// easings, no spring) - exactly "tween (easing) + custom".
-const PRESETS: Record<string, [number, number, number, number]> = {
-  linear: [0, 0, 1, 1],
-  easeOut: [0, 0, 0.58, 1],
-  easeOutCubic: [0.22, 0.61, 0.36, 1],
-  easeOutQuint: [0.22, 1, 0.36, 1],
-  easeOutExpo: [0.16, 1, 0.3, 1],
-  easeInOut: [0.42, 0, 0.58, 1],
-  easeOutBack: [0.34, 1.56, 0.64, 1],
-  easeInOutBack: [0.68, -0.6, 0.32, 1.6],
-}
-const PRESET_KEYS = Object.keys(PRESETS)
+type Model = 'pbd' | 'flip' | 'glide'
+type PNote = { id: string; body: string }
 
-// Plenty of (wrapping) backdrop so the scroller ALWAYS overflows by more than any
-// arriving note, so even a SHORT note starts fully below the fold and visibly rises in.
-const BACKDROP: string[] = []
-for (let i = 1; i <= 35; i++) {
-  BACKDROP.push(`older note ${i} - some body text long enough to wrap onto a second line`)
+// Plenty of wrapping backdrop so the scroller always overflows and the wave has neighbours
+// above the newcomer to ripple through.
+const BACKDROP: PNote[] = Array.from({ length: 30 }, (_, i) => ({
+  id: `b${i}`,
+  body: `older note ${i + 1} - some body text long enough to wrap onto a second line`,
+}))
+
+/** Rough content-aware height estimate (px) — mirrors the real feed's intent, not its exact model. */
+function estimate(n: PNote | undefined): number {
+  if (!n) return 60
+  const lines = Math.max((n.body.match(/\n/g)?.length ?? 0) + 1, Math.ceil(n.body.length / 60))
+  return 20 + lines * 20 + 12
 }
 
-const COL = {
-  panel: '#16181d',
-  field: '#22252c',
-  border: '#2c2f37',
-  text: '#e6e8ec',
-  dim: '#8b909a',
-  accent: '#3b82f6',
-}
+// Per-row physics state. `off` = current translateY offset (px), `vel` = its velocity,
+// `delay` = ms still to wait before this row starts settling (makes the wave travel up).
+type WaveState = { off: number; vel: number; delay: number }
 
 function bubble(arriving = false): CSSProperties {
   return {
@@ -76,7 +94,6 @@ function bubble(arriving = false): CSSProperties {
     background: arriving ? '#1d2330' : COL.field,
     borderRadius: 14,
     padding: '8px 12px',
-    margin: '6px 0',
     color: COL.text,
     fontSize: 13,
     lineHeight: 1.4,
@@ -84,79 +101,257 @@ function bubble(arriving = false): CSSProperties {
   }
 }
 
+/** Rendered rows as `{ id, idx }`, sorted top→bottom (ascending virtual index). */
+function orderedRows(sc: HTMLElement): { id: string; idx: number }[] {
+  return Array.from(sc.querySelectorAll<HTMLElement>('[data-pw-id]'))
+    .map((el) => ({ id: el.dataset.pwId ?? '', idx: Number(el.dataset.pwIndex) }))
+    .filter((r) => r.id && Number.isFinite(r.idx))
+    .sort((a, b) => a.idx - b.idx)
+}
+
 export function RevealPlayground({ onClose }: { onClose: () => void }) {
-  const scrollerRef = useRef<HTMLDivElement | null>(null)
-  const ctrlRef = useRef<{ stop: () => void } | null>(null)
-  const loopTimerRef = useRef<number | undefined>(undefined)
+  const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null)
+  const [notes, setNotes] = useState<PNote[]>(() => BACKDROP)
+  const arrCountRef = useRef(0)
 
-  const [bez, setBez] = useState<[number, number, number, number]>([0.22, 1, 0.36, 1])
-  const [dur, setDur] = useState(0.4)
-  const [arriving, setArriving] = useState<Size>('short')
-  const [loop, setLoop] = useState(false)
+  const [model, setModel] = useState<Model>('flip')
+  const [arriving, setArriving] = useState<Size>('big')
+  // Wave knobs.
+  const [staggerMs, setStaggerMs] = useState(20)
+  const [stiffness, setStiffness] = useState(180)
+  const [damping, setDamping] = useState(18)
+  const [projIters, setProjIters] = useState(8)
+  // Glide knobs (comparison model) — owned here, edited via the imported BezierTuner.
+  const [dur, setDur] = useState(0.5)
+  const [bez, setBez] = useState<Cubic>([0.22, 1, 0.36, 1])
 
-  const transition = { type: 'tween' as const, duration: dur, ease: bez }
-  // Keep the latest config in a ref so play (and the loop) read fresh values.
-  const cfgRef = useRef(transition)
-  cfgRef.current = transition
-  const loopRef = useRef(loop)
-  loopRef.current = loop
+  // Latest knobs in a ref so the frame loop + append effect read fresh values.
+  const knobsRef = useRef({ model, arriving, staggerMs, stiffness, damping, projIters, dur, bez })
+  knobsRef.current = { model, arriving, staggerMs, stiffness, damping, projIters, dur, bez }
 
-  const play = useCallback(() => {
-    const sc = scrollerRef.current
+  const waveRef = useRef<Map<string, WaveState>>(new Map())
+  const tickRef = useRef<((data: { delta: number }) => void) | null>(null)
+  const glideCtrlRef = useRef<{ stop: () => void } | null>(null)
+  const prevLenRef = useRef(notes.length)
+  const readoutRef = useRef<HTMLSpanElement | null>(null)
+
+  const virtualizer = useVirtualizer({
+    count: notes.length,
+    getScrollElement: () => scrollerEl,
+    estimateSize: (i) => estimate(notes[i]),
+    getItemKey: (i) => notes[i]?.id ?? i,
+    anchorTo: 'end',
+    followOnAppend: true,
+    scrollEndThreshold: 120,
+    overscan: 8,
+  })
+
+  // Write every rendered row's `--wy` from the id-keyed map (so recycled rows get the RIGHT
+  // note's offset, or 0), then measure the smallest gap between adjacent rows and surface it
+  // imperatively (no React re-render in the loop).
+  const paintOffsets = useCallback(() => {
+    const sc = scrollerEl
     if (!sc) return
-    ctrlRef.current?.stop()
-    if (loopTimerRef.current !== undefined) clearTimeout(loopTimerRef.current)
-    const last = sc.querySelector<HTMLElement>('[data-arriving]')
-    const noteH = last ? last.getBoundingClientRect().height : 80
-    const end = sc.scrollHeight - sc.clientHeight
-    // Start one note-height short of the bottom (the arriving note just below the fold),
-    // then glide to the true bottom - exactly useAppendReveal's geometry.
-    const start = Math.max(0, end - noteH)
-    sc.scrollTop = start
-    ctrlRef.current = animate(start, end, {
-      ...cfgRef.current,
-      onUpdate: (v: number) => {
-        sc.scrollTop = v
-      },
-      onComplete: () => {
-        if (loopRef.current) loopTimerRef.current = window.setTimeout(play, 500)
-      },
-      // biome-ignore lint/suspicious/noExplicitAny: dev tool - transition built from UI state, valid at runtime.
-    } as any)
+    const rows = Array.from(sc.querySelectorAll<HTMLElement>('[data-pw-id]'))
+    const map = waveRef.current
+    for (const el of rows) {
+      const id = el.dataset.pwId
+      const off = (id && map.get(id)?.off) || 0
+      el.style.setProperty('--wy', `${off}px`)
+    }
+    // Rows are in DOM order = index order = top→bottom. Min gap between consecutive rows;
+    // negative ⇒ they overlap (a note has eaten into its neighbour).
+    let minGap = Number.POSITIVE_INFINITY
+    let prevBottom: number | null = null
+    for (const el of rows) {
+      const r = el.getBoundingClientRect()
+      if (prevBottom !== null) minGap = Math.min(minGap, r.top - prevBottom)
+      prevBottom = r.bottom
+    }
+    const g = Number.isFinite(minGap) ? minGap : 0
+    const out = readoutRef.current
+    if (out) {
+      out.textContent = `${g >= 0 ? '+' : ''}${g.toFixed(1)}px`
+      out.style.color = g < -0.5 ? COL.danger : COL.dim
+    }
+  }, [scrollerEl])
+
+  const stopLoop = useCallback(() => {
+    if (tickRef.current) {
+      cancelFrame(tickRef.current)
+      tickRef.current = null
+    }
+    waveRef.current.clear()
+    paintOffsets()
+  }, [paintOffsets])
+
+  const startLoop = useCallback(() => {
+    if (tickRef.current) return // already running; it will pick up freshly-seeded entries
+    const tick = (data: { delta: number }) => {
+      const sc = scrollerEl
+      if (!sc) {
+        stopLoop()
+        return
+      }
+      const { stiffness, damping, projIters, model } = knobsRef.current
+      const dt = Math.min(data.delta, 32) / 1000
+      const map = waveRef.current
+
+      // 1. Integrate each offset toward 0 (semi-implicit / symplectic Euler — stable for
+      //    stiff springs). Delayed rows just count down so the settle starts from the bottom.
+      for (const s of map.values()) {
+        if (s.delay > 0) {
+          s.delay -= data.delta
+          continue
+        }
+        const a = -stiffness * s.off - damping * s.vel
+        s.vel += a * dt
+        s.off += s.vel * dt
+      }
+
+      // 2. Model A only: PBD non-overlap projection. UP-ONLY and swept BOTTOM→TOP, so the
+      //    newcomer (the bottom row, never seeded) is a pinned anchor: any pair that would
+      //    overlap pushes ONLY the upper row up, and sweeping upward propagates that shove
+      //    one row at a time — the magnet impulse emerges from the constraint, and the
+      //    newcomer can never be knocked off the bottom (the bug a symmetric split would hit
+      //    whenever the newcomer is taller than its neighbour). A row the wave reaches that
+      //    wasn't seeded gets created at rest (off 0), then springs back like the rest.
+      if (model === 'pbd') {
+        const rows = orderedRows(sc)
+        const get = (id: string) => {
+          let s = map.get(id)
+          if (!s) {
+            s = { off: 0, vel: 0, delay: 0 }
+            map.set(id, s)
+          }
+          return s
+        }
+        for (let it = 0; it < projIters; it++) {
+          for (let i = rows.length - 2; i >= 0; i--) {
+            // rows[i] is upper, rows[i+1] is the lower (closer to the newcomer / pinned).
+            const upperId = rows[i]?.id
+            const lowerId = rows[i + 1]?.id
+            if (!upperId || !lowerId) continue
+            const lowerOff = map.get(lowerId)?.off ?? 0
+            const upperOff = map.get(upperId)?.off ?? 0
+            const gap = lowerOff - upperOff // want ≥ 0 (lower sits below upper)
+            if (gap < 0) get(upperId).off += gap // push ONLY the upper up; lower stays pinned
+          }
+        }
+      }
+
+      // 3. Retire settled rows; stop when nothing is moving or waiting.
+      let active = false
+      for (const [id, s] of map) {
+        if (s.delay > 0) {
+          active = true
+        } else if (Math.abs(s.off) < 0.05 && Math.abs(s.vel) < 0.5) {
+          map.delete(id)
+        } else {
+          active = true
+        }
+      }
+      paintOffsets()
+      if (!active) stopLoop()
+    }
+    tickRef.current = tick
+    frame.update(tick, true)
+  }, [scrollerEl, paintOffsets, stopLoop])
+
+  // Send a note: append a fresh arriving note (trims old arrivals so the list can't grow
+  // unbounded across replays). The append effect below runs the entrance.
+  const send = useCallback(() => {
+    setNotes((prev) => {
+      const base = prev.length > BACKDROP.length + 4 ? prev.slice(0, BACKDROP.length) : prev
+      arrCountRef.current += 1
+      return [
+        ...base,
+        { id: `arr${arrCountRef.current}`, body: ARRIVING[knobsRef.current.arriving] },
+      ]
+    })
   }, [])
 
-  // Replay / close hotkeys. enableOnFormTags so they fire even while a slider/select (or
-  // the composer behind the overlay) has focus - Space/R always replay.
+  // Entrance, fired on a single append. Layout effect (pre-paint) so the FLIP invert shows
+  // no pop. Mirrors the real `useAppendReveal` append-detection.
+  useLayoutEffect(() => {
+    const len = notes.length
+    const grew = len === prevLenRef.current + 1
+    prevLenRef.current = len
+    if (!grew) return
+    const sc = scrollerEl
+    if (!sc) return
+    const newIndex = len - 1
+    const newNode = sc.querySelector<HTMLElement>(`[data-index="${newIndex}"]`)
+    if (!newNode) return
+    const shift = newNode.offsetHeight // transform-immune (matches virtual-core's measure)
+    if (shift <= 0) return
+    const { model } = knobsRef.current
+
+    if (model === 'glide') {
+      // Comparison only: the OLD rigid-block scrollTop tween, driven by the BezierTuner curve.
+      glideCtrlRef.current?.stop()
+      const end = sc.scrollHeight - sc.clientHeight
+      const start = Math.max(0, end - shift)
+      sc.scrollTop = start
+      glideCtrlRef.current = animate(start, end, {
+        type: 'tween',
+        duration: knobsRef.current.dur,
+        ease: knobsRef.current.bez,
+        onUpdate: (v: number) => {
+          sc.scrollTop = v
+        },
+        // biome-ignore lint/suspicious/noExplicitAny: dev tool, options valid at runtime.
+      } as any)
+      return
+    }
+
+    // WAVE (pbd / flip): pin to the true bottom, then seed EVERY row from the newcomer up at
+    // +shift — including the newcomer ITSELF, so it starts one note-height below its slot
+    // (off-screen, below the fold) and RISES into view instead of popping in at the bottom.
+    // (Popping it in was the dominant overlap source: the neighbour's old position sits on top
+    // of a newcomer that's already there.) Everything springs back to 0; the newcomer leads
+    // (delay 0) and, as it rises, shoves the row above it up — `pbd` enforces that with the
+    // projection (true magnet repulsion); `flip` lets the stagger do it and overlaps softly.
+    sc.scrollTop = sc.scrollHeight
+    const map = waveRef.current
+    for (const { id, idx } of orderedRows(sc)) {
+      if (idx > newIndex) continue
+      const d = newIndex - idx // 0 = the newcomer itself, 1 = immediate neighbour above, …
+      map.set(id, { off: shift, vel: 0, delay: d * knobsRef.current.staggerMs })
+    }
+    paintOffsets() // first paint: whole stack at +shift (newcomer below the fold), no pop
+    startLoop()
+  }, [notes, scrollerEl, paintOffsets, startLoop])
+
+  // Initial scroll-to-bottom once the scroller mounts.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: one-shot; depends on scroller availability + stable virtualizer identity.
+  useLayoutEffect(() => {
+    if (scrollerEl && notes.length > 0) virtualizer.scrollToEnd()
+  }, [scrollerEl])
+
   const hkOpts = { enableOnFormTags: ['textarea', 'input', 'select'] as const }
   useHotkeys(
     'space',
     (e) => {
       e.preventDefault()
-      play()
+      send()
     },
     hkOpts,
-    [play],
+    [send],
   )
-  useHotkeys('r', () => play(), hkOpts, [play])
+  useHotkeys('r', () => send(), hkOpts, [send])
   useHotkeys('escape', () => onClose(), hkOpts)
 
-  // Pin to the bottom on open so the first Play has somewhere to glide from.
-  useEffect(() => {
-    const sc = scrollerRef.current
-    if (sc) sc.scrollTop = sc.scrollHeight
-    return () => {
-      ctrlRef.current?.stop()
-      if (loopTimerRef.current !== undefined) clearTimeout(loopTimerRef.current)
-    }
-  }, [])
+  // Cleanup on unmount.
+  useEffect(
+    () => () => {
+      glideCtrlRef.current?.stop()
+      if (tickRef.current) cancelFrame(tickRef.current)
+    },
+    [],
+  )
 
-  const transitionCode = JSON.stringify(transition)
-  const setPoint = (i: number, v: number) =>
-    setBez((b) => {
-      const next = [...b] as [number, number, number, number]
-      next[i] = v
-      return next
-    })
+  const handleScrollerRef = useCallback((el: HTMLDivElement | null) => setScrollerEl(el), [])
 
   return (
     <div
@@ -170,17 +365,19 @@ export function RevealPlayground({ onClose }: { onClose: () => void }) {
         fontFamily: 'var(--font-sans, system-ui)',
       }}
     >
-      {/* Dummy feed */}
+      {/* Virtualized dummy feed — same shape as the real Feed. */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 24, minWidth: 0 }}>
         <div style={{ color: COL.dim, fontSize: 12, marginBottom: 8 }}>
-          reveal playground - <b style={{ color: COL.text }}>Space</b>/
-          <b style={{ color: COL.text }}>R</b> replay - <b style={{ color: COL.text }}>Esc</b> close
+          repulsion-wave spike — <b style={{ color: COL.text }}>Space</b>/
+          <b style={{ color: COL.text }}>R</b> send · <b style={{ color: COL.text }}>Esc</b> close ·
+          scroll mid-wave to stress recycling
         </div>
         <div
-          ref={scrollerRef}
+          ref={handleScrollerRef}
           style={{
             flex: 1,
             overflowY: 'auto',
+            overflowX: 'hidden',
             border: `1px solid ${COL.border}`,
             borderRadius: 12,
             padding: '0 16px',
@@ -189,16 +386,40 @@ export function RevealPlayground({ onClose }: { onClose: () => void }) {
             flexDirection: 'column',
           }}
         >
-          {/* margin-top:auto bottom-anchors the stack, like the real feed */}
-          <div style={{ marginTop: 'auto' }}>
-            {BACKDROP.map((t, i) => (
-              <div key={t} style={bubble()}>
-                {`${i + 1}. ${t}`}
-              </div>
-            ))}
-            <div data-arriving="" style={bubble(true)}>
-              {ARRIVING[arriving]}
-            </div>
+          <div
+            style={{
+              height: virtualizer.getTotalSize(),
+              width: '100%',
+              position: 'relative',
+              marginTop: 'auto',
+              flexShrink: 0,
+            }}
+          >
+            {virtualizer.getVirtualItems().map((vi) => {
+              const note = notes[vi.index]
+              if (!note) return null
+              return (
+                <div
+                  key={vi.key}
+                  ref={virtualizer.measureElement}
+                  data-index={vi.index}
+                  data-pw-id={note.id}
+                  data-pw-index={vi.index}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    // Base translate from the virtualizer + a per-row offset on top (the wave).
+                    transform: `translateY(calc(${vi.start}px + var(--wy, 0px)))`,
+                    paddingTop: 6,
+                    paddingBottom: 6,
+                  }}
+                >
+                  <div style={bubble(note.id.startsWith('arr'))}>{note.body}</div>
+                </div>
+              )
+            })}
           </div>
         </div>
       </div>
@@ -217,11 +438,28 @@ export function RevealPlayground({ onClose }: { onClose: () => void }) {
           gap: 14,
         }}
       >
-        <button type="button" data-testid="pg-play" onClick={play} style={btn(COL.accent)}>
-          Play (Space / R)
+        <button type="button" data-testid="pg-play" onClick={send} style={btn(COL.accent)}>
+          Send (Space / R)
         </button>
-        <Row label="loop">
-          <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} />
+
+        <Row label="min row gap">
+          <span
+            ref={readoutRef}
+            style={{ color: COL.dim, fontSize: 12, fontVariantNumeric: 'tabular-nums' }}
+          >
+            +0.0px
+          </span>
+        </Row>
+        <div style={{ color: COL.dim, fontSize: 11, marginTop: -8 }}>
+          turns <span style={{ color: COL.danger }}>red</span> if any two notes overlap
+        </div>
+
+        <Row label="model">
+          <select value={model} onChange={(e) => setModel(e.target.value as Model)} style={input()}>
+            <option value="pbd">A · PBD (punchy + safe)</option>
+            <option value="flip">flip (no projection — overlaps)</option>
+            <option value="glide">glide (old scrollTop + bezier)</option>
+          </select>
         </Row>
         <Row label="arriving note">
           <select
@@ -237,187 +475,55 @@ export function RevealPlayground({ onClose }: { onClose: () => void }) {
           </select>
         </Row>
 
-        <Row label="preset to curve">
-          <select
-            data-testid="pg-preset"
-            onChange={(e) => {
-              const p = PRESETS[e.target.value]
-              if (p) setBez([...p])
-            }}
-            style={input()}
-            defaultValue=""
-          >
-            <option value="" disabled>
-              load a preset...
-            </option>
-            {PRESET_KEYS.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
-          </select>
-        </Row>
+        {model === 'glide' ? (
+          <BezierTuner bez={bez} setBez={setBez} dur={dur} setDur={setDur} />
+        ) : (
+          <>
+            <Slider
+              label="stagger (ms/row)"
+              min={0}
+              max={80}
+              step={1}
+              value={staggerMs}
+              onChange={setStaggerMs}
+            />
+            <Slider
+              label="stiffness"
+              min={20}
+              max={600}
+              step={5}
+              value={stiffness}
+              onChange={setStiffness}
+            />
+            <Slider
+              label="damping"
+              min={2}
+              max={60}
+              step={1}
+              value={damping}
+              onChange={setDamping}
+            />
+            {model === 'pbd' && (
+              <Slider
+                label="projection passes"
+                min={1}
+                max={24}
+                step={1}
+                value={projIters}
+                onChange={setProjIters}
+              />
+            )}
+          </>
+        )}
 
-        <BezierPreview bez={bez} />
-        {(['x1', 'y1', 'x2', 'y2'] as const).map((lbl, i) => (
-          <Slider
-            key={lbl}
-            label={lbl}
-            min={i % 2 === 0 ? 0 : -1}
-            max={i % 2 === 0 ? 1 : 2}
-            step={0.01}
-            value={bez[i] ?? 0}
-            onChange={(v) => setPoint(i, v)}
-          />
-        ))}
-        <Slider
-          label="duration (s)"
-          min={0.1}
-          max={1.5}
-          step={0.01}
-          value={dur}
-          onChange={setDur}
-        />
-
-        <div style={{ marginTop: 'auto' }}>
-          <div style={{ color: COL.dim, fontSize: 11, marginBottom: 4 }}>
-            transition (paste into useAppendReveal):
-          </div>
-          <code
-            style={{
-              display: 'block',
-              background: COL.field,
-              border: `1px solid ${COL.border}`,
-              borderRadius: 8,
-              padding: '8px 10px',
-              fontSize: 11,
-              wordBreak: 'break-all',
-              color: COL.text,
-            }}
-          >
-            {transitionCode}
-          </code>
-          <button
-            type="button"
-            onClick={() => navigator.clipboard.writeText(transitionCode)}
-            style={btn(COL.field)}
-          >
-            copy
-          </button>
+        <div style={{ marginTop: 'auto', color: COL.dim, fontSize: 11, lineHeight: 1.5 }}>
+          {model === 'pbd'
+            ? 'model A: flip seed + per-frame non-overlap projection. The projection also propagates the impulse upward, so the wave emerges from the constraint.'
+            : model === 'flip'
+              ? 'flip: settle a make-room shift with no constraint. Watch the gap go red — this is why A exists.'
+              : 'glide: the old rigid-block scrollTop tween, shaped by the bezier tuner. Kept for comparison + future tween animations.'}
         </div>
       </div>
     </div>
   )
-}
-
-function Row({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-      <span style={{ color: COL.dim, fontSize: 12 }}>{label}</span>
-      {children}
-    </div>
-  )
-}
-
-function Slider({
-  label,
-  min,
-  max,
-  step,
-  value,
-  onChange,
-}: {
-  label: string
-  min: number
-  max: number
-  step: number
-  value: number
-  onChange: (v: number) => void
-}) {
-  return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <span
-        style={{ color: COL.dim, fontSize: 12, display: 'flex', justifyContent: 'space-between' }}
-      >
-        <span>{label}</span>
-        <span style={{ color: COL.text }}>{value.toFixed(2)}</span>
-      </span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
-    </label>
-  )
-}
-
-/**
- * SVG preview of the cubic-bezier (input t to output progress). The vertical range is
- * DYNAMIC: it expands to include any overshoot (control-point y outside [0,1]) so an
- * extreme curve is never clipped. Dashed lines mark y=0 and y=1.
- */
-function BezierPreview({ bez }: { bez: [number, number, number, number] }) {
-  const [x1, y1, x2, y2] = bez
-  const W = 160
-  const H = 160
-  const pad = 18
-  const yMax = Math.max(1, y1, y2) + 0.1
-  const yMin = Math.min(0, y1, y2) - 0.1
-  const range = yMax - yMin || 1
-  const px = (x: number) => pad + x * (W - 2 * pad)
-  const py = (y: number) => pad + ((yMax - y) / range) * (H - 2 * pad)
-  return (
-    <svg
-      width={W}
-      height={H}
-      style={{
-        background: COL.field,
-        border: `1px solid ${COL.border}`,
-        borderRadius: 8,
-        alignSelf: 'center',
-      }}
-      aria-label="cubic-bezier curve"
-    >
-      <line x1={px(0)} y1={py(0)} x2={px(1)} y2={py(0)} stroke={COL.border} strokeDasharray="3 3" />
-      <line x1={px(0)} y1={py(1)} x2={px(1)} y2={py(1)} stroke={COL.border} strokeDasharray="3 3" />
-      <line x1={px(0)} y1={py(0)} x2={px(x1)} y2={py(y1)} stroke={COL.dim} />
-      <line x1={px(1)} y1={py(1)} x2={px(x2)} y2={py(y2)} stroke={COL.dim} />
-      <circle cx={px(x1)} cy={py(y1)} r={3} fill={COL.accent} />
-      <circle cx={px(x2)} cy={py(y2)} r={3} fill={COL.accent} />
-      <path
-        d={`M ${px(0)} ${py(0)} C ${px(x1)} ${py(y1)} ${px(x2)} ${py(y2)} ${px(1)} ${py(1)}`}
-        fill="none"
-        stroke={COL.accent}
-        strokeWidth={2}
-      />
-    </svg>
-  )
-}
-
-function btn(bg: string): CSSProperties {
-  return {
-    width: '100%',
-    padding: '8px 12px',
-    background: bg,
-    color: COL.text,
-    border: `1px solid ${COL.border}`,
-    borderRadius: 8,
-    cursor: 'pointer',
-    fontSize: 13,
-    marginTop: 6,
-  }
-}
-
-function input(): CSSProperties {
-  return {
-    background: COL.field,
-    color: COL.text,
-    border: `1px solid ${COL.border}`,
-    borderRadius: 6,
-    padding: '4px 8px',
-    fontSize: 12,
-  }
 }

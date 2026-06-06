@@ -8,7 +8,8 @@
       "!!node_modules",
       "!!v21-design-system",
       "!!.vite",
-      "!!src/renderer/src/styles/colors_and_type.css"
+      "!!src/renderer/src/styles/colors_and_type.css",
+      "!!local_files"
     ]
   },
   "formatter": {
