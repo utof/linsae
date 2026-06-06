@@ -11,8 +11,7 @@
   "ignore": [
     "src/preload/index.d.ts",
     "src/renderer/src/env.d.ts",
-    "src/renderer/src/topbar/Topbar.tsx",
-    "src/renderer/src/feed/entrance/types.ts"
+    "src/renderer/src/topbar/Topbar.tsx"
   ],
   "ignoreDependencies": [
     "@rolldown/plugin-babel",

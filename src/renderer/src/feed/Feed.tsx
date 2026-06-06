@@ -5,8 +5,8 @@ import type { Note } from '../../../shared/types'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { dayKey, formatDayLabel } from '../lib/day'
 import { DayDivider, ScrollDatePill } from './DatePills'
+import { useGlideReveal } from './entrance/glideReveal'
 import { NoteBubble } from './NoteBubble'
-import { useAppendReveal } from './useAppendReveal'
 import { useExpandCollapseMorph } from './useExpandCollapseMorph'
 
 interface Props {
@@ -32,7 +32,7 @@ interface Props {
    * True from the moment the user submits a new note until shortly after it has
    * glided into place (App owns it via `beginSend`). The feed reads it to suppress
    * the virtualizer's own auto-scroll (`anchorTo:'end'` / `followOnAppend`) so the
-   * make-room scroll-glide (`useAppendReveal`) owns the scroll while the note rises
+   * make-room scroll-glide (`useGlideReveal`) owns the scroll while the note rises
    * in — without it, the new row's first measure rides the scroll up and rapid sends
    * desync the rendered range (the #66 white wall). No ghost (ADR 0020).
    */
@@ -245,7 +245,7 @@ export function Feed({
   const morphingIndexRef = useRef<number | null>(null)
   morphingIndexRef.current = morphingIndex
   const suppressThumbResizeRef = useRef<boolean>(false)
-  // `revealing` is true while the make-room reveal (useAppendReveal) slides a
+  // `revealing` is true while the make-room reveal (useGlideReveal) slides a
   // freshly-sent note up into place by translating the content wrapper. Like
   // `morphingIndex` it gates the virtualizer's scroll-correction below (so a
   // measure correction can't jump scrollTop out from under the transform); the
@@ -273,7 +273,7 @@ export function Feed({
   // into place at the bottom, instead of popping in. It animates `scrollTop`
   // directly (no scrollTop fight — ADR 0019), so the note rises into view. There is
   // no flying ghost: the note is its own entrance (ADR 0020 supersedes ADR 0018).
-  useAppendReveal({
+  useGlideReveal({
     virtualizer,
     scrollerEl,
     notes,
@@ -299,14 +299,14 @@ export function Feed({
   // is true from ghost-launch THROUGH the append, so it covers the new row's first
   // measure too — not just `revealing`, which is set only AFTER the append) so OUR
   // scroll is the only thing moving; restore 'end' after. (anchorTo is read live as
-  // this.options.anchorTo.) ADR 0007 / 0019; see useAppendReveal for the #66 rationale.
+  // this.options.anchorTo.) ADR 0007 / 0019; see useGlideReveal for the #66 rationale.
   virtualizer.options.anchorTo =
     morphingIndexRef.current === null && !revealing && !sendInFlight ? 'end' : 'start'
   // Suppress the virtualizer's own `followOnAppend` auto-scroll while a send is in
   // flight: on the send's append, virtual-core's `_willUpdate` would `scrollToEnd()`
   // to the new note's ESTIMATE-inflated bottom (and arm its `reconcileScroll` rAF
   // loop) one frame before the make-room reveal's frame 0 collapses the row — a
-  // visible pre-roll scroll blip. The reveal (`useAppendReveal`) drives the scroll
+  // visible pre-roll scroll blip. The reveal (`useGlideReveal`) drives the scroll
   // itself, so the virtualizer must not also chase the bottom here. `sendInFlight`
   // is false under reduced-motion (no ghost), so normal auto-follow is unaffected.
   // Re-applied every render (like anchorTo) so useVirtualizer's setOptions can't
@@ -524,7 +524,7 @@ export function Feed({
              on the outer scroller equals this inner height — that's what
              makes the custom scrollbar thumb stable. `marginTop:auto` bottom-
              anchors it; `flexShrink:0` keeps its exact getTotalSize height in the
-             flex column; `contentRef` is the element useAppendReveal translates. */}
+             flex column; `contentRef` is the element useGlideReveal translates. */}
           <div
             ref={contentRef}
             style={{
@@ -545,7 +545,7 @@ export function Feed({
                   // drives the row's size via resizeItem, and tanstack forbids mixing
                   // measureElement + resizeItem on one item (ADR 0007). The make-room
                   // reveal no longer resizes the row (it glides the scroll, keeping the
-                  // row full-size — useAppendReveal), so the revealing row stays measured.
+                  // row full-size — useGlideReveal), so the revealing row stays measured.
                   ref={vItem.index === morphingIndex ? undefined : virtualizer.measureElement}
                   data-index={vItem.index}
                   style={{
