@@ -22,6 +22,7 @@ docs/Trace-*.json
 scripts/.morph-shots/
 scripts/.send-shots/
 scripts/.reveal-shots/
+scripts/.wave-shots/
 
 # Allow markdown in docs/ and adrs/ even though *.md is globally gitignored (CLAUDE.md rule)
 *.md

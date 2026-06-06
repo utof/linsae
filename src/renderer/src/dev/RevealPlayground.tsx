@@ -135,13 +135,27 @@ export function RevealPlayground({ onClose }: { onClose: () => void }) {
   const prevLenRef = useRef(notes.length)
   const readoutRef = useRef<HTMLSpanElement | null>(null)
 
+  // True from the instant a wave is armed (in `send`, BEFORE setNotes) until the loop
+  // settles. The wave lives in per-row `--wy` transforms and pins scrollTop itself, so the
+  // virtualizer's append-follow + scroll-anchor machinery must be OFF for the whole wave.
+  // That machinery is gated on `anchorTo:'end'` (virtual-core setOptions: the whole
+  // follow/anchor block runs only `if (merged.anchorTo === 'end')`), so the ONLY reliable
+  // off-switch is the value passed INTO useVirtualizer — `setOptions` reads it from the
+  // hook args, and a fresh `{...options}` is rebuilt every render, so a later mutation of
+  // `virtualizer.options` does NOT feed back in. Crucially this must be 'start' on the
+  // APPEND render (when setOptions runs), because `_willUpdate` — which fires
+  // `scrollToEnd` → arms `reconcileScroll`'s self-correcting rAF loop — runs in
+  // useVirtualizer's OWN layout effect, BEFORE our append layout effect. Setting it any
+  // later snaps the newcomer to its slot. @see scripts/wave-reveal.mjs (proved it frame-by-frame).
+  const [waveArmed, setWaveArmed] = useState(false)
+
   const virtualizer = useVirtualizer({
     count: notes.length,
     getScrollElement: () => scrollerEl,
     estimateSize: (i) => estimate(notes[i]),
     getItemKey: (i) => notes[i]?.id ?? i,
-    anchorTo: 'end',
-    followOnAppend: true,
+    anchorTo: waveArmed ? 'start' : 'end',
+    followOnAppend: !waveArmed,
     scrollEndThreshold: 120,
     overscan: 8,
   })
@@ -176,12 +190,20 @@ export function RevealPlayground({ onClose }: { onClose: () => void }) {
     }
   }, [scrollerEl])
 
+  // With `anchorTo:'start'` (above) the unconditional `wasAtEnd` scroll jump in virtual-core's
+  // resizeItem can't fire — but its DEFAULT `shouldAdjustScroll` branch still could on the
+  // newcomer's first estimate→real measure. Suppress it too while a wave is armed. This
+  // instance predicate is read live at resizeItem time, so setting it here in the render body
+  // is in time (unlike the append-follow gate, which is locked in at the setOptions call).
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => !waveArmed
+
   const stopLoop = useCallback(() => {
     if (tickRef.current) {
       cancelFrame(tickRef.current)
       tickRef.current = null
     }
     waveRef.current.clear()
+    setWaveArmed(false) // wave done: the re-render restores anchorTo:'end' + followOnAppend
     paintOffsets()
   }, [paintOffsets])
 
@@ -210,12 +232,13 @@ export function RevealPlayground({ onClose }: { onClose: () => void }) {
       }
 
       // 2. Model A only: PBD non-overlap projection. UP-ONLY and swept BOTTOM→TOP, so the
-      //    newcomer (the bottom row, never seeded) is a pinned anchor: any pair that would
-      //    overlap pushes ONLY the upper row up, and sweeping upward propagates that shove
-      //    one row at a time — the magnet impulse emerges from the constraint, and the
-      //    newcomer can never be knocked off the bottom (the bug a symmetric split would hit
-      //    whenever the newcomer is taller than its neighbour). A row the wave reaches that
-      //    wasn't seeded gets created at rest (off 0), then springs back like the rest.
+      //    newcomer (the bottom row) acts as the anchor: it's only ever the LOWER of a pair,
+      //    so the projection never pushes it — it just rides its own spring up from +shift,
+      //    and any pair that would overlap pushes ONLY the upper row up. Sweeping upward
+      //    propagates that shove one row at a time — the magnet impulse emerges from the
+      //    constraint, and the newcomer can never be knocked off the bottom (the bug a
+      //    symmetric split would hit whenever the newcomer is taller than its neighbour). A
+      //    row the wave reaches that wasn't seeded gets created at rest (off 0), then springs.
       if (model === 'pbd') {
         const rows = orderedRows(sc)
         const get = (id: string) => {
@@ -261,6 +284,11 @@ export function RevealPlayground({ onClose }: { onClose: () => void }) {
   // Send a note: append a fresh arriving note (trims old arrivals so the list can't grow
   // unbounded across replays). The append effect below runs the entrance.
   const send = useCallback(() => {
+    // Arm the guard BEFORE setNotes so `waveArmed` is already true on the append render —
+    // i.e. when useVirtualizer's setOptions runs and decides whether to follow-on-append.
+    // (Both setState calls batch into that one render.) `glide` drives scrollTop itself and
+    // cooperates with the virtualizer's follow, so it stays unguarded.
+    if (knobsRef.current.model !== 'glide') setWaveArmed(true)
     setNotes((prev) => {
       const base = prev.length > BACKDROP.length + 4 ? prev.slice(0, BACKDROP.length) : prev
       arrCountRef.current += 1
@@ -312,6 +340,8 @@ export function RevealPlayground({ onClose }: { onClose: () => void }) {
     // of a newcomer that's already there.) Everything springs back to 0; the newcomer leads
     // (delay 0) and, as it rises, shoves the row above it up — `pbd` enforces that with the
     // projection (true magnet repulsion); `flip` lets the stagger do it and overlaps softly.
+    // `waveArmed` was set true in `send` (so the append render already suppressed the
+    // virtualizer's follow); pin to the true bottom, then own the reveal via `--wy`.
     sc.scrollTop = sc.scrollHeight
     const map = waveRef.current
     for (const { id, idx } of orderedRows(sc)) {
