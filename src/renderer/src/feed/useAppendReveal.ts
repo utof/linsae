@@ -3,11 +3,37 @@ import { animate } from 'motion'
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { Note } from '../../../shared/types'
 
+type Cubic = [number, number, number, number]
+type Tween = { duration: number; ease: Cubic }
+
+// Three reveal tweens (duration + cubic-bezier easing) hand-tuned in the dev playground
+// (mod+shift+R, `RevealPlayground`), anchored by the note's height-to-viewport ratio:
+// SHORT at ~0 of a screen, BIG at half a screen, HUGE at a full screen (and beyond).
+const SHORT: Tween = { duration: 0.5, ease: [0.4, 0.04, 0, 1] }
+const BIG: Tween = { duration: 1.1, ease: [0.8, 0.07, 0, 0.97] }
+const HUGE: Tween = { duration: 1.1, ease: [0.95, 0.5, 0, 0.97] }
+
+const mix = (a: number, b: number, t: number) => a + (b - a) * t
+const mixTween = (a: Tween, b: Tween, t: number): Tween => ({
+  duration: mix(a.duration, b.duration, t),
+  ease: [
+    mix(a.ease[0], b.ease[0], t),
+    mix(a.ease[1], b.ease[1], t),
+    mix(a.ease[2], b.ease[2], t),
+    mix(a.ease[3], b.ease[3], t),
+  ],
+})
+
 /**
- * "Visual duration" (seconds) of the make-room reveal — how long the feed takes to
- * slide the new note up into place. Dev slow-mo via `window.__morphSlow`.
+ * Reveal tween for a note `noteH` px tall in a `viewportH` px viewport. NOT bucketed:
+ * the duration and every bezier control point are a CONTINUOUS blend of the three tuned
+ * anchors by the height ratio (r) — so a note half a screen tall gets exactly BIG, a
+ * quarter-screen note gets halfway from SHORT to BIG, etc. r is clamped to [0, 1].
  */
-const REVEAL_VISUAL_DURATION = 0.4
+function revealTween(noteH: number, viewportH: number): Tween {
+  const r = Math.min(1, Math.max(0, noteH / Math.max(1, viewportH)))
+  return r <= 0.5 ? mixTween(SHORT, BIG, r / 0.5) : mixTween(BIG, HUGE, (r - 0.5) / 0.5)
+}
 
 /**
  * Makes a newly-sent note **push the whole feed up** as it arrives — the iMessage
@@ -142,15 +168,14 @@ export function useAppendReveal(args: {
     // Start with the new full-size row just below the fold, then glide the feed up.
     scroller.scrollTop = startScroll
 
-    const duration = import.meta.env.DEV
-      ? REVEAL_VISUAL_DURATION * (window.__morphSlow ?? 1)
-      : REVEAL_VISUAL_DURATION
-    // `bounce: 0` — no overshoot past the true bottom (an overshoot would scroll into
-    // blank space below the last note).
+    // Duration + easing blended continuously by note size (`revealTween`), so a taller
+    // note glides with a longer, gentler curve. Dev slow-mo scales the duration.
+    const { duration: baseDur, ease } = revealTween(noteH, scroller.clientHeight)
+    const duration = import.meta.env.DEV ? baseDur * (window.__morphSlow ?? 1) : baseDur
     controlsRef.current = animate(startScroll, endScroll, {
-      type: 'spring',
-      bounce: 0,
-      visualDuration: duration,
+      type: 'tween',
+      duration,
+      ease,
       onUpdate: (v) => {
         scroller.scrollTop = v
       },
