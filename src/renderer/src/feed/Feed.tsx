@@ -5,7 +5,7 @@ import type { Note } from '../../../shared/types'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { dayKey, formatDayLabel } from '../lib/day'
 import { DayDivider, ScrollDatePill } from './DatePills'
-import { useGlideReveal } from './entrance/glideReveal'
+import { useEntranceAnimation } from './entrance/useEntranceAnimation'
 import { NoteBubble } from './NoteBubble'
 import { useExpandCollapseMorph } from './useExpandCollapseMorph'
 
@@ -212,6 +212,29 @@ export function Feed({
     return set
   }, [notes])
 
+  const [morphingIndex, setMorphingIndex] = useState<number | null>(null)
+  const morphingIndexRef = useRef<number | null>(null)
+  morphingIndexRef.current = morphingIndex
+  const suppressThumbResizeRef = useRef<boolean>(false)
+  // `revealing` is true while the make-room reveal (useGlideReveal) slides a
+  // freshly-sent note up into place by translating the content wrapper. Like
+  // `morphingIndex` it gates the virtualizer's scroll-correction below (so a
+  // measure correction can't jump scrollTop out from under the transform); the
+  // ref is read live in the `shouldAdjust` closure, the state forces the
+  // anchorTo re-apply.
+  const [revealing, setRevealing] = useState(false)
+  const revealingRef = useRef(false)
+  // `waveSettling` extends follow-suppression past the append, through the wave
+  // engine's spring window (Task 9 sets it; inert in Batch 1 — glide never sets it).
+  const [waveSettling, setWaveSettling] = useState(false)
+  // The single follow-suppression signal: the submit→append bridge (`sendInFlight`),
+  // glide's own scroll-settle (`revealing` STATE so the render-time options recompute
+  // when it flips), and the wave's spring window (`waveSettling`). Fed INTO useVirtualizer
+  // (anchorTo/followOnAppend) so it is correct at `setOptions` on the append render — the
+  // spike's load-bearing finding (a post-hook `virtualizer.options.*` mutation does NOT
+  // feed back into the next setOptions). @see docs/specs/v0.2.2-repulsion-wave.md §Guard.
+  const suppressFollow = sendInFlight || revealing || waveSettling
+
   const virtualizer = useVirtualizer({
     count: notes.length,
     getScrollElement: () => scrollerEl,
@@ -226,8 +249,29 @@ export function Feed({
     // so the message stays in place. Index-keyed items can't survive a
     // prepend — every item's index shifts.
     getItemKey: (index) => notes[index]?.id ?? index,
-    anchorTo: 'end',
-    followOnAppend: true,
+    // anchorTo/followOnAppend gated on the morph AND the unified send/wave/glide
+    // suppression, passed INTO the hook so they are correct at setOptions on the
+    // append render. virtual-core gates its ENTIRE append-follow + scroll-anchor
+    // block on `merged.anchorTo === 'end'` inside setOptions, and `_willUpdate`
+    // (which fires scrollToEnd → arms the reconcileScroll rAF loop that re-pins the
+    // newcomer to the bottom and cancels the --wy rise) runs in useVirtualizer's OWN
+    // earlier layout effect — so a post-hook `virtualizer.options.anchorTo = 'start'`
+    // is too late (resolvedOptions is rebuilt {...options} fresh each render and
+    // re-fed to setOptions in the render body). Glide survived the post-hook form only
+    // because it drives scrollTop itself and cooperates with the follow; the wave does
+    // not. @see docs/specs/v0.2.2-repulsion-wave.md §Guard.
+    //
+    // Drop anchorTo to 'start' for the morph AND the whole send so OUR scroll is the
+    // only thing moving; restore 'end' after. Why the morph needs it: virtual-core's
+    // `wasAtEnd` branch in resizeItem is unconditional, so collapsing a note near the
+    // bottom rides the scroll up by the size delta AT THE SAME TIME as our manual
+    // bottom-anchor — double-applying, so the viewport overshoots above all content and
+    // the feed blanks. The make-room reveal hits the same `wasAtEnd` hazard the instant
+    // the new full-size row is FIRST measured (that one `wasAtEnd` would ride the scroll
+    // up by ~noteH and never be cleared — the #66 white wall). ADR 0007 / 0019; see
+    // useGlideReveal for the #66 rationale.
+    anchorTo: morphingIndexRef.current === null && !suppressFollow ? 'end' : 'start',
+    followOnAppend: !suppressFollow,
     scrollEndThreshold: SCROLL_END_THRESHOLD,
     // Rows rendered beyond the viewport on each side — tanstack's documented
     // lever for "slow-rendering blank items when scrolling": a scroll event
@@ -241,18 +285,6 @@ export function Feed({
     overscan: 8,
   })
 
-  const [morphingIndex, setMorphingIndex] = useState<number | null>(null)
-  const morphingIndexRef = useRef<number | null>(null)
-  morphingIndexRef.current = morphingIndex
-  const suppressThumbResizeRef = useRef<boolean>(false)
-  // `revealing` is true while the make-room reveal (useGlideReveal) slides a
-  // freshly-sent note up into place by translating the content wrapper. Like
-  // `morphingIndex` it gates the virtualizer's scroll-correction below (so a
-  // measure correction can't jump scrollTop out from under the transform); the
-  // ref is read live in the `shouldAdjust` closure, the state forces the
-  // anchorTo re-apply.
-  const [revealing, setRevealing] = useState(false)
-  const revealingRef = useRef(false)
   // Collapsed-state geometry (item height + constant chrome), captured for free
   // when a note is EXPANDED — at that instant the note is still rendered
   // collapsed, so its pre-swap layout IS the collapse target. Reused on collapse
@@ -273,45 +305,30 @@ export function Feed({
   // into place at the bottom, instead of popping in. It animates `scrollTop`
   // directly (no scrollTop fight — ADR 0019), so the note rises into view. There is
   // no flying ghost: the note is its own entrance (ADR 0020 supersedes ADR 0018).
-  useGlideReveal({
+  // Reached through the entrance dispatcher (glide-only in Batch 1; Task 9 routes
+  // flip/pbd to the wave engine). The dispatcher only forwards setters — the Feed
+  // owns the suppression state and computes `suppressFollow` above useVirtualizer.
+  useEntranceAnimation({
     virtualizer,
     scrollerEl,
     notes,
     revealingRef,
     setRevealing,
     suppressThumbResizeRef,
+    setWaveSettling,
+    sendInFlight,
   })
   // Prevent the virtualizer's own scroll-position correction from fighting the
   // manual bottom-anchor during an active morph OR make-room reveal. ADR 0007 /
   // ADR 0019. Both drive scrollTop themselves; an estimate→measured size
-  // correction mid-animation would yank it.
+  // correction mid-animation would yank it. Read live at resizeItem time, so it
+  // stays a render-body instance assignment; folds the unified `suppressFollow`
+  // (send + glide-revealing + wave-settling) in so a measure correction can't ride
+  // the scroll for ANY entrance. The anchorTo/followOnAppend gating now lives in the
+  // useVirtualizer options above (the spike's §Guard finding — a post-hook
+  // `virtualizer.options.*` mutation is too late for the append render).
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () =>
-    morphingIndexRef.current === null && !revealingRef.current
-  // shouldAdjust above does NOT gate virtual-core's `anchorTo:'end'` "wasAtEnd"
-  // path: in resizeItem the `if (wasAtEnd) applyScrollAdjustment(...)` branch is
-  // unconditional (dist/esm/index.js). When collapsing a note near the bottom,
-  // that branch rides the scroll up by the size delta AT THE SAME TIME as our
-  // manual bottom-anchor — double-applying, so the viewport overshoots above all
-  // content and the feed blanks for the morph. The make-room reveal hits the same
-  // hazard the instant the new full-size row is FIRST measured (that one `wasAtEnd`
-  // would ride the scroll up by ~noteH and never be cleared — the #66 white wall).
-  // Drop anchorTo to 'start' for the morph AND the whole send (`sendInFlight`, which
-  // is true from ghost-launch THROUGH the append, so it covers the new row's first
-  // measure too — not just `revealing`, which is set only AFTER the append) so OUR
-  // scroll is the only thing moving; restore 'end' after. (anchorTo is read live as
-  // this.options.anchorTo.) ADR 0007 / 0019; see useGlideReveal for the #66 rationale.
-  virtualizer.options.anchorTo =
-    morphingIndexRef.current === null && !revealing && !sendInFlight ? 'end' : 'start'
-  // Suppress the virtualizer's own `followOnAppend` auto-scroll while a send is in
-  // flight: on the send's append, virtual-core's `_willUpdate` would `scrollToEnd()`
-  // to the new note's ESTIMATE-inflated bottom (and arm its `reconcileScroll` rAF
-  // loop) one frame before the make-room reveal's frame 0 collapses the row — a
-  // visible pre-roll scroll blip. The reveal (`useGlideReveal`) drives the scroll
-  // itself, so the virtualizer must not also chase the bottom here. `sendInFlight`
-  // is false under reduced-motion (no ghost), so normal auto-follow is unaffected.
-  // Re-applied every render (like anchorTo) so useVirtualizer's setOptions can't
-  // reset it mid-send.
-  virtualizer.options.followOnAppend = !sendInFlight
+    morphingIndexRef.current === null && !suppressFollow
 
   // Initial scroll-to-bottom once the scroller is available. Layout
   // effect (not effect) so the bottom-pinned position is set BEFORE the
@@ -553,7 +570,7 @@ export function Feed({
                     top: 0,
                     left: 0,
                     width: '100%',
-                    transform: `translateY(${vItem.start}px)`,
+                    transform: `translateY(calc(${vItem.start}px + var(--wy, 0px)))`,
                     // Inter-bubble vertical gap as wrapper padding (not
                     // margin) so tanstack's `measureElement` reads a
                     // border-box height that already includes the gap.
