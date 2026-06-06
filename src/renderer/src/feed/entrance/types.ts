@@ -14,7 +14,7 @@ export interface EntranceCtx {
   virtualizer: Virtualizer<any, any>
   scrollerEl: HTMLElement | null
   notes: Note[]
-  /** Glide family (today's useAppendReveal args). */
+  /** Glide family (today's useGlideReveal args). */
   revealingRef: { current: boolean }
   setRevealing: (v: boolean) => void
   suppressThumbResizeRef: { current: boolean }

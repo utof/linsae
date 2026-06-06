@@ -95,7 +95,7 @@ export function App() {
   // Send-in-progress flag: true from the moment the user submits a new note until
   // shortly after it has glided into place. The Feed reads it to suppress the
   // virtualizer's own auto-scroll (`anchorTo:'end'` / `followOnAppend`) during the
-  // window where the make-room scroll-glide (`useAppendReveal`) owns the scroll —
+  // window where the make-room scroll-glide (`useGlideReveal`) owns the scroll —
   // without it, the new row's first measure rides the scroll up and rapid sends
   // desync the rendered range (the #66 white wall). The note simply rises into view
   // via the glide; there is no flying ghost (ADR 0020 supersedes ADR 0018).

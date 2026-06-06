@@ -82,7 +82,7 @@ export function BezierTuner({
 
       <div>
         <div style={{ color: COL.dim, fontSize: 11, marginBottom: 4 }}>
-          transition (paste into useAppendReveal):
+          transition (paste into useGlideReveal):
         </div>
         <code
           style={{

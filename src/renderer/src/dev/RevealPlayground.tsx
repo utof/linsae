@@ -300,7 +300,7 @@ export function RevealPlayground({ onClose }: { onClose: () => void }) {
   }, [])
 
   // Entrance, fired on a single append. Layout effect (pre-paint) so the FLIP invert shows
-  // no pop. Mirrors the real `useAppendReveal` append-detection.
+  // no pop. Mirrors the real `useGlideReveal` append-detection.
   useLayoutEffect(() => {
     const len = notes.length
     const grew = len === prevLenRef.current + 1
