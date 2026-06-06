@@ -20,6 +20,12 @@ const DEV_PLAYGROUND = import.meta.env.DEV || !!import.meta.env.VITE_PLAYGROUND
 const RevealPlayground = DEV_PLAYGROUND
   ? lazy(() => import('./dev/RevealPlayground').then((m) => ({ default: m.RevealPlayground })))
   : null
+// Always-visible dev panel (`pnpm dev` only) to tune the wave entrance live on the real feed.
+// Gated on import.meta.env.DEV → tree-shaken from production AND the VITE_PLAYGROUND harness
+// build (so it can't overlay the harness's measurements). @see src/renderer/src/dev/WaveTuner.tsx
+const WaveTuner = import.meta.env.DEV
+  ? lazy(() => import('./dev/WaveTuner').then((m) => ({ default: m.WaveTuner })))
+  : null
 
 /**
  * Root shell for v0.1 — composes Topbar, Feed, Composer, BacklinksPane, and
@@ -515,6 +521,11 @@ export function App() {
       {DEV_PLAYGROUND && playgroundOpen && RevealPlayground && (
         <Suspense fallback={null}>
           <RevealPlayground onClose={() => setPlaygroundOpen(false)} />
+        </Suspense>
+      )}
+      {WaveTuner && (
+        <Suspense fallback={null}>
+          <WaveTuner />
         </Suspense>
       )}
     </div>

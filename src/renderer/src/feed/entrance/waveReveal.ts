@@ -2,16 +2,12 @@ import { cancelFrame, frame } from 'motion'
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import { projectNoOverlap } from './pbdProjection'
 import type { EntranceCtx } from './types'
+import { seedOffset, useWaveTuning } from './wave-tuning'
 import { springStep } from './waveSpring'
 
-// Tuned production constants — ported from the dev spike's defaults
-// (`RevealPlayground.tsx`, the values the user settled on). Re-tune later by the
-// DevFpsMeter, not by feel (per the spec's perf note); they're module-level so the
-// frame loop reads stable values without UI knobs.
-const STAGGER_MS = 20 // per-row settle delay → the wave travels UP the stack
-const STIFFNESS = 180
-const DAMPING = 18
-const PROJ_PASSES = 8 // Gauss-Seidel non-overlap passes (pbd only)
+// Spring + amplitude params live in DEFAULT_WAVE_TUNING (wave-tuning.ts) and are read live
+// via a ref below — the dev WaveTuner panel overrides them in localStorage so the feel is
+// tunable on the real feed without a rebuild. The defaults reproduce the shipped wave exactly.
 
 /** Per-row physics state. `off` = current `--wy` offset (px); `vel` = its velocity;
  *  `delay` = ms still to wait before this row starts settling (makes the wave travel up). */
@@ -66,6 +62,10 @@ export function useWaveReveal(
   notesRef.current = notes
   const modelRef = useRef(model)
   modelRef.current = model
+  // Live-tunable spring/amplitude params (dev WaveTuner); defaults reproduce the shipped wave.
+  const tuning = useWaveTuning()
+  const tuningRef = useRef(tuning)
+  tuningRef.current = tuning
 
   const waveRef = useRef<Map<string, WaveState>>(new Map())
   const tickRef = useRef<((data: { delta: number }) => void) | null>(null)
@@ -118,7 +118,12 @@ export function useWaveReveal(
           s.delay -= data.delta
           continue
         }
-        const next = springStep(s, data.delta, STIFFNESS, DAMPING)
+        const next = springStep(
+          s,
+          data.delta,
+          tuningRef.current.stiffness,
+          tuningRef.current.damping,
+        )
         s.off = next.off
         s.vel = next.vel
       }
@@ -131,7 +136,7 @@ export function useWaveReveal(
         const rows = orderedRows(sc)
         const projected = projectNoOverlap(
           rows.map((r) => map.get(r.id)?.off ?? 0),
-          PROJ_PASSES,
+          tuningRef.current.projPasses,
         )
         rows.forEach((r, i) => {
           const off = projected[i] ?? 0
@@ -208,7 +213,8 @@ export function useWaveReveal(
     for (const { id, idx } of orderedRows(sc)) {
       if (idx > newIndex) continue
       const d = newIndex - idx // 0 = the newcomer itself, 1 = neighbour above, …
-      map.set(id, { off: shift, vel: 0, delay: d * STAGGER_MS })
+      const off = seedOffset(shift, tuningRef.current)
+      map.set(id, { off, vel: 0, delay: d * tuningRef.current.staggerMs })
     }
     paintOffsets() // first paint: whole stack at +shift (newcomer below the fold), no pop
     startLoop()
