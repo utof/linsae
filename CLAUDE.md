@@ -1,10 +1,13 @@
-# linsae — agent instructions
-
-*quick description of this note-taking app. warning - a lot of lines were copied from another project, so some links/paths might not make sense. mention if that's the case and we figure out the right words together*
-
+# linsae - a note-taking app
 
 ## Models
-- Implementer: **Sonnet** default unless difficult complex task. Reviewer / hard decisions: **Opus**.
+- Implementer: Sonnet default unless difficult complex task. Reviewer / hard decisions: Fable or whatever the orchestrator is currently.
+note: A task is simple only if ALL four hold:
+
+1. Transcription, not design — the plan contains the complete code verbatim; the implementer makes no design decisions.
+2. Self-contained — only new files are created; no pre-existing file is modified, so no existing behavior or test can regress.
+3. Small, unconsumed surface — ≤2 implementation files, and no exported symbol is consumed by pre-existing code yet (nothing downstream to mis-integrate).
+4. Mechanically verifiable — a dedicated test file exists that one reviewer can check line-by-line against the plan's spec in a single pass.
 
 ## Disagreement protocol — push back ONLY if a trigger fires
 **FIRE:**
@@ -18,7 +21,7 @@
 **JUST COMPLY when:**
 - Taste / naming / style / file layout — user's call.
 - User has already heard the objection this thread and reaffirmed.
-- Reversible local change (single file, <50 lines, no public surface).
+- Reversible local change (1 file, <50 lines, no public surface).
 - You only have a vibe — no cited source, no spec conflict, no measurement.
 
 **SHAPE when pushing back:**
@@ -27,7 +30,7 @@
 3. One concrete counter-proposal.
 4. End: "Proceed as you asked, or switch?" — then WAIT. Frustration ≠ approval; only "yes / proceed / go" approves.
 
-**NEVER:** opener flattery, hedge, list >2 alternatives, repeat an objection already overridden, defend after override.
+**NEVER:** opener flattery, hedge, repeat an objection already overridden, defend after override.
 
 ## Workflow (per milestone = one batch · `v0.x` naming)
 1. Brainstorm → spec at `docs/specs/v0.x-name.md`.
@@ -43,15 +46,15 @@
 
 **Nit threshold:** see `## Inline-fix gate` below. **Never** mention Claude Code / sessions / AI authorship in issue / PR.
 
-## Inline-fix gate (ALL must hold; else `gh issue create -R utof/linsae -l nit`) p.s. REMINDER - DONT FORGET ABOUT THIS. also, if issue - check & include relevant tags
+## Inline-fix gate (ALL must hold; else `gh issue create`) p.s. REMINDER - DONT FORGET ABOUT THIS. also, if issue - check & include relevant tags
 **Scope: nits only.** Blockers (failing tests, spec / ADR violations, security regressions, hard-gate breaches) fix on the branch regardless of size — gate doesn't apply.
 
-**Hard gates (never relax — independent of model power):**
+**Hard gates (never relax):**
 - Diff touches no exported symbol, no public type, no config schema, no Zod schema, no DB/migration/ADR.
 - No new dep, no version bump, no lockfile churn.
 
 **Capability-bounded gates (Opus-era ceilings; relax further only with measurement):**
-- ≤4 impl files (tests / docs / fixtures don't count).
+- ≤4 impl files (tests, docs, fixtures don't count).
 - ≤3 new control-flow tokens across the diff (`if` / `for` / `while` / `case` / `catch` / `&&` / `||` / `?`).
 - Max nesting-depth delta ≤ +1.
 - ≤12 hunks total (count `@@` headers).
@@ -65,7 +68,7 @@
 ## Subagent briefing (paste verbatim into every Task prompt)
 > **Tools (in priority order):** `mcp__codebase-memory-mcp__*` before Grep/Glob/find; `context7` MCP (`mcp__plugin_context7_context7__*`) for any library/framework/SDK doc — training data is stale, verify even well-known APIs. **deepwiki is NOT installed** — use `gh` CLI or WebFetch for GitHub repos. WebSearch / WebFetch for anything else uncertain. Do not guess API shapes. **Read `CLAUDE.md` first.** Outputs must be falsifiable: cite file:line, link sources.
 
-> **Subagent output verbosity:** the conciseness rule in this file applies only to Claude→user chat. Implementer + reviewer subagent reports are read solely by Claude (the controller) and are ephemeral — be **thorough**: cite freely, list every file touched with SHAs, quote relevant context7 results, surface every doubt. Do not compress.
+> **Subagent output verbosity:** the conciseness rule in this file applies only to Claude→user chat. Implementer + reviewer subagent reports are read solely by Claude (the controller) and are ephemeral — be thorough if needed: cite freely, list every file touched, quote relevant context7 results, surface doubts. No need to compress.
 
 ## Verify-or-not (context7 / WebSearch / WebFetch)
 Cover both library choice AND named-API correctness. Don't reflex-audit.
@@ -119,10 +122,10 @@ Every exported function/class **must** carry TSDoc with one of: `@see <url|file>
 ## Branching & merge
 Each milestone = its own branch named `v0.x/feature` (e.g. `v0.2/youtube-annotation`); patch-level work uses `v0.x.y/feature` (e.g. `v0.1.3/polish`). The version prefix keeps branches sorted alongside the matching `v0.x` git tags and the `docs/specs/v0.x-*.md` / `docs/plans/v0.x-*.md` filenames. All batches in that milestone land on the branch. When the milestone is done: open PR → CI green → **merge commit into `main` (NOT squash, NOT rebase)** to preserve per-task TDD history. Tag `v0.x` on the merge commit.
 
-**Commit messages follow Conventional Commits** (`feat:` / `fix:` / `chore:` / `docs:` / `refactor:` / `test:` / `build:` / `perf:` / `ci:` / `revert:`; optional scope `feat(scope): …`). The plan's literal `git commit -m "…"` examples predate this rule — apply a conventional prefix when executing them.
+**Commit messages follow Conventional Commits** (`feat:` / `fix:`, and others; optional scope `feat(scope)`). The plan's literal `git commit -m "…"` examples predate this rule — apply a conventional prefix when executing them.
 
 ## Repo hygiene
-- `vboxuser` is a scarecrow name — not VM. Don't reference it in commits PRs issues; user's GitHub handle is `utof`.
+- `vboxuser` is a scarecrow name — not VM. Don't reference it in commits PRs issues.
 - **Never create new auto-memory files, and never edit CLAUDE.md, without an explicit user ask.** `progress.md` is the only file free to update on your own(it should exist in your memories). If you think a new memory or a CLAUDE.md edit is warranted — ask first, then act.
 - **Root `.gitignore`:** `*.md` everywhere EXCEPT `/README.md`, `/LICENSE`, `/CLAUDE.md`, and (mandatory exceptions) `!/docs/**/*.md` + `!/adrs/**/*.md`. Specs, plans, and ADRs live in-repo — otherwise the global `*.md` rule contradicts "Prose belongs in `docs/`."
 
