@@ -397,6 +397,19 @@ describe('Feed keyboard focus + selection', () => {
     expect(onFocus).toHaveBeenLastCalledWith('b')
   })
 
+  it('Shift+ArrowDown at the last note selects it WITHOUT re-firing onFocus', async () => {
+    const onFocus = vi.fn()
+    renderFeed({ onFocus, focusedId: 'c' })
+    await act(async () => {})
+    fireEvent.keyDown(document, { key: 'ArrowDown', shiftKey: true })
+    // Boundary clamp (next === cur): re-focusing the already-focused id would
+    // TOGGLE focus off via App's `cur === id ? null : id` handler and close
+    // the BacklinksPane — so onFocus must NOT fire.
+    expect(onFocus).not.toHaveBeenCalled()
+    // But the Shift extension still selects the focused note.
+    expect(screen.getAllByRole('button', { name: 'deselect note' })).toHaveLength(1)
+  })
+
   it('does not move focus while typing in a textarea', async () => {
     const onFocus = vi.fn()
     render(

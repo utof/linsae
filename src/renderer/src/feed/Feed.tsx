@@ -523,10 +523,22 @@ export function Feed({
             return out
           })
         }
-        const dest = notes[next]
-        if (dest) {
-          onFocus(dest.id)
-          virtualizer.scrollToIndex(next, { align: 'auto' })
+        // Only move focus on a REAL step: at a clamped boundary (next === cur,
+        // Shift held) the extension above already selected the focused note, and
+        // re-focusing the same id would TOGGLE it off via App's
+        // `cur === id ? null : id` handler — closing the BacklinksPane.
+        if (next !== cur) {
+          const dest = notes[next]
+          if (dest) {
+            onFocus(dest.id)
+            // Imperative scroll gated like every other one in this file (the
+            // anchorTo gating + ResizeObserver re-pin): scrollToIndex arms
+            // virtual-core's scroll-reconcile loop, which must stay dormant
+            // during a morph or entrance animation (ADR 0007 / 0019).
+            if (morphingIndexRef.current === null && !suppressFollow) {
+              virtualizer.scrollToIndex(next, { align: 'auto' })
+            }
+          }
         }
         return
       }
@@ -542,7 +554,7 @@ export function Feed({
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [notes, focusedId, onFocus, virtualizer, toggleSelected])
+  }, [notes, focusedId, onFocus, virtualizer, toggleSelected, suppressFollow])
 
   // Prevent the virtualizer's own scroll-position correction from fighting the
   // manual bottom-anchor during an active morph OR make-room reveal. ADR 0007 /
