@@ -107,10 +107,13 @@ export async function saveOverlay(
   queryClient: QueryClient,
   attachment: Attachment,
   scene: Scene | null,
-): Promise<void> {
+): Promise<{ overlayPath: string | null }> {
   const svg = scene !== null ? serializeScene(scene) : null
-  await api.youtube.saveOverlay(attachment.id, svg)
+  const result = await api.youtube.saveOverlay(attachment.id, svg)
   // Invalidate by [overlay, id] prefix so any overlay_path variant for this
   // attachment is refreshed (handles the case where overlay_path just changed).
   await queryClient.invalidateQueries({ queryKey: ['overlay', attachment.id] })
+  // Return the new overlay_path so the capture flow can synthesize the pending
+  // chip's Attachment with the freshly-written sidecar (B-2). null when cleared.
+  return result
 }

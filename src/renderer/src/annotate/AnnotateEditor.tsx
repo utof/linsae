@@ -123,6 +123,13 @@ export interface AnnotateEditorProps {
    * mode (a posted screenshot is never soft-deleted from the editor).
    */
   onDiscardOrphan?: () => void
+  /**
+   * Fired with the freshly-written `overlay_path` (or `null` when the scene is
+   * empty/cleared) right before `onClose(true)`. The capture flow uses it to
+   * synthesize the pending chip's Attachment with the new sidecar (B-2); the
+   * reopen flow ignores it (it re-reads via query invalidation instead).
+   */
+  onSaved?: (overlayPath: string | null) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +146,7 @@ export function AnnotateEditor({
   onClose,
   escMode = 'changes',
   onDiscardOrphan,
+  onSaved,
 }: AnnotateEditorProps): React.JSX.Element {
   const queryClient = useQueryClient()
   const dpr = attachment.device_pixel_ratio || 1
@@ -316,12 +324,13 @@ export function AnnotateEditor({
     if (saving) return
     setSaving(true)
     try {
-      await saveOverlay(queryClient, attachment, isEmpty ? null : scene)
+      const { overlayPath } = await saveOverlay(queryClient, attachment, isEmpty ? null : scene)
+      onSaved?.(overlayPath)
       onClose(true)
     } finally {
       setSaving(false)
     }
-  }, [saving, queryClient, attachment, isEmpty, scene, onClose])
+  }, [saving, queryClient, attachment, isEmpty, scene, onClose, onSaved])
 
   // ── Done / Cancel ───────────────────────────────────────────────────────────
   const onDone = saveAndClose

@@ -33,6 +33,8 @@ import {
   useRef,
   useState,
 } from 'react'
+import type { Attachment } from '../../../shared/types'
+import { AnnotatedFrame } from '../annotate/AnnotatedFrame'
 import { SendButton } from '../composer/SendButton'
 import { clampSeconds, formatClock, parseTimeDigits } from '../lib/time'
 import { chipTime, nextFrozenAt } from './composer-chip'
@@ -50,10 +52,14 @@ export interface ThreadComposerProps {
    */
   duration?: number | null
   /**
-   * A pending captured frame chip (⌘⇧C). E4 wires the actual capture;
-   * when present a small thumbnail renders above the textarea.
+   * A pending captured frame chip (⌘⇧C). When present, the captured frame
+   * renders above the textarea via `AnnotatedFrame` — so a frame annotated in
+   * the capture-time editor shows its overlay in the chip (v0.2.5 contract
+   * change; was `{ thumbnailUrl; t }` rendering the bare base PNG). `t` is the
+   * captured moment (drives the chip timestamp + the posted anchor).
+   * @see docs/specs/v0.2.5-screenshot-annotation.md §Capture-time
    */
-  pendingFrame?: { thumbnailUrl: string; t: number } | null
+  pendingFrame?: { attachment: Attachment; t: number } | null
   /** Called on submit. ThreadView owns the api.notes.create + commentOn call. */
   onPost: (args: { body: string; t: number }) => void
   /**
@@ -259,21 +265,11 @@ export function ThreadComposer({
         padding: '7px 9px',
       }}
     >
-      {/* Pending frame thumbnail — E4 populates pendingFrame */}
+      {/* Pending frame — rendered via AnnotatedFrame so a frame annotated in the
+          capture-time editor shows its overlay in the chip (v0.2.5). */}
       {pendingFrame != null && (
         <div style={{ marginBottom: 7 }}>
-          <img
-            src={pendingFrame.thumbnailUrl}
-            alt="captured frame"
-            aria-label="captured frame"
-            style={{
-              width: '100%',
-              aspectRatio: '16 / 9',
-              objectFit: 'cover',
-              borderRadius: 'var(--r-3)',
-              display: 'block',
-            }}
-          />
+          <AnnotatedFrame attachment={pendingFrame.attachment} />
         </div>
       )}
 

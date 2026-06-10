@@ -8,14 +8,20 @@
  * (d) Camera button calls onCapture if provided.
  * (e) clicking the chip reveals a manual mm:ss input; entering a valid time updates the chip.
  *
- * No QueryClient needed (purely presentational). Plain render suffices.
+ * The non-frame cases need no QueryClient (purely presentational; plain render).
+ * The pendingFrame cases render via AnnotatedFrame (React Query + window.api),
+ * so they use renderWithProviders + installMockApi.
  *
  * @see src/renderer/src/thread/ThreadComposer.tsx
  * @see docs/specs/v0.2-youtube-annotation.md §Composer
+ * @see docs/specs/v0.2.5-screenshot-annotation.md §Capture-time
  */
 
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { installMockApi, renderWithProviders } from '../../../../tests/setup'
+import type { Attachment } from '../../../shared/types'
 import { ThreadComposer } from './ThreadComposer'
 
 function makeProps(overrides: Partial<Parameters<typeof ThreadComposer>[0]> = {}) {
@@ -24,6 +30,25 @@ function makeProps(overrides: Partial<Parameters<typeof ThreadComposer>[0]> = {}
     onPost: vi.fn(),
     ...overrides,
   }
+}
+
+// v0.2.5: pendingFrame carries an Attachment (rendered via AnnotatedFrame), no
+// longer a { thumbnailUrl }. overlay_path null → AnnotatedFrame shows the plain
+// base PNG via mediaUrlFromPath(base_path) → /_media/2026/05/sha.png.
+const PENDING_ATTACHMENT: Attachment = {
+  id: 'pf-1',
+  note_id: null,
+  kind: 'screenshot',
+  base_sha256: 'sha',
+  base_path: '/store/2026/05/sha.png',
+  overlay_path: null,
+  video_id: 'vid1',
+  time_seconds: 42,
+  width_px: 1920,
+  height_px: 1080,
+  device_pixel_ratio: 1,
+  created_at: 1000,
+  deleted_at: null,
 }
 
 describe('ThreadComposer', () => {
@@ -171,19 +196,19 @@ describe('ThreadComposer', () => {
     expect(onClearError).toHaveBeenCalledOnce()
   })
 
-  it('pendingFrame thumbnail renders when prop is set', () => {
-    render(
-      <ThreadComposer
-        {...makeProps()}
-        pendingFrame={{ thumbnailUrl: 'http://example.com/img.jpg', t: 30 }}
-      />,
+  it('pendingFrame renders the captured frame (AnnotatedFrame base img) when set', () => {
+    installMockApi()
+    renderWithProviders(
+      <ThreadComposer {...makeProps()} pendingFrame={{ attachment: PENDING_ATTACHMENT, t: 30 }} />,
     )
+    // AnnotatedFrame renders the base PNG via mediaUrlFromPath(base_path).
     const img = screen.getByRole('img', { name: /frame/i })
-    expect(img).toHaveAttribute('src', 'http://example.com/img.jpg')
+    expect(img).toHaveAttribute('src', '/_media/2026/05/sha.png')
   })
 
-  it('pendingFrame thumbnail absent when prop is null', () => {
-    render(<ThreadComposer {...makeProps()} pendingFrame={null} />)
+  it('pendingFrame absent when prop is null', () => {
+    installMockApi()
+    renderWithProviders(<ThreadComposer {...makeProps()} pendingFrame={null} />)
     expect(screen.queryByRole('img', { name: /frame/i })).toBeNull()
   })
 
@@ -321,12 +346,16 @@ describe('ThreadComposer', () => {
 // ── FIX 3 + FIX 4: pending frame tests ───────────────────────────────────────
 
 describe('ThreadComposer pendingFrame behavior', () => {
+  beforeEach(() => {
+    installMockApi()
+  })
+
   it('(FIX 3) chip displays formatClock(pendingFrame.t) when a frame is pending', () => {
     // pendingFrame.t = 42 → chip should show "0:42", NOT the live chipTime
-    render(
+    renderWithProviders(
       <ThreadComposer
         {...makeProps({ livePlayhead: 30 })}
-        pendingFrame={{ thumbnailUrl: 'x', t: 42 }}
+        pendingFrame={{ attachment: PENDING_ATTACHMENT, t: 42 }}
       />,
     )
     expect(screen.getByTestId('composer-chip')).toHaveTextContent('0:42')
@@ -336,10 +365,10 @@ describe('ThreadComposer pendingFrame behavior', () => {
     // FIX 4: !hasDraft alone must NOT block submit when a pending frame exists.
     // FIX 3: the posted t must be pendingFrame.t (42), not the live chip time.
     const onPost = vi.fn()
-    render(
+    renderWithProviders(
       <ThreadComposer
         {...makeProps({ livePlayhead: 30, onPost })}
-        pendingFrame={{ thumbnailUrl: 'x', t: 42 }}
+        pendingFrame={{ attachment: PENDING_ATTACHMENT, t: 42 }}
       />,
     )
     const textarea = screen.getByRole('textbox')
@@ -352,7 +381,9 @@ describe('ThreadComposer pendingFrame behavior', () => {
 
   it('(FIX 4) empty Enter with NO pendingFrame does NOT call onPost (truly empty post)', () => {
     const onPost = vi.fn()
-    render(<ThreadComposer {...makeProps({ livePlayhead: 30, onPost })} pendingFrame={null} />)
+    renderWithProviders(
+      <ThreadComposer {...makeProps({ livePlayhead: 30, onPost })} pendingFrame={null} />,
+    )
     const textarea = screen.getByRole('textbox')
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
     expect(onPost).not.toHaveBeenCalled()
@@ -360,20 +391,21 @@ describe('ThreadComposer pendingFrame behavior', () => {
 
   it('(FIX 3) chip shows capture-t even when livePlayhead differs', () => {
     // Ensure the pendingFrame.t wins over livePlayhead for the chip display.
-    const { rerender } = render(
-      <ThreadComposer
-        {...makeProps({ livePlayhead: 10 })}
-        pendingFrame={{ thumbnailUrl: 'x', t: 99 }}
-      />,
+    // A shared QueryClient so rerender re-wraps in the SAME provider (RTL's
+    // rerender replaces the whole tree, so we re-supply the wrapper ourselves).
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const ui = (live: number) => (
+      <QueryClientProvider client={qc}>
+        <ThreadComposer
+          {...makeProps({ livePlayhead: live })}
+          pendingFrame={{ attachment: PENDING_ATTACHMENT, t: 99 }}
+        />
+      </QueryClientProvider>
     )
+    const { rerender } = render(ui(10))
     expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:39') // 99 s
     // Advancing livePlayhead must not change the chip while frame is pending
-    rerender(
-      <ThreadComposer
-        {...makeProps({ livePlayhead: 200 })}
-        pendingFrame={{ thumbnailUrl: 'x', t: 99 }}
-      />,
-    )
+    rerender(ui(200))
     expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:39')
   })
 })
