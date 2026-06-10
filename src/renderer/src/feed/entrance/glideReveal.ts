@@ -1,7 +1,6 @@
-import type { Virtualizer } from '@tanstack/react-virtual'
 import { animate } from 'motion'
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
-import type { Note } from '../../../shared/types'
+import type { EntranceCtx } from './types'
 
 type Cubic = [number, number, number, number]
 type Tween = { duration: number; ease: Cubic }
@@ -69,20 +68,16 @@ function revealTween(noteH: number, viewportH: number): Tween {
  * @see adrs/0019-motion-animation-library.md
  * @see adrs/0020-remove-send-ghost.md (why the flying clone was removed)
  */
-export function useAppendReveal(args: {
-  // biome-ignore lint/suspicious/noExplicitAny: virtualizer is generic over the scroll element type; the hook only uses index-agnostic APIs.
-  virtualizer: Virtualizer<any, any>
-  scrollerEl: HTMLElement | null
-  notes: Note[]
-  /** Live flag the caller reads at render time to gate anchorTo / shouldAdjust. */
-  revealingRef: { current: boolean }
-  /** Re-renders the caller so the gated virtualizer options re-apply. */
-  setRevealing: (v: boolean) => void
-  /** Shared with the morph: pauses the scrollbar thumb while we drive the scroll. */
-  suppressThumbResizeRef: { current: boolean }
-}) {
-  const { virtualizer, scrollerEl, notes, revealingRef, setRevealing, suppressThumbResizeRef } =
-    args
+export function useGlideReveal(args: Omit<EntranceCtx, 'setWaveSettling'> & { enabled: boolean }) {
+  const {
+    virtualizer,
+    scrollerEl,
+    notes,
+    revealingRef,
+    setRevealing,
+    suppressThumbResizeRef,
+    enabled,
+  } = args
   const controlsRef = useRef<{ stop: () => void } | null>(null)
   const failTimerRef = useRef<number | undefined>(undefined)
   // Previous list shape, to detect a single append. Initialised to the first
@@ -121,6 +116,12 @@ export function useAppendReveal(args: {
     const count = notes.length
     const lastId = notes[count - 1]?.id
     prevRef.current = { count, lastId }
+
+    // Only the selected strategy acts: the dispatcher always calls every runner (Rules of
+    // Hooks), so glide early-returns unless it is the active entrance. `prevRef` is still
+    // advanced above so a later switch BACK to glide doesn't misread the skipped appends as
+    // one giant append.
+    if (!enabled) return
 
     // Single append at the end, by a genuine new id, on a non-empty prior list.
     const appended = count === prev.count + 1 && lastId !== prev.lastId && prev.count > 0
@@ -196,6 +197,7 @@ export function useAppendReveal(args: {
     if (failTimerRef.current !== undefined) clearTimeout(failTimerRef.current)
     failTimerRef.current = window.setTimeout(settle, duration * 1000 + 800)
   }, [
+    enabled,
     notes,
     scrollerEl,
     virtualizer,

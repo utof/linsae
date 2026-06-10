@@ -20,6 +20,12 @@ const DEV_PLAYGROUND = import.meta.env.DEV || !!import.meta.env.VITE_PLAYGROUND
 const RevealPlayground = DEV_PLAYGROUND
   ? lazy(() => import('./dev/RevealPlayground').then((m) => ({ default: m.RevealPlayground })))
   : null
+// Always-visible dev panel (`pnpm dev` only) to tune the wave entrance live on the real feed.
+// Gated on import.meta.env.DEV → tree-shaken from production AND the VITE_PLAYGROUND harness
+// build (so it can't overlay the harness's measurements). @see src/renderer/src/dev/WaveTuner.tsx
+const WaveTuner = import.meta.env.DEV
+  ? lazy(() => import('./dev/WaveTuner').then((m) => ({ default: m.WaveTuner })))
+  : null
 
 /**
  * Root shell for v0.1 — composes Topbar, Feed, Composer, BacklinksPane, and
@@ -95,13 +101,16 @@ export function App() {
   // Send-in-progress flag: true from the moment the user submits a new note until
   // shortly after it has glided into place. The Feed reads it to suppress the
   // virtualizer's own auto-scroll (`anchorTo:'end'` / `followOnAppend`) during the
-  // window where the make-room scroll-glide (`useAppendReveal`) owns the scroll —
+  // window where the make-room scroll-glide (`useGlideReveal`) owns the scroll —
   // without it, the new row's first measure rides the scroll up and rapid sends
   // desync the rendered range (the #66 white wall). The note simply rises into view
   // via the glide; there is no flying ghost (ADR 0020 supersedes ADR 0018).
   const feedScrollerRef = useRef<HTMLDivElement | null>(null)
   const [sendInFlight, setSendInFlight] = useState(false)
   const sendingTimerRef = useRef<number | undefined>(undefined)
+  // Records notes.length at the moment of submit so the append-coupled effect
+  // can detect when the new note has landed (notes.length > pendingFromLen).
+  const pendingFromLenRef = useRef<number | null>(null)
   useEffect(
     () => () => {
       if (sendingTimerRef.current !== undefined) clearTimeout(sendingTimerRef.current)
@@ -110,13 +119,29 @@ export function App() {
   )
   const beginSend = () => {
     setSendInFlight(true)
+    pendingFromLenRef.current = notes.length
     if (sendingTimerRef.current !== undefined) clearTimeout(sendingTimerRef.current)
-    // Cover create (async) + the ~0.4s reveal; the Feed's own `revealing` flag takes
-    // over for the glide itself, so this only needs to bridge submit → append. Scales
+    // Fail-safe only: the append-coupled effect (below) clears sendInFlight the moment
+    // the new note lands. This timeout is a backstop for the rare case where the
+    // refetch never grows the list (e.g. a background delete raced the create). Scales
     // with the dev slow-mo so debugging at `__morphSlow` keeps the suppression on.
-    const ms = import.meta.env.DEV ? 700 * (window.__morphSlow ?? 1) : 700
+    const ms = import.meta.env.DEV ? 4000 * (window.__morphSlow ?? 1) : 4000
     sendingTimerRef.current = window.setTimeout(() => setSendInFlight(false), ms)
   }
+  // Append-coupled clear: the moment the new note lands, hand off to the Feed's own
+  // revealing/waveSettling (which carry suppression through the settle).
+  // Why: createMut is non-optimistic (onSuccess → invalidate → refetch), so the append
+  // render can arrive after an unbounded round-trip; a wave needs `suppressFollow` TRUE
+  // on that render or virtual-core's reconcileScroll re-arms.
+  // @see docs/specs/v0.2.2-repulsion-wave.md §Guard
+  useEffect(() => {
+    const from = pendingFromLenRef.current
+    if (from !== null && notes.length > from) {
+      pendingFromLenRef.current = null
+      if (sendingTimerRef.current !== undefined) clearTimeout(sendingTimerRef.current)
+      setSendInFlight(false)
+    }
+  }, [notes.length])
 
   // Clear submitError whenever the composer's context changes (user clicks
   // edit on a different note, opens a dangling-wikilink draft, etc.). Without
@@ -496,6 +521,11 @@ export function App() {
       {DEV_PLAYGROUND && playgroundOpen && RevealPlayground && (
         <Suspense fallback={null}>
           <RevealPlayground onClose={() => setPlaygroundOpen(false)} />
+        </Suspense>
+      )}
+      {WaveTuner && (
+        <Suspense fallback={null}>
+          <WaveTuner />
         </Suspense>
       )}
     </div>
