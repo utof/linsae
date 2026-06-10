@@ -424,7 +424,11 @@ export function NoteBubble({
         </div>
       )}
 
-      {contextMenu && (
+      {/* Why `!selecting`: if selection mode starts via keyboard (x/Shift+Arrow)
+         while a context menu is open, no mousedown-outside fires to close it —
+         so we gate it here to ensure a linger-open menu is unmounted the
+         moment the bubble enters selecting mode. */}
+      {contextMenu && !selecting && (
         <NoteContextMenu
           pos={contextMenu}
           onEdit={handleEdit}

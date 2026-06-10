@@ -69,6 +69,18 @@ function removeId(prev: ReadonlySet<string>, id: string): ReadonlySet<string> {
 }
 
 /**
+ * True when a keyboard event originates inside an editable field, so the Feed's
+ * global key shortcuts must yield. Why: an arrow/`x` while composing must reach
+ * the textarea, never move feed focus (mirrors src/renderer/src/thread/ThreadView.tsx:349's reason for
+ * omitting `enableOnFormTags`).
+ */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  const el = target as HTMLElement
+  return el.closest('textarea, input, [contenteditable="true"]') != null
+}
+
+/**
  * Content-aware per-bubble height estimate (px) for not-yet-measured items.
  * tanstack-virtual seeds its size tree with this, then replaces each entry
  * with the real `measureElement`-reported value once the bubble paints.
@@ -300,6 +312,7 @@ export function Feed({
           label: 'Copy selected as text',
           icon: <Copy size={14} />,
           onClick: copySelected,
+          mnemonic: 'c',
         },
         {
           key: 'delete',
@@ -307,12 +320,14 @@ export function Feed({
           icon: <Trash2 size={14} />,
           onClick: deleteSelected,
           danger: true,
+          mnemonic: 'd',
         },
         {
           key: 'clear',
           label: 'Clear selection',
           icon: <XCircle size={14} />,
           onClick: () => setSelectedIds(new Set()),
+          mnemonic: 'l',
         },
       ]
     }
@@ -322,6 +337,7 @@ export function Feed({
         label: 'Select',
         icon: <CheckCircle2 size={14} />,
         onClick: () => setSelectedIds(addId(selectedIds, noteId)),
+        mnemonic: 's',
       },
     ]
     if (selectionMode) {
@@ -330,6 +346,7 @@ export function Feed({
         label: 'Select up to this note',
         icon: <ListChecks size={14} />,
         onClick: () => selectUpTo(noteId),
+        mnemonic: 'u',
       })
     }
     return items
@@ -462,6 +479,71 @@ export function Feed({
     selectedIdsRef,
     setSelectedIds,
   })
+
+  // ── keyboard focus navigation + selection (always mounted) ──────────────────
+  // ArrowDown/ArrowUp move note focus; Shift+Arrow extends the selection
+  // text-editor-style (focused note + destination both join selectedIds);
+  // `x` toggles the focused note. Escape is deliberately NOT handled here —
+  // the selection-Esc listener above and App's hotkey ladder own it.
+  //
+  // Why a document listener (not react-hotkeys-hook): matches the selection-Esc
+  // precedent directly above and keeps this transient navigation Feed-local
+  // (App never sees it). Guarded against modifiers (other than the explicit
+  // Shift extension) and typing targets so it never steals composer keystrokes
+  // — same rationale as src/renderer/src/thread/ThreadView.tsx:349.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (isTypingTarget(e.target)) return
+      if (notes.length === 0) return
+      const cur = focusedId === null ? -1 : notes.findIndex((n) => n.id === focusedId)
+
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        const down = e.key === 'ArrowDown'
+        // Nothing focused: ArrowUp grabs the LAST row (nearest the composer),
+        // ArrowDown the first. Otherwise step one and clamp at the ends.
+        const next =
+          cur === -1
+            ? down
+              ? 0
+              : notes.length - 1
+            : Math.max(0, Math.min(notes.length - 1, cur + (down ? 1 : -1)))
+        e.preventDefault()
+        // Clamped onto itself with nothing to extend → nothing to do.
+        if (next === cur && !e.shiftKey) return
+        if (e.shiftKey && cur !== -1) {
+          // Extend: add BOTH ends of the step to the selection (entry into
+          // selection mode from the keyboard), then move focus.
+          const a = notes[cur]
+          const b = notes[next]
+          setSelectedIds((prev) => {
+            const out = new Set(prev)
+            if (a) out.add(a.id)
+            if (b) out.add(b.id)
+            return out
+          })
+        }
+        const dest = notes[next]
+        if (dest) {
+          onFocus(dest.id)
+          virtualizer.scrollToIndex(next, { align: 'auto' })
+        }
+        return
+      }
+
+      if (e.key === 'x') {
+        if (cur === -1) return // nothing focused → no-op
+        const n = notes[cur]
+        if (n) {
+          e.preventDefault()
+          toggleSelected(n.id)
+        }
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [notes, focusedId, onFocus, virtualizer, toggleSelected])
+
   // Prevent the virtualizer's own scroll-position correction from fighting the
   // manual bottom-anchor during an active morph OR make-room reveal. ADR 0007 /
   // ADR 0019. Both drive scrollTop themselves; an estimate→measured size

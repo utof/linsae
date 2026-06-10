@@ -719,4 +719,43 @@ describe('NoteBubble selecting mode', () => {
     fireEvent.contextMenu(screen.getByText('hello'))
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
+
+  it('menu already open closes when selecting prop becomes true (keyboard entry into selection mode)', () => {
+    // Open the context menu without selecting mode.
+    const { rerender } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        selecting={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    const bubble = document.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    // Rerender with selecting=true (keyboard-driven entry: x / Shift+Arrow —
+    // no mousedown fires, so the outside-mousedown closer never runs).
+    rerender(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        selecting={true}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
 })

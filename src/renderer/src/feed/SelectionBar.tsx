@@ -1,6 +1,6 @@
 // src/renderer/src/feed/SelectionBar.tsx
 import { Copy, Trash2, X } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 interface Props {
   count: number
@@ -23,6 +23,20 @@ const buttonStyle: React.CSSProperties = {
   cursor: 'pointer',
 }
 
+const underlineStyle: React.CSSProperties = { textUnderlineOffset: 2 }
+
+/**
+ * True when a keyboard event originates inside an editable field, so a global
+ * letter shortcut must yield to it. Shared with the Feed's keyboard layer —
+ * Why: a stray `d` while composing must type "d", never bulk-delete (mirrors
+ * src/renderer/src/thread/ThreadView.tsx:349's reason for omitting `enableOnFormTags`).
+ */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  const el = target as HTMLElement
+  return el.closest('textarea, input, [contenteditable="true"]') != null
+}
+
 /**
  * Bulk-action bar shown while feed multi-select is active (Telegram's
  * forward/delete/cancel header, adapted: "forward" becomes "copy" — the
@@ -33,6 +47,13 @@ const buttonStyle: React.CSSProperties = {
  * armed pattern is already the established confirmation idiom — see
  * `NoteBubble.tsx`'s trash button rationale. A modal would be heavier than
  * the v21 aesthetic wants.
+ *
+ * Keyboard layer: while mounted, a document-level keydown listener fires the
+ * actions on plain letters — `c` → onCopy, `d` → the SAME arm-then-confirm
+ * path as clicking delete (so a single `d` arms, a second `d` fires). The
+ * visible labels underline that mnemonic letter; cancel shows a small `esc`
+ * hint instead (Esc already exits via the Feed's listener). Guarded against
+ * modifiers and typing targets so the shortcuts never steal composer input.
  *
  * @see docs/plans/v0.2.3-multi-select.md
  */
@@ -49,7 +70,9 @@ export function SelectionBar({ count, onCopy, onDelete, onCancel }: Props) {
     [],
   )
 
-  const handleDelete = () => {
+  // useCallback so the keydown effect below can depend on the stable identity
+  // and reuse the EXACT click path (arm → confirm), not a parallel one.
+  const handleDelete = useCallback(() => {
     if (armed) {
       if (armTimer.current !== null) clearTimeout(armTimer.current)
       setArmed(false)
@@ -58,7 +81,26 @@ export function SelectionBar({ count, onCopy, onDelete, onCancel }: Props) {
     }
     setArmed(true)
     armTimer.current = window.setTimeout(() => setArmed(false), 2000)
-  }
+  }, [armed, onDelete])
+
+  // Plain-letter shortcuts while the bar is mounted. Esc is handled by the
+  // Feed's own selection listener (it owns the mode), so the bar leaves it
+  // alone here.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (isTypingTarget(e.target)) return
+      if (e.key === 'c') {
+        e.preventDefault()
+        onCopy()
+      } else if (e.key === 'd') {
+        e.preventDefault()
+        handleDelete()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onCopy, handleDelete])
 
   return (
     <div
@@ -81,7 +123,9 @@ export function SelectionBar({ count, onCopy, onDelete, onCancel }: Props) {
     >
       <button type="button" aria-label={`copy ${count} notes`} onClick={onCopy} style={buttonStyle}>
         <Copy size={14} />
-        copy {count}
+        <span>
+          <u style={underlineStyle}>c</u>opy {count}
+        </span>
       </button>
       <button
         type="button"
@@ -94,7 +138,10 @@ export function SelectionBar({ count, onCopy, onDelete, onCancel }: Props) {
         }}
       >
         <Trash2 size={14} />
-        {armed ? `delete ${count}?` : `delete ${count}`}
+        <span>
+          <u style={underlineStyle}>d</u>elete {count}
+          {armed ? '?' : ''}
+        </span>
       </button>
       <div style={{ flex: 1 }} />
       <button
@@ -105,6 +152,18 @@ export function SelectionBar({ count, onCopy, onDelete, onCancel }: Props) {
       >
         <X size={14} />
         cancel
+        <kbd
+          style={{
+            marginLeft: 4,
+            fontSize: 10,
+            padding: '1px 4px',
+            borderRadius: 3,
+            border: '1px solid var(--border-1)',
+            color: 'var(--fg-2)',
+          }}
+        >
+          esc
+        </kbd>
       </button>
     </div>
   )

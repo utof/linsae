@@ -49,4 +49,52 @@ describe('SelectionBar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'delete 1 notes' }))
     expect(onDelete).not.toHaveBeenCalled()
   })
+
+  it('underlines the c in copy and the d in delete without changing aria-labels', () => {
+    render(<SelectionBar count={2} onCopy={noop} onDelete={noop} onCancel={noop} />)
+    // aria-labels (the test contract everywhere else queries) are untouched.
+    const copy = screen.getByRole('button', { name: 'copy 2 notes' })
+    const del = screen.getByRole('button', { name: 'delete 2 notes' })
+    // The mnemonic letter renders inside a <u> element.
+    expect(copy.querySelector('u')?.textContent).toBe('c')
+    expect(del.querySelector('u')?.textContent).toBe('d')
+  })
+
+  it('fires onCopy on a plain "c" keypress while mounted', () => {
+    const onCopy = vi.fn()
+    render(<SelectionBar count={2} onCopy={onCopy} onDelete={noop} onCancel={noop} />)
+    fireEvent.keyDown(document, { key: 'c' })
+    expect(onCopy).toHaveBeenCalledOnce()
+  })
+
+  it('"d" then "d" arms then fires onDelete (same path as clicking)', () => {
+    const onDelete = vi.fn()
+    render(<SelectionBar count={1} onCopy={noop} onDelete={onDelete} onCancel={noop} />)
+    fireEvent.keyDown(document, { key: 'd' })
+    expect(onDelete).not.toHaveBeenCalled()
+    fireEvent.keyDown(document, { key: 'd' })
+    expect(onDelete).toHaveBeenCalledOnce()
+  })
+
+  it('ignores letters typed inside a textarea (typing guard)', () => {
+    const onDelete = vi.fn()
+    render(
+      <div>
+        <textarea data-testid="ta" />
+        <SelectionBar count={1} onCopy={noop} onDelete={onDelete} onCancel={noop} />
+      </div>,
+    )
+    const ta = screen.getByTestId('ta')
+    fireEvent.keyDown(ta, { key: 'd' })
+    fireEvent.keyDown(ta, { key: 'd' })
+    expect(onDelete).not.toHaveBeenCalled()
+  })
+
+  it('ignores modifier+letter (e.g. ⌘C copies text, not selection)', () => {
+    const onCopy = vi.fn()
+    render(<SelectionBar count={2} onCopy={onCopy} onDelete={noop} onCancel={noop} />)
+    fireEvent.keyDown(document, { key: 'c', metaKey: true })
+    fireEvent.keyDown(document, { key: 'c', ctrlKey: true })
+    expect(onCopy).not.toHaveBeenCalled()
+  })
 })

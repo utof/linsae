@@ -247,3 +247,174 @@ describe('Feed selection context menus', () => {
     expect(screen.queryByRole('button', { name: 'cancel selection' })).not.toBeInTheDocument()
   })
 })
+
+describe('context menu mnemonics', () => {
+  it('underlines the mnemonic letter on a selection-menu item', async () => {
+    const { container } = renderFeed()
+    await act(async () => {})
+    const row = container.querySelector('[data-index="1"]') as HTMLElement
+    fireEvent.contextMenu(row, { clientX: 600, clientY: 100 })
+    const select = screen.getByRole('menuitem', { name: 'select' })
+    expect(select.querySelector('u')?.textContent?.toLowerCase()).toBe('s')
+  })
+
+  it('pressing the mnemonic letter runs the matching item', async () => {
+    const { container } = renderFeed()
+    await act(async () => {})
+    const row = container.querySelector('[data-index="1"]') as HTMLElement
+    fireEvent.contextMenu(row, { clientX: 600, clientY: 100 })
+    // "Select" → mnemonic "s": enters selection mode for the one row.
+    fireEvent.keyDown(document, { key: 's' })
+    expect(screen.getAllByRole('button', { name: 'deselect note' })).toHaveLength(1)
+  })
+
+  it('a modifier+letter does not fire a menu mnemonic', async () => {
+    const onDelete = vi.fn()
+    const { container } = renderFeed({ onDelete })
+    await act(async () => {})
+    await dragGutter(container)
+    const row0 = container.querySelector('[data-index="0"]') as HTMLElement
+    fireEvent.contextMenu(row0, { clientX: 100, clientY: 10 })
+    fireEvent.keyDown(document, { key: 'd', metaKey: true })
+    expect(onDelete).not.toHaveBeenCalled()
+  })
+
+  it('with a selected-row menu open, one "d" deletes via the MENU path only', async () => {
+    const onDelete = vi.fn()
+    const { container } = renderFeed({ onDelete })
+    await act(async () => {})
+    await dragGutter(container)
+    const count = screen.getAllByRole('button', { name: 'deselect note' }).length
+    const row0 = container.querySelector('[data-index="0"]') as HTMLElement
+    fireEvent.contextMenu(row0, { clientX: 100, clientY: 10 })
+    // A SINGLE keypress: the shell's capture-phase listener fires
+    // deleteSelected and stopImmediatePropagation()s, so the SelectionBar's
+    // bubble-phase listener never sees the `d` — no parallel arm, no
+    // armed-confirm bypass beyond the menu's own (a named menu item is its
+    // own confirmation, per NoteContextMenu's rationale).
+    fireEvent.keyDown(document, { key: 'd' })
+    expect(onDelete).toHaveBeenCalledTimes(count)
+    // The bulk delete cleared the selection → bar unmounted, nothing armed.
+    expect(screen.queryByRole('button', { name: /confirm delete/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'cancel selection' })).not.toBeInTheDocument()
+  })
+
+  it('Escape closes only the menu (selection survives); bar mnemonics then work', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const { container } = renderFeed()
+    await act(async () => {})
+    await dragGutter(container)
+    const row0 = container.querySelector('[data-index="0"]') as HTMLElement
+    fireEvent.contextMenu(row0, { clientX: 100, clientY: 10 })
+    // First Escape: the shell (capture phase) closes the menu and stops the
+    // event — the Feed's selection-Esc listener never sees it, so the
+    // selection SURVIVES (two-step Esc).
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'cancel selection' })).toBeInTheDocument()
+    // Menu gone → the bar's mnemonics are live again: `c` copies once + exits.
+    fireEvent.keyDown(document, { key: 'c' })
+    expect(writeText).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: 'cancel selection' })).not.toBeInTheDocument()
+  })
+})
+
+describe('Feed keyboard focus + selection', () => {
+  it('ArrowDown with nothing focused focuses the first note', async () => {
+    const onFocus = vi.fn()
+    renderFeed({ onFocus })
+    await act(async () => {})
+    fireEvent.keyDown(document, { key: 'ArrowDown' })
+    expect(onFocus).toHaveBeenCalledWith('a')
+  })
+
+  it('ArrowUp with nothing focused focuses the last note', async () => {
+    const onFocus = vi.fn()
+    renderFeed({ onFocus })
+    await act(async () => {})
+    fireEvent.keyDown(document, { key: 'ArrowUp' })
+    expect(onFocus).toHaveBeenCalledWith('c')
+  })
+
+  it('ArrowDown moves focus to the next note and clamps at the end', async () => {
+    const onFocus = vi.fn()
+    const { rerender, notes } = renderFeed({ onFocus, focusedId: 'b' })
+    await act(async () => {})
+    fireEvent.keyDown(document, { key: 'ArrowDown' })
+    expect(onFocus).toHaveBeenLastCalledWith('c')
+    onFocus.mockClear()
+    // Single mount + RTL rerender (same pattern as the x-toggle test below) —
+    // a second renderFeed() would leave TWO live document listeners and the
+    // first Feed's stale focusedId:'b' closure would call onFocus('c') again.
+    rerender(
+      <Feed
+        notes={notes}
+        focusedId="c"
+        onFocus={onFocus}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    // Focus is at the last note: ArrowDown clamps — no further onFocus call.
+    fireEvent.keyDown(document, { key: 'ArrowDown' })
+    expect(onFocus).not.toHaveBeenCalled()
+  })
+
+  it('x toggles selection of the focused note; no-op when nothing focused', async () => {
+    const { rerender, notes } = renderFeed({ focusedId: null })
+    await act(async () => {})
+    fireEvent.keyDown(document, { key: 'x' })
+    expect(screen.queryAllByRole('button', { name: 'deselect note' })).toHaveLength(0)
+    rerender(
+      <Feed
+        notes={notes}
+        focusedId="b"
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    fireEvent.keyDown(document, { key: 'x' })
+    expect(screen.getAllByRole('button', { name: 'deselect note' })).toHaveLength(1)
+  })
+
+  it('Shift+ArrowDown extends selection across the focused and next note', async () => {
+    const onFocus = vi.fn()
+    renderFeed({ onFocus, focusedId: 'a' })
+    await act(async () => {})
+    fireEvent.keyDown(document, { key: 'ArrowDown', shiftKey: true })
+    // Both the focused note (a) and the destination (b) are now selected.
+    expect(screen.getAllByRole('button', { name: 'deselect note' })).toHaveLength(2)
+    // Focus moved to the destination.
+    expect(onFocus).toHaveBeenLastCalledWith('b')
+  })
+
+  it('does not move focus while typing in a textarea', async () => {
+    const onFocus = vi.fn()
+    render(
+      <div>
+        <textarea data-testid="ta" />
+        <Feed
+          notes={[makeNote('a'), makeNote('b'), makeNote('c')]}
+          focusedId={null}
+          onFocus={onFocus}
+          onWikilinkClick={noop}
+          onEdit={noop}
+          onDelete={noop}
+          onCopyLink={noop}
+        />
+      </div>,
+    )
+    await act(async () => {})
+    fireEvent.keyDown(screen.getByTestId('ta'), { key: 'ArrowDown' })
+    expect(onFocus).not.toHaveBeenCalled()
+  })
+})

@@ -16,12 +16,53 @@ export interface ContextMenuPos {
  */
 export interface ContextMenuItem {
   key: string
-  /** Visible label AND accessible name (aria-label). Shell lowercases the label for aria-label. */
+  /** Visible label AND accessible name (aria-label, lowercased). */
   label: string
   icon: ReactNode
   onClick: () => void
   /** Renders in the destructive red (`var(--status-wtf)`), like Delete. */
   danger?: boolean
+  /**
+   * Single lowercase letter underlined in the label and bound as a plain-key
+   * shortcut while the menu is open (e.g. `d` → Delete). The first
+   * case-insensitive occurrence of the letter is underlined; pressing it runs
+   * `onClick` then `onClose`. Letters must be unique within one menu.
+   */
+  mnemonic?: string
+}
+
+const mnemonicUnderline: React.CSSProperties = { textUnderlineOffset: 2 }
+
+/**
+ * Render a menu label with the first case-insensitive occurrence of `letter`
+ * underlined (before / <u>letter</u> / after). No mnemonic → the plain label.
+ * Why split on the real character (not always index 0): some labels don't
+ * start with their mnemonic (e.g. "Select up to this note" → `u`), so the
+ * underline must land on the actual letter the shortcut fires on.
+ */
+function renderMnemonicLabel(label: string, letter: string | undefined): ReactNode {
+  if (!letter) return label
+  const i = label.toLowerCase().indexOf(letter.toLowerCase())
+  if (i === -1) return label
+  return (
+    <>
+      {label.slice(0, i)}
+      <u style={mnemonicUnderline}>{label.slice(i, i + 1)}</u>
+      {label.slice(i + 1)}
+    </>
+  )
+}
+
+/**
+ * True when a keyboard event originates inside an editable field, so the
+ * context menu's global key shortcuts must yield. Why: a letter typed in
+ * the composer must reach the textarea, never fire a menu mnemonic (mirrors
+ * src/renderer/src/thread/ThreadView.tsx:349's reason for omitting `enableOnFormTags`).
+ */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  const el = target as HTMLElement
+  return el.closest('textarea, input, [contenteditable="true"]') != null
 }
 
 export interface NoteContextMenuProps {
@@ -60,25 +101,45 @@ export function ContextMenuShell({
 }) {
   const menuRef = useRef<HTMLDivElement | null>(null)
 
-  // Close on Escape key and mousedown-outside via document listeners.
-  // Why document-level (not window): document captures events before window in
-  // the bubbling phase, matching the expected "click outside" contract in jsdom.
+  // Close on Escape AND fire item mnemonics on a plain matching letter.
+  // CAPTURE phase + stopImmediatePropagation: an open menu owns the keyboard.
+  // Bubble-phase document listeners (SelectionBar's c/d, the Feed's nav layer,
+  // the Feed's selection-Esc) must never see a key the menu handled — else a
+  // single `d` would bulk-delete via the menu AND arm the bar, and Escape
+  // would nuke the selection instead of just closing the menu (two-step Esc:
+  // first closes the menu, second exits selection mode). Same modifier/typing
+  // guards as the SelectionBar layer — a `d` typed in the composer must never
+  // trigger a menu Delete.
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        onClose()
+        return
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (isTypingTarget(e.target)) return
+      const hit = items.find((it) => it.mnemonic && it.mnemonic === e.key.toLowerCase())
+      if (hit) {
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        hit.onClick()
+        onClose()
+      }
     }
     const handleMouseDown = (e: globalThis.MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         onClose()
       }
     }
-    document.addEventListener('keydown', handleKey)
+    document.addEventListener('keydown', handleKey, true)
     document.addEventListener('mousedown', handleMouseDown)
     return () => {
-      document.removeEventListener('keydown', handleKey)
+      document.removeEventListener('keydown', handleKey, true)
       document.removeEventListener('mousedown', handleMouseDown)
     }
-  }, [onClose])
+  }, [onClose, items])
 
   const itemStyle: React.CSSProperties = {
     display: 'flex',
@@ -133,6 +194,8 @@ export function ContextMenuShell({
           // aria-label uses the label lowercased so existing accessible names
           // ('edit', 'copy link', 'delete') are preserved exactly — NoteBubble.test.tsx
           // queries them and the plan's CRITICAL note mandates this.
+          // ONLY the visible children change to mnemonic-split render; the
+          // accessible name stays stable so getByRole('menuitem', { name: … }) works.
           aria-label={item.label.toLowerCase()}
           style={item.danger ? { ...itemStyle, color: 'var(--status-wtf)' } : itemStyle}
           onClick={makeHandler(item.onClick)}
@@ -140,7 +203,7 @@ export function ContextMenuShell({
           onMouseLeave={hoverOut}
         >
           {item.icon}
-          {item.label}
+          {renderMnemonicLabel(item.label, item.mnemonic)}
         </button>
       ))}
     </div>,
@@ -182,9 +245,24 @@ export function NoteContextMenu({
   onClose,
 }: NoteContextMenuProps) {
   const items: ContextMenuItem[] = [
-    ...(onEdit ? [{ key: 'edit', label: 'Edit', icon: <Pen size={14} />, onClick: onEdit }] : []),
-    { key: 'copy-link', label: 'Copy link', icon: <Link2 size={14} />, onClick: onCopyLink },
-    { key: 'delete', label: 'Delete', icon: <Trash2 size={14} />, onClick: onDelete, danger: true },
+    ...(onEdit
+      ? [{ key: 'edit', label: 'Edit', icon: <Pen size={14} />, onClick: onEdit, mnemonic: 'e' }]
+      : []),
+    {
+      key: 'copy-link',
+      label: 'Copy link',
+      icon: <Link2 size={14} />,
+      onClick: onCopyLink,
+      mnemonic: 'c',
+    },
+    {
+      key: 'delete',
+      label: 'Delete',
+      icon: <Trash2 size={14} />,
+      onClick: onDelete,
+      danger: true,
+      mnemonic: 'd',
+    },
   ]
   return <ContextMenuShell pos={pos} items={items} onClose={onClose} />
 }
