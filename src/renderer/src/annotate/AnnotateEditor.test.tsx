@@ -6,9 +6,11 @@
  *   - tool switch updates the active tool (accent marks the current tool);
  *   - pen: pointerdown→move→up appends ONE Stroke; pointerType drives
  *     simulatePressure (pen → false, mouse → true);
- *   - text: click places a TextBlock; typing edits it; swatch sets color;
+ *   - text: click places a TextBlock; typing edits it; dragging an existing block
+ *     moves it (and Undo reverts the move); clicking empty space places a new one;
+ *   - swatch sets the color of newly-created elements (at-creation coloring);
  *   - eraser: pointerdown on an element removes it by id;
- *   - undo (Cmd/Ctrl+Z): reverts the last mutation — after an ADD and an ERASE;
+ *   - undo (Cmd/Ctrl+Z): reverts the last mutation — after an ADD, an ERASE, a MOVE;
  *   - empty scene + Done → saveOverlay(attachment, null);
  *   - non-empty + Done → saveOverlay(attachment, scene) (serialized SVG);
  *   - Cancel closes without saving.
@@ -165,6 +167,82 @@ describe('AnnotateEditor', () => {
     expect(editable.textContent).toBe('hello')
   })
 
+  it('swatch sets the color of newly-created elements (at-creation coloring)', async () => {
+    renderWithProviders(
+      <AnnotateEditor attachment={ATTACHMENT} initialScene={null} onClose={vi.fn()} />,
+    )
+    // Pick a non-default swatch (red). SWATCHES[0] is accent blue (default); use red.
+    fireEvent.click(screen.getByRole('button', { name: /color #E5484D/i }))
+    // Draw a stroke after selecting the swatch.
+    drawStroke(getEditorSvg(), { pointerType: 'mouse' })
+    fireEvent.click(screen.getByRole('button', { name: /^done$/i }))
+
+    await waitFor(() => expect(mockApi.youtube.saveOverlay).toHaveBeenCalledOnce())
+    const svg = mockApi.youtube.saveOverlay.mock.calls[0]?.[0].svg as string
+    // The stroke's fill is serialized as the chosen swatch color.
+    expect(svg).toContain('fill="#E5484D"')
+  })
+
+  it('text drag: dragging an existing block with the text tool moves it; Undo reverts the move', async () => {
+    const onClose = vi.fn()
+    const { unmount } = renderWithProviders(
+      <AnnotateEditor attachment={ATTACHMENT} initialScene={null} onClose={onClose} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /text/i }))
+    const svg = getEditorSvg()
+    // Place a block at (100,120) (happy-dom CTM is identity → image coords).
+    fireEvent.pointerDown(svg, { clientX: 100, clientY: 120, pointerType: 'mouse' })
+    const block = document.querySelector('[data-testid^="text-edit-"]') as HTMLElement
+    expect(block).not.toBeNull()
+
+    // Drag the block by (+40,+30): pointerdown on the block → move → up.
+    fireEvent.pointerDown(block, { clientX: 100, clientY: 120, pointerType: 'mouse' })
+    fireEvent.pointerMove(block, { clientX: 140, clientY: 150, pointerType: 'mouse' })
+    fireEvent.pointerUp(block, { clientX: 140, clientY: 150, pointerType: 'mouse' })
+
+    // Done → serialized SVG carries the moved coords (x≈140, y≈150).
+    fireEvent.click(screen.getByRole('button', { name: /^done$/i }))
+    await waitFor(() => expect(mockApi.youtube.saveOverlay).toHaveBeenCalledOnce())
+    const movedSvg = mockApi.youtube.saveOverlay.mock.calls[0]?.[0].svg as string
+    expect(movedSvg).toContain('x="140"')
+    expect(movedSvg).toContain('y="150"')
+    unmount()
+
+    // Fresh editor: place, drag, then Undo → position reverts to the placement.
+    mockApi.youtube.saveOverlay.mockClear()
+    renderWithProviders(
+      <AnnotateEditor attachment={ATTACHMENT} initialScene={null} onClose={vi.fn()} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /text/i }))
+    const svg2 = getEditorSvg()
+    fireEvent.pointerDown(svg2, { clientX: 100, clientY: 120, pointerType: 'mouse' })
+    const block2 = document.querySelector('[data-testid^="text-edit-"]') as HTMLElement
+    fireEvent.pointerDown(block2, { clientX: 100, clientY: 120, pointerType: 'mouse' })
+    fireEvent.pointerMove(block2, { clientX: 140, clientY: 150, pointerType: 'mouse' })
+    fireEvent.pointerUp(block2, { clientX: 140, clientY: 150, pointerType: 'mouse' })
+    // Undo the move.
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true })
+
+    fireEvent.click(screen.getByRole('button', { name: /^done$/i }))
+    await waitFor(() => expect(mockApi.youtube.saveOverlay).toHaveBeenCalledOnce())
+    const revertedSvg = mockApi.youtube.saveOverlay.mock.calls[0]?.[0].svg as string
+    // Position reverted to the original placement (100,120), not the dragged spot.
+    expect(revertedSvg).toContain('x="100"')
+    expect(revertedSvg).toContain('y="120"')
+  })
+
+  it('text: clicking empty space still places a NEW block (drag-move does not break placement)', () => {
+    renderWithProviders(
+      <AnnotateEditor attachment={ATTACHMENT} initialScene={null} onClose={vi.fn()} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /text/i }))
+    const svg = getEditorSvg()
+    // Two clicks on empty space → two blocks.
+    fireEvent.pointerDown(svg, { clientX: 50, clientY: 60, pointerType: 'mouse' })
+    fireEvent.pointerDown(svg, { clientX: 200, clientY: 220, pointerType: 'mouse' })
+    expect(document.querySelectorAll('[data-testid^="text-edit-"]').length).toBe(2)
+  })
+
   it('eraser: pointerdown on an element removes it by id', () => {
     renderWithProviders(
       <AnnotateEditor attachment={ATTACHMENT} initialScene={null} onClose={vi.fn()} />,
@@ -316,14 +394,19 @@ describe('AnnotateEditor', () => {
     expect(onClose).toHaveBeenCalledWith(false)
   })
 
-  it("Esc in 'orphan' mode: Keep saves a non-empty scene then closes (saved)", async () => {
+  it("Esc in 'orphan' mode: Keep saves a non-empty scene then LEAVES the orphan (onClose false, not staged)", async () => {
+    // Spec §Key flows: Keep saves the drawing (not lost) then leaves the orphan
+    // for the future orphan tray — it does NOT stage the chip. So saveOverlay is
+    // called BUT onClose(false): the orphan persists, the chip is not staged.
     const onClose = vi.fn()
+    const onSaved = vi.fn()
     const onDiscardOrphan = vi.fn()
     renderWithProviders(
       <AnnotateEditor
         attachment={ATTACHMENT}
         initialScene={null}
         onClose={onClose}
+        onSaved={onSaved}
         escMode="orphan"
         onDiscardOrphan={onDiscardOrphan}
       />,
@@ -332,9 +415,13 @@ describe('AnnotateEditor', () => {
     fireEvent.keyDown(window, { key: 'Escape' })
     fireEvent.click(screen.getByRole('button', { name: /keep as orphan/i }))
 
+    // The drawing is persisted (non-empty scene → serialized svg).
     await waitFor(() => expect(mockApi.youtube.saveOverlay).toHaveBeenCalledOnce())
+    expect(typeof mockApi.youtube.saveOverlay.mock.calls[0]?.[0].svg).toBe('string')
     expect(onDiscardOrphan).not.toHaveBeenCalled()
-    await waitFor(() => expect(onClose).toHaveBeenCalledWith(true))
+    // Keep does NOT stage the chip: onClose(false) and onSaved is not fired.
+    await waitFor(() => expect(onClose).toHaveBeenCalledWith(false))
+    expect(onSaved).not.toHaveBeenCalled()
   })
 
   it("Esc in 'orphan' mode: Keep with an EMPTY scene leaves the orphan (no save)", () => {

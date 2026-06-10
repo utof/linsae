@@ -457,7 +457,11 @@ describe('ThreadView capture flow', () => {
     expect(screen.queryByRole('img', { name: /captured frame/i })).toBeNull()
   })
 
-  it('Esc → Keep (non-empty) saves the scene and leaves the chip (orphan kept)', async () => {
+  it('Esc → Keep (non-empty) saves the scene and leaves an orphan — NO chip staged', async () => {
+    // Spec §Key flows: Keep saves the drawing (so it is not lost) then LEAVES the
+    // orphan row for the future orphan tray — it does NOT stage the pending chip
+    // (that is what Done does). The capture row already exists (note_id:null) and
+    // simply persists: not removed, not staged.
     mockApi.youtube.capture.mockResolvedValue({
       id: 'att-keep',
       path: '/store/2026/05/keep.png',
@@ -467,8 +471,6 @@ describe('ThreadView capture flow', () => {
       devicePixelRatio: 1,
     })
     mockApi.youtube.saveOverlay.mockResolvedValue({ overlayPath: '/store/2026/05/att-keep.svg' })
-    const svg = serializeScene({ width: 480, height: 270, elements: [] })
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(svg, { status: 200 }))
 
     renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
     await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
@@ -476,7 +478,7 @@ describe('ThreadView capture flow', () => {
     fireEvent.click(screen.getByLabelText('capture frame'))
     await waitFor(() => expect(screen.getByTestId('annotate-editor')).toBeInTheDocument())
 
-    // Draw, then Esc → Keep as orphan → saveOverlay, no remove.
+    // Draw, then Esc → Keep as orphan.
     const svgEl = document.querySelector('svg[aria-label="Annotation overlay"]') as Element
     fireEvent.pointerDown(svgEl, { clientX: 10, clientY: 10, pointerType: 'mouse', pressure: 0.5 })
     fireEvent.pointerMove(svgEl, { clientX: 20, clientY: 22, pointerType: 'mouse', pressure: 0.5 })
@@ -485,7 +487,14 @@ describe('ThreadView capture flow', () => {
     fireEvent.keyDown(window, { key: 'Escape' })
     fireEvent.click(screen.getByRole('button', { name: /keep as orphan/i }))
 
+    // (a) the drawing was saved (non-empty scene → serialized svg)
     await waitFor(() => expect(mockApi.youtube.saveOverlay).toHaveBeenCalled())
+    expect(typeof mockApi.youtube.saveOverlay.mock.calls[0]?.[0].svg).toBe('string')
+    // editor closes
+    await waitFor(() => expect(screen.queryByTestId('annotate-editor')).toBeNull())
+    // (b) NO pending chip is staged in the composer (contrast Done) ...
+    expect(screen.queryByRole('img', { name: /captured frame/i })).toBeNull()
+    // ... and the orphan attachment was NOT removed (contrast Discard).
     expect(mockApi.attachments.remove).not.toHaveBeenCalled()
   })
 

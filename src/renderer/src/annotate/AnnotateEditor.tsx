@@ -310,6 +310,60 @@ export function AnnotateEditor({
     }))
   }, [])
 
+  // ── text drag-move (spec §AnnotateEditor Text: "drag moves it") ─────────────
+  // Held in a ref so the in-flight drag never touches render state until commit
+  // (StrictMode-safe, like the pen ref). On pointerdown on a block (text tool), we
+  // snapshot BEFORE the move so Undo reverts the move (spec's "move" undo case),
+  // then track the pointer in image space and update the block's x/y per move.
+  const textDrag = useRef<{
+    id: string
+    startX: number
+    startY: number
+    origX: number
+    origY: number
+  } | null>(null)
+
+  const onTextPointerDown = useCallback(
+    (id: string, e: ReactPointerEvent) => {
+      if (tool !== 'text') return
+      // Stop the surface handler from also placing a NEW block on this same down.
+      e.stopPropagation()
+      const block = scene.elements.find((el) => el.id === id)
+      if (!block || block.kind !== 'text') return
+      const { x, y } = toImage(e.clientX, e.clientY)
+      textDrag.current = { id, startX: x, startY: y, origX: block.x, origY: block.y }
+      // Snapshot once at drag start so Undo reverts the whole move.
+      snapshot()
+      try {
+        ;(e.target as Element).setPointerCapture?.(e.pointerId)
+      } catch {
+        // best-effort (happy-dom / detached targets)
+      }
+    },
+    [tool, scene.elements, toImage, snapshot],
+  )
+
+  const onTextPointerMove = useCallback(
+    (id: string, e: ReactPointerEvent) => {
+      const drag = textDrag.current
+      if (drag === null || drag.id !== id) return
+      const { x, y } = toImage(e.clientX, e.clientY)
+      const nx = drag.origX + (x - drag.startX)
+      const ny = drag.origY + (y - drag.startY)
+      setScene((s) => ({
+        ...s,
+        elements: s.elements.map((el) =>
+          el.id === id && el.kind === 'text' ? { ...el, x: nx, y: ny } : el,
+        ),
+      }))
+    },
+    [toImage],
+  )
+
+  const onTextPointerUp = useCallback(() => {
+    textDrag.current = null
+  }, [])
+
   // ── recolor (active swatch applies to new elements) ─────────────────────────
   const pickColor = useCallback((c: string) => {
     setColor(c)
@@ -340,18 +394,22 @@ export function AnnotateEditor({
   }, [onClose])
 
   // ── Esc prompt actions ──────────────────────────────────────────────────────
-  // 'orphan' (capture): Keep saves if non-empty then leaves the orphan; Discard
+  // 'orphan' (capture) Keep: spec §Key flows — save the drawing if non-empty (so
+  // it is not lost) then LEAVE the orphan row for the future orphan tray. This is
+  // DISTINCT from Done: Keep does NOT stage the pending chip. We close with
+  // `onClose(false)` (no chip, no onSaved) — the orphan attachment row already
+  // exists from youtube.capture and simply persists (note_id:null). Discard
   // soft-deletes via onDiscardOrphan. 'changes' (reopen): Discard reverts to the
   // saved scene (close without save — sidecar untouched).
-  const escKeep = useCallback(() => {
+  const escKeep = useCallback(async () => {
     setEscPrompt(false)
-    if (isEmpty) {
-      // Nothing drawn — keep the bare orphan; no sidecar written (v0.2.0 parity).
-      onClose(false)
-    } else {
-      void saveAndClose()
+    // Persist the drawing first if there is one (so it is not lost), but DON'T
+    // stage the chip — just leave the orphan. Empty scene → nothing to write.
+    if (!isEmpty) {
+      await saveOverlay(queryClient, attachment, scene)
     }
-  }, [isEmpty, onClose, saveAndClose])
+    onClose(false)
+  }, [isEmpty, queryClient, attachment, scene, onClose])
 
   const escDiscard = useCallback(() => {
     setEscPrompt(false)
@@ -520,6 +578,9 @@ export function AnnotateEditor({
             onElementPointerDown={onElementPointerDown}
             onElementPointerEnter={onElementPointerEnter}
             onEditText={editText}
+            onTextPointerDown={onTextPointerDown}
+            onTextPointerMove={onTextPointerMove}
+            onTextPointerUp={onTextPointerUp}
             editable={tool === 'text'}
           />
         </div>
@@ -571,7 +632,7 @@ export function AnnotateEditor({
                 <button
                   type="button"
                   aria-label="keep as orphan"
-                  onClick={escKeep}
+                  onClick={() => void escKeep()}
                   style={chromeButtonStyle(false)}
                 >
                   keep
@@ -615,6 +676,9 @@ const EditorScene = (() => {
     onElementPointerDown,
     onElementPointerEnter,
     onEditText,
+    onTextPointerDown,
+    onTextPointerMove,
+    onTextPointerUp,
     editable,
   }: {
     ref: React.RefObject<SVGSVGElement | null>
@@ -622,6 +686,9 @@ const EditorScene = (() => {
     onElementPointerDown: (id: string, e: ReactPointerEvent) => void
     onElementPointerEnter: (id: string, e: ReactPointerEvent) => void
     onEditText: (id: string, text: string) => void
+    onTextPointerDown: (id: string, e: ReactPointerEvent) => void
+    onTextPointerMove: (id: string, e: ReactPointerEvent) => void
+    onTextPointerUp: (id: string, e: ReactPointerEvent) => void
     editable: boolean
   }): React.JSX.Element {
     const wrapRef = useRef<HTMLDivElement>(null)
@@ -654,6 +721,11 @@ const EditorScene = (() => {
               aria-label="annotation text"
               tabIndex={0}
               onInput={(e) => onEditText(el.id, (e.target as HTMLElement).textContent ?? '')}
+              // Text tool: pointerdown starts a drag-move; pointermove updates the
+              // block's x/y; pointerup commits (handlers no-op for other tools).
+              onPointerDown={(e) => onTextPointerDown(el.id, e)}
+              onPointerMove={(e) => onTextPointerMove(el.id, e)}
+              onPointerUp={(e) => onTextPointerUp(el.id, e)}
               style={{
                 position: 'absolute',
                 left: `${(el.x / scene.width) * 100}%`,
@@ -664,7 +736,11 @@ const EditorScene = (() => {
                 outline: editable ? '1px dashed var(--accent)' : 'none',
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
+                // Draggable when the text tool is active; otherwise inert so the
+                // pen/eraser reach the SVG beneath.
                 pointerEvents: editable ? 'auto' : 'none',
+                cursor: editable ? 'move' : 'default',
+                touchAction: 'none',
               }}
             >
               {el.text}
