@@ -1,21 +1,37 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { installMockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
 import { formatDayLabel } from '../lib/day'
 import { Feed } from './Feed'
+
+// Original descriptor captured before mutation so afterAll can restore it.
+// Required by vitest's `isolate: false` dom project (vitest.config.ts):
+// prototype mutations outlive this file and leak into worker-shared happy-dom
+// contexts (same leak shape that broke yt/rpc.test.ts via Feed.selection.test.tsx).
+let originalOffsetHeight: PropertyDescriptor | undefined
 
 // jsdom has no layout engine so offsetHeight is always 0.
 // @tanstack/react-virtual's observeElementRect reads offsetHeight for getSize(),
 // which gates getVirtualItems() on outerSize > 0. Without a non-zero size the
 // virtualizer renders no items and NoteBubble is never mounted.
 beforeAll(() => {
+  originalOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
   Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
     configurable: true,
     get() {
       return 600
     },
   })
+})
+
+afterAll(() => {
+  if (originalOffsetHeight) {
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', originalOffsetHeight)
+  } else {
+    // Added with configurable:true above — delete removes the own property cleanly.
+    delete (HTMLElement.prototype as { offsetHeight?: number }).offsetHeight
+  }
 })
 
 function makeNote(id: string, body: string): Note {

@@ -1,10 +1,27 @@
 import { Link2, Pen, Trash2 } from 'lucide-react'
-import { type MouseEvent, useEffect, useRef } from 'react'
+import { type MouseEvent, type ReactNode, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 
 export interface ContextMenuPos {
   x: number
   y: number
+}
+
+/**
+ * A single item in a {@link ContextMenuShell}.
+ *
+ * Why a plain data interface (not a render-prop): items-driven shells are
+ * easier to compose and test — callers build an array rather than interpolating
+ * JSX, and the shell owns all styling so menus look identical everywhere.
+ */
+export interface ContextMenuItem {
+  key: string
+  /** Visible label AND accessible name (aria-label). Shell lowercases the label for aria-label. */
+  label: string
+  icon: ReactNode
+  onClick: () => void
+  /** Renders in the destructive red (`var(--status-wtf)`), like Delete. */
+  danger?: boolean
 }
 
 export interface NoteContextMenuProps {
@@ -20,38 +37,27 @@ export interface NoteContextMenuProps {
 }
 
 /**
- * Shared right-click menu for feed items — text bubbles (NoteBubble) AND video
- * cards (MediaFeedNote). One implementation so right-click behaves identically
- * everywhere (the "universality" the design calls for).
+ * Generic right-click menu shell — portal to body (escapes the virtual-row
+ * transform containing-block, see NoteContextMenu's portal rationale below),
+ * fixed at viewport coords, Escape/outside-click to close, item hover tint.
+ * NoteContextMenu and the Feed's selection menu both render through it so
+ * right-click menus look and behave identically everywhere.
  *
- * Why custom React (not native Electron Menu.popup via IPC): testable in jsdom
- * without a new IPC channel, matches the v21 inline-style aesthetic, and avoids
- * the async round-trip that would prevent synchronous callback assertions in RTL.
+ * Why items-driven (not render-prop): callers build a ContextMenuItem[] array,
+ * the shell owns all DOM/styling — a single implementation point so a style
+ * change lands in every menu simultaneously and tests can query by aria-label.
  *
- * Why single-click delete (no arm pattern): the labeled menu item is itself the
- * confirmation surface — the user explicitly chose "Delete" from a named list,
- * unlike the hover toolbar where the trash icon sits 14px from copy-link.
- *
- * Rendered into document.body via a portal. CRITICAL: the menu is `position: fixed`
- * with viewport coords (clientX/clientY), but every feed item is rendered inside a
- * `transform: translateY(...)` virtual-item wrapper (Feed.tsx) — and a transformed
- * ancestor becomes the containing block for fixed descendants, so an inline menu was
- * offset by the wrapper's scroll-dependent translate (drifted up, eventually off-screen).
- * Portaling to body removes the menu from that transformed subtree so `fixed` resolves
- * to the viewport again. Regressed when the feed moved to @tanstack/react-virtual (65e5ce8).
- * Click-outside still works: React events bubble through the React tree, and the
- * `menuRef.contains` check is on the portaled node itself.
- *
- * @see https://developer.mozilla.org/en-US/docs/Web/CSS/position#fixed
- * @see docs/specs/v0.1-rolling-feed-and-search.md §Feed bubble
+ * @see src/renderer/src/feed/ContextMenu.tsx NoteContextMenu (portal rationale)
  */
-export function NoteContextMenu({
+export function ContextMenuShell({
   pos,
-  onEdit,
-  onCopyLink,
-  onDelete,
+  items,
   onClose,
-}: NoteContextMenuProps) {
+}: {
+  pos: ContextMenuPos
+  items: ContextMenuItem[]
+  onClose: () => void
+}) {
   const menuRef = useRef<HTMLDivElement | null>(null)
 
   // Close on Escape key and mousedown-outside via document listeners.
@@ -119,45 +125,66 @@ export function NoteContextMenu({
         minWidth: 140,
       }}
     >
-      {onEdit && (
+      {items.map((item) => (
         <button
+          key={item.key}
           type="button"
           role="menuitem"
-          aria-label="edit"
-          style={itemStyle}
-          onClick={makeHandler(onEdit)}
+          // aria-label uses the label lowercased so existing accessible names
+          // ('edit', 'copy link', 'delete') are preserved exactly — NoteBubble.test.tsx
+          // queries them and the plan's CRITICAL note mandates this.
+          aria-label={item.label.toLowerCase()}
+          style={item.danger ? { ...itemStyle, color: 'var(--status-wtf)' } : itemStyle}
+          onClick={makeHandler(item.onClick)}
           onMouseEnter={hoverIn}
           onMouseLeave={hoverOut}
         >
-          <Pen size={14} />
-          Edit
+          {item.icon}
+          {item.label}
         </button>
-      )}
-      <button
-        type="button"
-        role="menuitem"
-        aria-label="copy link"
-        style={itemStyle}
-        onClick={makeHandler(onCopyLink)}
-        onMouseEnter={hoverIn}
-        onMouseLeave={hoverOut}
-      >
-        <Link2 size={14} />
-        Copy link
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        aria-label="delete"
-        style={{ ...itemStyle, color: 'var(--status-wtf)' }}
-        onClick={makeHandler(onDelete)}
-        onMouseEnter={hoverIn}
-        onMouseLeave={hoverOut}
-      >
-        <Trash2 size={14} />
-        Delete
-      </button>
+      ))}
     </div>,
     document.body,
   )
+}
+
+/**
+ * Shared right-click menu for feed items — text bubbles (NoteBubble) AND video
+ * cards (MediaFeedNote). One implementation so right-click behaves identically
+ * everywhere (the "universality" the design calls for).
+ *
+ * Why custom React (not native Electron Menu.popup via IPC): testable in jsdom
+ * without a new IPC channel, matches the v21 inline-style aesthetic, and avoids
+ * the async round-trip that would prevent synchronous callback assertions in RTL.
+ *
+ * Why single-click delete (no arm pattern): the labeled menu item is itself the
+ * confirmation surface — the user explicitly chose "Delete" from a named list,
+ * unlike the hover toolbar where the trash icon sits 14px from copy-link.
+ *
+ * Rendered into document.body via a portal. CRITICAL: the menu is `position: fixed`
+ * with viewport coords (clientX/clientY), but every feed item is rendered inside a
+ * `transform: translateY(...)` virtual-item wrapper (Feed.tsx) — and a transformed
+ * ancestor becomes the containing block for fixed descendants, so an inline menu was
+ * offset by the wrapper's scroll-dependent translate (drifted up, eventually off-screen).
+ * Portaling to body removes the menu from that transformed subtree so `fixed` resolves
+ * to the viewport again. Regressed when the feed moved to @tanstack/react-virtual (65e5ce8).
+ * Click-outside still works: React events bubble through the React tree, and the
+ * `menuRef.contains` check is on the portaled node itself.
+ *
+ * @see https://developer.mozilla.org/en-US/docs/Web/CSS/position#fixed
+ * @see docs/specs/v0.1-rolling-feed-and-search.md §Feed bubble
+ */
+export function NoteContextMenu({
+  pos,
+  onEdit,
+  onCopyLink,
+  onDelete,
+  onClose,
+}: NoteContextMenuProps) {
+  const items: ContextMenuItem[] = [
+    ...(onEdit ? [{ key: 'edit', label: 'Edit', icon: <Pen size={14} />, onClick: onEdit }] : []),
+    { key: 'copy-link', label: 'Copy link', icon: <Link2 size={14} />, onClick: onCopyLink },
+    { key: 'delete', label: 'Delete', icon: <Trash2 size={14} />, onClick: onDelete, danger: true },
+  ]
+  return <ContextMenuShell pos={pos} items={items} onClose={onClose} />
 }

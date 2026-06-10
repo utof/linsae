@@ -1,14 +1,16 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Check } from 'lucide-react'
+import { Check, CheckCircle2, Copy, ListChecks, Trash2, XCircle } from 'lucide-react'
 import { type Ref, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import type { Note } from '../../../shared/types'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { dayKey, formatDayLabel } from '../lib/day'
+import { type ContextMenuItem, type ContextMenuPos, ContextMenuShell } from './ContextMenu'
 import { DayDivider, ScrollDatePill } from './DatePills'
 import { useEntranceAnimation } from './entrance/useEntranceAnimation'
 import { NoteBubble } from './NoteBubble'
 import { SelectionBar } from './SelectionBar'
+import { fillToIndex } from './selectionRange'
 import { useDragSelect } from './useDragSelect'
 import { useExpandCollapseMorph } from './useExpandCollapseMorph'
 
@@ -232,7 +234,10 @@ export function Feed({
   useEffect(() => {
     if (!selectionMode) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSelectedIds(new Set())
+      if (e.key === 'Escape') {
+        setSelectedIds(new Set())
+        setSelMenu(null)
+      }
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
@@ -263,6 +268,72 @@ export function Feed({
     }
     setSelectedIds(new Set())
   }, [notes, selectedIds, onDelete])
+
+  // Right-click selection menu: which note row it targets + viewport coords.
+  const [selMenu, setSelMenu] = useState<{ pos: ContextMenuPos; noteId: string } | null>(null)
+
+  // Telegram's "Select up to this message": bridge from the nearest selected
+  // row to the target, inclusive (see fillToIndex's rationale).
+  const selectUpTo = useCallback(
+    (noteId: string) => {
+      const target = notes.findIndex((n) => n.id === noteId)
+      if (target === -1) return
+      const selectedIndices = notes.flatMap((n, i) => (selectedIds.has(n.id) ? [i] : []))
+      const next = new Set(selectedIds)
+      for (const i of fillToIndex(selectedIndices, target)) {
+        const n = notes[i]
+        if (n) next.add(n.id)
+      }
+      setSelectedIds(next)
+    },
+    [notes, selectedIds],
+  )
+
+  // Items depend on what was right-clicked: a selected row gets the bulk
+  // actions; an unselected row gets the two grow-the-selection verbs (only
+  // "Select" when the mode isn't active yet — matches Telegram).
+  const selectionMenuItems = (noteId: string): ContextMenuItem[] => {
+    if (selectedIds.has(noteId)) {
+      return [
+        {
+          key: 'copy',
+          label: 'Copy selected as text',
+          icon: <Copy size={14} />,
+          onClick: copySelected,
+        },
+        {
+          key: 'delete',
+          label: 'Delete selected',
+          icon: <Trash2 size={14} />,
+          onClick: deleteSelected,
+          danger: true,
+        },
+        {
+          key: 'clear',
+          label: 'Clear selection',
+          icon: <XCircle size={14} />,
+          onClick: () => setSelectedIds(new Set()),
+        },
+      ]
+    }
+    const items: ContextMenuItem[] = [
+      {
+        key: 'select',
+        label: 'Select',
+        icon: <CheckCircle2 size={14} />,
+        onClick: () => setSelectedIds(addId(selectedIds, noteId)),
+      },
+    ]
+    if (selectionMode) {
+      items.push({
+        key: 'up-to',
+        label: 'Select up to this note',
+        icon: <ListChecks size={14} />,
+        onClick: () => selectUpTo(noteId),
+      })
+    }
+    return items
+  }
 
   // Indices that begin a new calendar day → an inline DayDivider renders above them
   // and their size estimate gains DAY_DIVIDER_H. Recomputed only when the list changes.
@@ -630,6 +701,7 @@ export function Feed({
               const note = notes[vItem.index]
               if (!note) return null
               return (
+                // biome-ignore lint/a11y/noStaticElementInteractions: the row wrapper is a virtualizer measurement container; the actionable targets are NoteBubble, the check-circle button, and the SelectionBar — the capture-phase click and context-menu handlers here implement the modal selection layer, not primary interactivity.
                 <div
                   key={vItem.key}
                   // Detach measureElement only while this item is MORPHING — the morph
@@ -649,6 +721,29 @@ export function Feed({
                           e.preventDefault()
                           e.stopPropagation()
                           toggleSelected(note.id)
+                        }
+                      : undefined
+                  }
+                  // Selection mode is MODAL for right-click too: CAPTURE phase intercepts
+                  // before NoteBubble's / MediaFeedNote's own onContextMenu can open the
+                  // per-note menu, so the selection menu is the only menu while selecting.
+                  onContextMenuCapture={
+                    selectionMode
+                      ? (e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setSelMenu({ pos: { x: e.clientX, y: e.clientY }, noteId: note.id })
+                        }
+                      : undefined
+                  }
+                  // Outside selection mode, only the free gutter opens the Select menu —
+                  // presses on the bubble/card keep their own Edit/Copy-link/Delete menu.
+                  onContextMenu={
+                    !selectionMode
+                      ? (e) => {
+                          if ((e.target as HTMLElement).closest('[data-bubble]')) return
+                          e.preventDefault()
+                          setSelMenu({ pos: { x: e.clientX, y: e.clientY }, noteId: note.id })
                         }
                       : undefined
                   }
@@ -744,6 +839,13 @@ export function Feed({
             onCopy={copySelected}
             onDelete={deleteSelected}
             onCancel={() => setSelectedIds(new Set())}
+          />
+        )}
+        {selMenu && (
+          <ContextMenuShell
+            pos={selMenu.pos}
+            items={selectionMenuItems(selMenu.noteId)}
+            onClose={() => setSelMenu(null)}
           />
         )}
         {scrollPill && (

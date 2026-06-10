@@ -1,14 +1,26 @@
 // src/renderer/src/feed/Feed.selection.test.tsx
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Note } from '../../../shared/types'
 import { Feed } from './Feed'
+
+// Originals captured before mutation so afterAll can restore them. Required by
+// vitest's `isolate: false` dom project (vitest.config.ts): prototype mutations
+// outlive this file and leak into worker-shared happy-dom contexts — an
+// unrestored getBoundingClientRect broke src/renderer/src/yt/rpc.test.ts when
+// the two files shared a worker.
+let originalGbcr: typeof HTMLElement.prototype.getBoundingClientRect
+let originalOffsetHeight: PropertyDescriptor | undefined
+let originalClipboard: PropertyDescriptor | undefined
 
 // happy-dom has no layout engine: offsetHeight gates the virtualizer's
 // outerSize (see Feed.test.tsx rationale) and getBoundingClientRect feeds
 // measureElement + the drag hook's content-coordinate mapping. Fixed values
 // make row geometry deterministic: every row measures 48px tall at top 0.
 beforeAll(() => {
+  originalGbcr = HTMLElement.prototype.getBoundingClientRect
+  originalOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+  originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
   Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
     configurable: true,
     get() {
@@ -27,6 +39,23 @@ beforeAll(() => {
       height: 48,
       toJSON: () => ({}),
     }) as DOMRect
+})
+
+afterAll(() => {
+  HTMLElement.prototype.getBoundingClientRect = originalGbcr
+  if (originalOffsetHeight) {
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', originalOffsetHeight)
+  } else {
+    // Added with configurable:true above — delete removes the own property cleanly.
+    delete (HTMLElement.prototype as { offsetHeight?: number }).offsetHeight
+  }
+  // The clipboard test redefines navigator.clipboard (configurable) — restore
+  // for the same isolate:false reason as above.
+  if (originalClipboard) {
+    Object.defineProperty(navigator, 'clipboard', originalClipboard)
+  } else {
+    delete (navigator as { clipboard?: unknown }).clipboard
+  }
 })
 
 function makeNote(id: string): Note {
@@ -161,6 +190,60 @@ describe('Feed multi-select', () => {
     expect(writeText).toHaveBeenCalledOnce()
     const copied = writeText.mock.calls[0]![0] as string
     expect(copied.split('\n\n')).toHaveLength(count)
+    expect(screen.queryByRole('button', { name: 'cancel selection' })).not.toBeInTheDocument()
+  })
+})
+
+describe('Feed selection context menus', () => {
+  it('gutter right-click with no selection offers Select and enters the mode', async () => {
+    const { container } = renderFeed()
+    await act(async () => {})
+    const row = container.querySelector('[data-index="1"]') as HTMLElement
+    fireEvent.contextMenu(row, { clientX: 600, clientY: 100 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'select' }))
+    expect(screen.getAllByRole('button', { name: 'deselect note' })).toHaveLength(1)
+  })
+
+  it('bubble right-click with no selection keeps the per-note menu', async () => {
+    const { container } = renderFeed()
+    await act(async () => {})
+    const bubble = container.querySelector('[data-bubble]') as HTMLElement
+    fireEvent.contextMenu(bubble, { clientX: 100, clientY: 30 })
+    expect(screen.getByRole('menuitem', { name: 'copy link' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'select' })).not.toBeInTheDocument()
+  })
+
+  it('right-click on an unselected row during selection offers select-up-to', async () => {
+    const { container } = renderFeed()
+    await act(async () => {})
+    const row0 = container.querySelector('[data-index="0"]') as HTMLElement
+    fireEvent.contextMenu(row0, { clientX: 600, clientY: 10 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'select' }))
+    const row2 = container.querySelector('[data-index="2"]') as HTMLElement
+    fireEvent.contextMenu(row2, { clientX: 600, clientY: 140 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'select up to this note' }))
+    expect(screen.getAllByRole('button', { name: 'deselect note' })).toHaveLength(3)
+  })
+
+  it('right-click on a selected row offers bulk actions; delete fires per id', async () => {
+    const onDelete = vi.fn()
+    const { container } = renderFeed({ onDelete })
+    await act(async () => {})
+    await dragGutter(container)
+    const count = screen.getAllByRole('button', { name: 'deselect note' }).length
+    const row0 = container.querySelector('[data-index="0"]') as HTMLElement
+    fireEvent.contextMenu(row0, { clientX: 100, clientY: 10 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'delete selected' }))
+    expect(onDelete).toHaveBeenCalledTimes(count)
+  })
+
+  it('clear selection item exits the mode', async () => {
+    const { container } = renderFeed()
+    await act(async () => {})
+    await dragGutter(container)
+    const row0 = container.querySelector('[data-index="0"]') as HTMLElement
+    fireEvent.contextMenu(row0, { clientX: 100, clientY: 10 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'clear selection' }))
     expect(screen.queryByRole('button', { name: 'cancel selection' })).not.toBeInTheDocument()
   })
 })
