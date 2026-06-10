@@ -62,9 +62,28 @@ const SAVED_SVG = serializeScene({
 })
 
 function drawStroke(svg: Element): void {
-  fireEvent.pointerDown(svg, { clientX: 10, clientY: 10, pointerType: 'mouse', pressure: 0.5 })
-  fireEvent.pointerMove(svg, { clientX: 20, clientY: 22, pointerType: 'mouse', pressure: 0.5 })
-  fireEvent.pointerMove(svg, { clientX: 44, clientY: 50, pointerType: 'mouse', pressure: 0.5 })
+  // buttons:1 on down/move — the editor's C2 guards ignore buttonless moves.
+  fireEvent.pointerDown(svg, {
+    clientX: 10,
+    clientY: 10,
+    pointerType: 'mouse',
+    pressure: 0.5,
+    buttons: 1,
+  })
+  fireEvent.pointerMove(svg, {
+    clientX: 20,
+    clientY: 22,
+    pointerType: 'mouse',
+    pressure: 0.5,
+    buttons: 1,
+  })
+  fireEvent.pointerMove(svg, {
+    clientX: 44,
+    clientY: 50,
+    pointerType: 'mouse',
+    pressure: 0.5,
+    buttons: 1,
+  })
   fireEvent.pointerUp(svg, { clientX: 44, clientY: 50, pointerType: 'mouse', pressure: 0.5 })
 }
 

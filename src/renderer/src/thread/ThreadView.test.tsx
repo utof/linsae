@@ -367,6 +367,51 @@ describe('ThreadView capture flow', () => {
     await waitFor(() => expect(screen.getByTestId('annotate-editor')).toBeInTheDocument())
   })
 
+  it('C3: two ⌘⇧C before the capture promise resolves → exactly ONE capture (async guard)', async () => {
+    // The re-entrancy guard must hold across the await gap: editorOpen only flips
+    // true after capture resolves, so a second hotkey in that window must be
+    // blocked by an in-flight ref — otherwise a duplicate orphan row leaks.
+    let resolveCapture: (v: {
+      id: string
+      path: string
+      sha256: string
+      width: number
+      height: number
+      devicePixelRatio: number
+    }) => void = () => {}
+    mockApi.youtube.capture.mockImplementation(
+      () =>
+        new Promise((res) => {
+          resolveCapture = res
+        }),
+    )
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    // First click → capture is issued (and never resolves yet). Wait for it.
+    fireEvent.click(screen.getByLabelText('capture frame'))
+    await waitFor(() => expect(mockApi.youtube.capture).toHaveBeenCalledOnce())
+
+    // A SECOND click while the first capture is still in flight must be a no-op
+    // (the in-flight ref guards across the await gap, before editorOpen flips).
+    fireEvent.click(screen.getByLabelText('capture frame'))
+    // Let any (incorrect) second capture's await chain run.
+    await new Promise((r) => setTimeout(r, 30))
+    expect(mockApi.youtube.capture).toHaveBeenCalledOnce()
+
+    // Resolve the first capture → editor opens; still exactly one capture.
+    resolveCapture({
+      id: 'att-once',
+      path: '/store/2026/05/once.png',
+      sha256: 'once',
+      width: 480,
+      height: 270,
+      devicePixelRatio: 1,
+    })
+    await waitFor(() => expect(screen.getByTestId('annotate-editor')).toBeInTheDocument())
+    expect(mockApi.youtube.capture).toHaveBeenCalledOnce()
+  })
+
   it('⌘⇧C while the editor is already open is a no-op (re-entrancy guard)', async () => {
     mockApi.youtube.capture.mockResolvedValue({
       id: 'att-guard',
@@ -414,9 +459,27 @@ describe('ThreadView capture flow', () => {
 
     // Draw a stroke, then Done.
     const svgEl = document.querySelector('svg[aria-label="Annotation overlay"]') as Element
-    fireEvent.pointerDown(svgEl, { clientX: 10, clientY: 10, pointerType: 'mouse', pressure: 0.5 })
-    fireEvent.pointerMove(svgEl, { clientX: 20, clientY: 22, pointerType: 'mouse', pressure: 0.5 })
-    fireEvent.pointerMove(svgEl, { clientX: 40, clientY: 50, pointerType: 'mouse', pressure: 0.5 })
+    fireEvent.pointerDown(svgEl, {
+      clientX: 10,
+      clientY: 10,
+      pointerType: 'mouse',
+      pressure: 0.5,
+      buttons: 1,
+    })
+    fireEvent.pointerMove(svgEl, {
+      clientX: 20,
+      clientY: 22,
+      pointerType: 'mouse',
+      pressure: 0.5,
+      buttons: 1,
+    })
+    fireEvent.pointerMove(svgEl, {
+      clientX: 40,
+      clientY: 50,
+      pointerType: 'mouse',
+      pressure: 0.5,
+      buttons: 1,
+    })
     fireEvent.pointerUp(svgEl, { clientX: 40, clientY: 50, pointerType: 'mouse', pressure: 0.5 })
     clickDone()
 
@@ -480,9 +543,27 @@ describe('ThreadView capture flow', () => {
 
     // Draw, then Esc → Keep as orphan.
     const svgEl = document.querySelector('svg[aria-label="Annotation overlay"]') as Element
-    fireEvent.pointerDown(svgEl, { clientX: 10, clientY: 10, pointerType: 'mouse', pressure: 0.5 })
-    fireEvent.pointerMove(svgEl, { clientX: 20, clientY: 22, pointerType: 'mouse', pressure: 0.5 })
-    fireEvent.pointerMove(svgEl, { clientX: 40, clientY: 50, pointerType: 'mouse', pressure: 0.5 })
+    fireEvent.pointerDown(svgEl, {
+      clientX: 10,
+      clientY: 10,
+      pointerType: 'mouse',
+      pressure: 0.5,
+      buttons: 1,
+    })
+    fireEvent.pointerMove(svgEl, {
+      clientX: 20,
+      clientY: 22,
+      pointerType: 'mouse',
+      pressure: 0.5,
+      buttons: 1,
+    })
+    fireEvent.pointerMove(svgEl, {
+      clientX: 40,
+      clientY: 50,
+      pointerType: 'mouse',
+      pressure: 0.5,
+      buttons: 1,
+    })
     fireEvent.pointerUp(svgEl, { clientX: 40, clientY: 50, pointerType: 'mouse', pressure: 0.5 })
     fireEvent.keyDown(window, { key: 'Escape' })
     fireEvent.click(screen.getByRole('button', { name: /keep as orphan/i }))

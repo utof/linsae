@@ -360,20 +360,27 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     null,
   )
   const editorOpen = captureFrame !== null || reopenAttachment !== null
+  // C3: the editorOpen flag only flips true AFTER the capture awaits resolve, so a
+  // second ⌘⇧C (or OS key auto-repeat) in that window would slip past the guard and
+  // fire a duplicate youtube.capture → a leaked orphan row + PNG. This ref is set
+  // synchronously BEFORE the first await and cleared in finally, closing that gap.
+  const captureInFlightRef = useRef(false)
 
   // ⌘⇧C / camera button: screenshot the live webview rect at the current time,
   // then OPEN THE EDITOR on the captured frame (v0.2.5 — the editor opens before
-  // the pending chip). No-op when no player is mounted (getMediaRect → null) or
-  // an editor is already open (re-entrancy guard). On failure (e.g. the
-  // main-process 0-area guard, #34) we leave state untouched so no junk appears.
-  // Why enableOnFormTags is OMITTED: the hotkey must NOT fire while the composer
-  // textarea is focused (contrast App.tsx's mod+k which opts in).
+  // the pending chip). No-op when no player is mounted (getMediaRect → null), an
+  // editor is already open, OR a capture is already in flight (re-entrancy guard).
+  // On failure (e.g. the main-process 0-area guard, #34) we leave state untouched
+  // so no junk appears. Why enableOnFormTags is OMITTED: the hotkey must NOT fire
+  // while the composer textarea is focused (contrast App.tsx's mod+k which opts in).
   // @issue utof/linsae#34
   const onCapture = async () => {
-    if (editorOpen) return // re-entrancy guard: ignore ⌘⇧C while an editor is open
+    // Re-entrancy guard: ignore while an editor is open OR a capture is in flight.
+    if (editorOpen || captureInFlightRef.current) return
     const player = getPlayer()
     const rect = player.getMediaRect()
     if (!rect) return
+    captureInFlightRef.current = true
     try {
       const t = await player.getCurrentTime()
       const res = await api.youtube.capture(
@@ -385,6 +392,10 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
       // youtube.capture returns PersistCaptureResult, NOT an Attachment, and
       // there is no attachments.get read IPC. overlay_path starts null (set by
       // the editor's Done if drawn).
+      // M5: `created_at` here is the renderer clock at capture time and DRIFTS from
+      // the DB row's created_at (set in persistCapture). It exists only to satisfy
+      // the Attachment shape for the chip/editor render; do NOT treat it as the
+      // authoritative row timestamp — re-read from the DB if that's ever needed.
       const attachment: Attachment = {
         id: res.id,
         note_id: null,
@@ -404,6 +415,8 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
       setCaptureFrame({ attachment, t })
     } catch (err) {
       console.error('frame capture failed', err)
+    } finally {
+      captureInFlightRef.current = false
     }
   }
   useHotkeys('mod+shift+c', () => {

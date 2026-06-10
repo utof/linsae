@@ -56,10 +56,12 @@ const ATTACHMENT: Attachment = {
  */
 function drawStroke(svg: Element, opts: { pointerType?: string; pressure?: number } = {}): void {
   const { pointerType = 'mouse', pressure = 0.5 } = opts
-  fireEvent.pointerDown(svg, { clientX: 10, clientY: 10, pointerType, pressure })
-  fireEvent.pointerMove(svg, { clientX: 20, clientY: 22, pointerType, pressure })
-  fireEvent.pointerMove(svg, { clientX: 30, clientY: 36, pointerType, pressure })
-  fireEvent.pointerMove(svg, { clientX: 44, clientY: 50, pointerType, pressure })
+  // buttons:1 on down/move — a real drag reports the primary button held; the
+  // editor's C2 guards ignore buttonless (buttons===0) moves.
+  fireEvent.pointerDown(svg, { clientX: 10, clientY: 10, pointerType, pressure, buttons: 1 })
+  fireEvent.pointerMove(svg, { clientX: 20, clientY: 22, pointerType, pressure, buttons: 1 })
+  fireEvent.pointerMove(svg, { clientX: 30, clientY: 36, pointerType, pressure, buttons: 1 })
+  fireEvent.pointerMove(svg, { clientX: 44, clientY: 50, pointerType, pressure, buttons: 1 })
   fireEvent.pointerUp(svg, { clientX: 44, clientY: 50, pointerType, pressure })
 }
 
@@ -194,11 +196,17 @@ describe('AnnotateEditor', () => {
     fireEvent.pointerDown(svg, { clientX: 100, clientY: 120, pointerType: 'mouse' })
     const block = document.querySelector('[data-testid^="text-edit-"]') as HTMLElement
     expect(block).not.toBeNull()
+    // Type so the block survives the empty-text prune (I3).
+    block.textContent = 'note'
+    fireEvent.input(block, { target: { textContent: 'note' } })
 
     // Drag the block by (+40,+30): pointerdown on the block → move → up.
-    fireEvent.pointerDown(block, { clientX: 100, clientY: 120, pointerType: 'mouse' })
-    fireEvent.pointerMove(block, { clientX: 140, clientY: 150, pointerType: 'mouse' })
+    fireEvent.pointerDown(block, { clientX: 100, clientY: 120, pointerType: 'mouse', buttons: 1 })
+    fireEvent.pointerMove(block, { clientX: 140, clientY: 150, pointerType: 'mouse', buttons: 1 })
     fireEvent.pointerUp(block, { clientX: 140, clientY: 150, pointerType: 'mouse' })
+
+    // M4: a drag must NOT spawn a duplicate block (stopPropagation must hold).
+    expect(document.querySelectorAll('[data-testid^="text-edit-"]').length).toBe(1)
 
     // Done → serialized SVG carries the moved coords (x≈140, y≈150).
     fireEvent.click(screen.getByRole('button', { name: /^done$/i }))
@@ -217,8 +225,10 @@ describe('AnnotateEditor', () => {
     const svg2 = getEditorSvg()
     fireEvent.pointerDown(svg2, { clientX: 100, clientY: 120, pointerType: 'mouse' })
     const block2 = document.querySelector('[data-testid^="text-edit-"]') as HTMLElement
-    fireEvent.pointerDown(block2, { clientX: 100, clientY: 120, pointerType: 'mouse' })
-    fireEvent.pointerMove(block2, { clientX: 140, clientY: 150, pointerType: 'mouse' })
+    block2.textContent = 'note'
+    fireEvent.input(block2, { target: { textContent: 'note' } })
+    fireEvent.pointerDown(block2, { clientX: 100, clientY: 120, pointerType: 'mouse', buttons: 1 })
+    fireEvent.pointerMove(block2, { clientX: 140, clientY: 150, pointerType: 'mouse', buttons: 1 })
     fireEvent.pointerUp(block2, { clientX: 140, clientY: 150, pointerType: 'mouse' })
     // Undo the move.
     fireEvent.keyDown(window, { key: 'z', ctrlKey: true })
@@ -231,16 +241,33 @@ describe('AnnotateEditor', () => {
     expect(revertedSvg).toContain('y="120"')
   })
 
-  it('text: clicking empty space still places a NEW block (drag-move does not break placement)', () => {
+  it('text: clicking empty space still places a NEW block each time (drag-move does not break placement)', () => {
     renderWithProviders(
       <AnnotateEditor attachment={ATTACHMENT} initialScene={null} onClose={vi.fn()} />,
     )
     fireEvent.click(screen.getByRole('button', { name: /text/i }))
     const svg = getEditorSvg()
-    // Two clicks on empty space → two blocks.
+    // Two clicks on empty space → two text blocks in the scene. SceneSvg renders
+    // one <foreignObject> per text block, so the scene holds two.
     fireEvent.pointerDown(svg, { clientX: 50, clientY: 60, pointerType: 'mouse' })
     fireEvent.pointerDown(svg, { clientX: 200, clientY: 220, pointerType: 'mouse' })
-    expect(document.querySelectorAll('[data-testid^="text-edit-"]').length).toBe(2)
+    expect(getEditorSvg().querySelectorAll('foreignObject').length).toBe(2)
+  })
+
+  // C1: the same committed text block must NOT be painted twice (the SceneSvg
+  // foreignObject AND a contentEditable overlay both drawing the same text). At
+  // most ONE contentEditable is shown — the block under active edit — and its
+  // SceneSvg copy is blanked so the live text isn't double-rendered.
+  it('C1: a single text block is not double-rendered (≤1 contentEditable for it)', () => {
+    renderWithProviders(
+      <AnnotateEditor attachment={ATTACHMENT} initialScene={null} onClose={vi.fn()} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /text/i }))
+    const svg = getEditorSvg()
+    fireEvent.pointerDown(svg, { clientX: 100, clientY: 120, pointerType: 'mouse' })
+    // Exactly one foreignObject for the block, and at most one contentEditable overlay.
+    expect(getEditorSvg().querySelectorAll('foreignObject').length).toBe(1)
+    expect(document.querySelectorAll('[contenteditable="true"]').length).toBeLessThanOrEqual(1)
   })
 
   it('eraser: pointerdown on an element removes it by id', () => {
@@ -288,6 +315,78 @@ describe('AnnotateEditor', () => {
     // Undo the erase → the stroke comes back.
     fireEvent.keyDown(window, { key: 'z', ctrlKey: true })
     expect(svg.querySelectorAll('path').length).toBe(1)
+  })
+
+  // C2: a button-up hover (buttons===0) over an element must NOT erase — the
+  // eraser only acts while the button is held. Guards against stuck `erasing` ref
+  // when the pointer was released outside the frame.
+  it('C2: eraser does NOT erase on a button-up hover (buttons===0)', () => {
+    renderWithProviders(
+      <AnnotateEditor attachment={ATTACHMENT} initialScene={null} onClose={vi.fn()} />,
+    )
+    const svg = getEditorSvg()
+    drawStroke(svg, { pointerType: 'mouse' })
+    expect(svg.querySelectorAll('path').length).toBe(1)
+
+    fireEvent.click(screen.getByRole('button', { name: /eraser/i }))
+    // A hover (pointerenter) with NO button pressed must be a no-op.
+    fireEvent.pointerEnter(svg.querySelector('path') as Element, {
+      pointerType: 'mouse',
+      buttons: 0,
+    })
+    expect(svg.querySelectorAll('path').length).toBe(1)
+  })
+
+  // C2: pointercancel must reset the in-progress stroke so later hover-moves
+  // (buttons===0) cannot keep appending points to a phantom stroke.
+  it('C2: pointercancel ends the stroke; subsequent buttonless moves do not append', () => {
+    renderWithProviders(
+      <AnnotateEditor attachment={ATTACHMENT} initialScene={null} onClose={vi.fn()} />,
+    )
+    const svg = getEditorSvg()
+    const surface = screen.getByTestId('annotate-surface')
+    fireEvent.pointerDown(surface, { clientX: 10, clientY: 10, pointerType: 'mouse', buttons: 1 })
+    fireEvent.pointerMove(surface, { clientX: 20, clientY: 20, pointerType: 'mouse', buttons: 1 })
+    // Cancel mid-stroke (e.g. OS gesture). The in-progress stroke is dropped.
+    fireEvent.pointerCancel(surface, { pointerType: 'mouse' })
+    // A buttonless hover-move afterward must NOT append, and pointerup commits nothing.
+    fireEvent.pointerMove(surface, { clientX: 200, clientY: 200, pointerType: 'mouse', buttons: 0 })
+    fireEvent.pointerUp(surface, { clientX: 200, clientY: 200, pointerType: 'mouse' })
+    expect(svg.querySelectorAll('path').length).toBe(0)
+  })
+
+  // I1: a live preview path renders WHILE drawing (before pointerup commits), so
+  // the user isn't drawing blind. The committed stroke still comes from the ref.
+  it('I1: a live preview path renders mid-stroke (before pointerup)', () => {
+    renderWithProviders(
+      <AnnotateEditor attachment={ATTACHMENT} initialScene={null} onClose={vi.fn()} />,
+    )
+    const svg = getEditorSvg()
+    const surface = screen.getByTestId('annotate-surface')
+    expect(svg.querySelectorAll('path').length).toBe(0)
+    // pointerdown + a few moves → a preview path is rendered before pointerup.
+    fireEvent.pointerDown(surface, { clientX: 10, clientY: 10, pointerType: 'mouse', buttons: 1 })
+    fireEvent.pointerMove(surface, { clientX: 20, clientY: 22, pointerType: 'mouse', buttons: 1 })
+    fireEvent.pointerMove(surface, { clientX: 34, clientY: 40, pointerType: 'mouse', buttons: 1 })
+    fireEvent.pointerMove(surface, { clientX: 48, clientY: 60, pointerType: 'mouse', buttons: 1 })
+    expect(svg.querySelectorAll('path').length).toBeGreaterThanOrEqual(1)
+  })
+
+  // I3: a stray empty text block (placed then deselected without typing) must not
+  // make the scene "non-empty" — Done prunes empty text and writes no sidecar.
+  it('I3: a stray empty text block is pruned → Done writes no sidecar (null)', async () => {
+    const onClose = vi.fn()
+    renderWithProviders(
+      <AnnotateEditor attachment={ATTACHMENT} initialScene={null} onClose={onClose} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /text/i }))
+    // Place a block but never type into it.
+    fireEvent.pointerDown(getEditorSvg(), { clientX: 100, clientY: 120, pointerType: 'mouse' })
+    fireEvent.click(screen.getByRole('button', { name: /^done$/i }))
+
+    await waitFor(() => expect(mockApi.youtube.saveOverlay).toHaveBeenCalledOnce())
+    // Empty-after-prune → saveOverlay(id, null), NOT a written sidecar.
+    expect(mockApi.youtube.saveOverlay.mock.calls[0]?.[0].svg).toBeNull()
   })
 
   it('Done with an empty scene calls saveOverlay(attachment, null) (no sidecar)', async () => {

@@ -50,6 +50,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react'
@@ -166,6 +167,13 @@ export function AnnotateEditor({
   const [dirty, setDirty] = useState(false)
   // When set, an Esc-prompt confirmation overlay is shown.
   const [escPrompt, setEscPrompt] = useState(false)
+  // The id of the text block currently being edited (its contentEditable overlay
+  // is shown; SceneSvg blanks that block's text so the two never double-render —
+  // C1). null = no block under edit.
+  const [editingId, setEditingId] = useState<string | null>(null)
+  // Bumped on every pen pointermove so a live preview path re-renders WHILE
+  // drawing (I1). The committed stroke still comes from the ref on pointerup.
+  const [previewTick, setPreviewTick] = useState(0)
 
   // Undo snapshot stack — full-element-array snapshots pushed BEFORE each
   // mutation. Scenes are tiny (screenshot markup), so this is trivial.
@@ -178,6 +186,17 @@ export function AnnotateEditor({
   const svgRef = useRef<SVGSVGElement>(null)
   // True while the eraser pointer is held down (erase-on-enter while dragging).
   const erasing = useRef(false)
+  // Text drag-move state (held in a ref, StrictMode-safe like the pen ref). On
+  // the first actual move we snapshot+mark dirty (M2: a mere click must not
+  // create a no-op undo entry); thereafter x/y track the pointer in image space.
+  const textDragRef = useRef<{
+    id: string
+    startX: number
+    startY: number
+    origX: number
+    origY: number
+    moved: boolean
+  } | null>(null)
 
   /** Push the current elements onto the undo stack before mutating + mark dirty. */
   const snapshot = useCallback(() => {
@@ -226,8 +245,10 @@ export function AnnotateEditor({
     [tool, eraseById],
   )
   const onElementPointerEnter = useCallback(
-    (id: string, _e: ReactPointerEvent) => {
-      if (tool !== 'eraser' || !erasing.current) return
+    (id: string, e: ReactPointerEvent) => {
+      // C2: only erase while a button is held — a buttonless hover (after the
+      // pointer was released outside the frame) must NOT erase.
+      if (tool !== 'eraser' || !erasing.current || e.buttons === 0) return
       eraseById(id)
     },
     [tool, eraseById],
@@ -244,8 +265,9 @@ export function AnnotateEditor({
       const { x, y } = toImage(e.clientX, e.clientY)
       if (tool === 'text') {
         snapshot()
+        const id = crypto.randomUUID()
         const block: TextBlock = {
-          id: crypto.randomUUID(),
+          id,
           kind: 'text',
           x,
           y,
@@ -256,6 +278,9 @@ export function AnnotateEditor({
           fontSize: BASE_FONT_SIZE * dpr,
         }
         setScene((s) => ({ ...s, elements: [...s.elements, block] }))
+        // The just-placed block is the one being edited (its overlay shows; the
+        // SceneSvg copy is blanked) — C1.
+        setEditingId(id)
         return
       }
       // pen
@@ -264,6 +289,7 @@ export function AnnotateEditor({
         points: [{ x, y, pressure }],
         simulatePressure: e.pointerType !== 'pen',
       }
+      setPreviewTick((t) => t + 1)
       // Capture the pointer so moves outside the svg still feed the stroke.
       try {
         ;(e.target as Element).setPointerCapture?.(e.pointerId)
@@ -276,30 +302,45 @@ export function AnnotateEditor({
 
   const onSurfacePointerMove = useCallback(
     (e: ReactPointerEvent) => {
-      if (tool !== 'pen' || drawing.current === null) return
+      // C2: a buttonless move (pointer released outside the frame, then hovered
+      // back) must not keep appending to a phantom stroke.
+      if (tool !== 'pen' || drawing.current === null || e.buttons === 0) return
       const { x, y } = toImage(e.clientX, e.clientY)
       const pressure = typeof e.pressure === 'number' && e.pressure > 0 ? e.pressure : 0.5
       drawing.current.points.push({ x, y, pressure })
+      // I1: re-render so the live preview path follows the pointer.
+      setPreviewTick((t) => t + 1)
     },
     [tool, toImage],
   )
 
-  const onSurfacePointerUp = useCallback(() => {
-    erasing.current = false
-    const inFlight = drawing.current
-    drawing.current = null
-    if (tool !== 'pen' || inFlight === null || inFlight.points.length < 2) return
-    snapshot()
-    const stroke: Stroke = {
-      id: crypto.randomUUID(),
-      kind: 'stroke',
-      points: inFlight.points,
-      color,
-      size: BASE_STROKE_SIZE * dpr,
-      simulatePressure: inFlight.simulatePressure,
-    }
-    setScene((s) => ({ ...s, elements: [...s.elements, stroke] }))
-  }, [tool, snapshot, color, dpr])
+  // Commit (or cancel) the in-progress stroke. Shared by pointerup AND
+  // pointercancel (C2) so a cancelled gesture never leaves drawing.current set.
+  const endStroke = useCallback(
+    (commit: boolean) => {
+      erasing.current = false
+      textDragRef.current = null
+      const inFlight = drawing.current
+      drawing.current = null
+      setPreviewTick((t) => t + 1)
+      if (!commit || tool !== 'pen' || inFlight === null || inFlight.points.length < 2) return
+      snapshot()
+      const stroke: Stroke = {
+        id: crypto.randomUUID(),
+        kind: 'stroke',
+        points: inFlight.points,
+        color,
+        size: BASE_STROKE_SIZE * dpr,
+        simulatePressure: inFlight.simulatePressure,
+      }
+      setScene((s) => ({ ...s, elements: [...s.elements, stroke] }))
+    },
+    [tool, snapshot, color, dpr],
+  )
+
+  const onSurfacePointerUp = useCallback(() => endStroke(true), [endStroke])
+  // C2: pointercancel (OS gesture / contextmenu) drops the in-progress stroke.
+  const onSurfacePointerCancel = useCallback(() => endStroke(false), [endStroke])
 
   // ── text editing (contentEditable) ──────────────────────────────────────────
   const editText = useCallback((id: string, text: string) => {
@@ -311,18 +352,9 @@ export function AnnotateEditor({
   }, [])
 
   // ── text drag-move (spec §AnnotateEditor Text: "drag moves it") ─────────────
-  // Held in a ref so the in-flight drag never touches render state until commit
-  // (StrictMode-safe, like the pen ref). On pointerdown on a block (text tool), we
-  // snapshot BEFORE the move so Undo reverts the move (spec's "move" undo case),
-  // then track the pointer in image space and update the block's x/y per move.
-  const textDrag = useRef<{
-    id: string
-    startX: number
-    startY: number
-    origX: number
-    origY: number
-  } | null>(null)
-
+  // textDragRef (declared above) holds the in-flight drag. M2: we DEFER the
+  // snapshot+dirty to the first actual move so a mere click (place/select) does
+  // not create a no-op undo entry or arm the "discard changes?" prompt.
   const onTextPointerDown = useCallback(
     (id: string, e: ReactPointerEvent) => {
       if (tool !== 'text') return
@@ -330,23 +362,36 @@ export function AnnotateEditor({
       e.stopPropagation()
       const block = scene.elements.find((el) => el.id === id)
       if (!block || block.kind !== 'text') return
+      // Selecting a block makes it the one under edit (its overlay shows).
+      setEditingId(id)
       const { x, y } = toImage(e.clientX, e.clientY)
-      textDrag.current = { id, startX: x, startY: y, origX: block.x, origY: block.y }
-      // Snapshot once at drag start so Undo reverts the whole move.
-      snapshot()
+      textDragRef.current = {
+        id,
+        startX: x,
+        startY: y,
+        origX: block.x,
+        origY: block.y,
+        moved: false,
+      }
       try {
         ;(e.target as Element).setPointerCapture?.(e.pointerId)
       } catch {
         // best-effort (happy-dom / detached targets)
       }
     },
-    [tool, scene.elements, toImage, snapshot],
+    [tool, scene.elements, toImage],
   )
 
   const onTextPointerMove = useCallback(
     (id: string, e: ReactPointerEvent) => {
-      const drag = textDrag.current
-      if (drag === null || drag.id !== id) return
+      const drag = textDragRef.current
+      // C2: ignore a buttonless move (pointer released outside the block).
+      if (drag === null || drag.id !== id || e.buttons === 0) return
+      // M2: snapshot once, on the FIRST real move, so Undo reverts the whole move.
+      if (!drag.moved) {
+        drag.moved = true
+        snapshot()
+      }
       const { x, y } = toImage(e.clientX, e.clientY)
       const nx = drag.origX + (x - drag.startX)
       const ny = drag.origY + (y - drag.startY)
@@ -357,34 +402,45 @@ export function AnnotateEditor({
         ),
       }))
     },
-    [toImage],
+    [toImage, snapshot],
   )
 
   const onTextPointerUp = useCallback(() => {
-    textDrag.current = null
-  }, [])
-
-  // ── recolor (active swatch applies to new elements) ─────────────────────────
-  const pickColor = useCallback((c: string) => {
-    setColor(c)
+    textDragRef.current = null
   }, [])
 
   // ── persist (shared by Done + Esc-Keep) ─────────────────────────────────────
-  const isEmpty = scene.elements.length === 0
-  // Save then close. Empty scene → null clears overlay_path + removes the
-  // sidecar; non-empty → serialized SVG. saveOverlay handles serialize + cache
-  // invalidation. Guarded by `saving` to avoid a double-submit.
+  // I3: drop stray empty text blocks (placed then never typed into) before the
+  // empty check + save, so deselecting an empty placement doesn't write a sidecar
+  // of empty foreignObjects and falsely mark the frame annotated.
+  const prunedScene = useMemo<Scene>(
+    () => ({
+      ...scene,
+      elements: scene.elements.filter((el) => !(el.kind === 'text' && el.text.trim() === '')),
+    }),
+    [scene],
+  )
+  const isEmpty = prunedScene.elements.length === 0
+
+  // Save then close. Empty (after prune) → null clears overlay_path + removes the
+  // sidecar; non-empty → serialized SVG. Guarded by `saving` to avoid a double
+  // submit. Shared by Done (stages the chip via onSaved) and Esc-Keep (does not).
+  const persist = useCallback(async (): Promise<string | null> => {
+    const { overlayPath } = await saveOverlay(queryClient, attachment, isEmpty ? null : prunedScene)
+    return overlayPath
+  }, [queryClient, attachment, isEmpty, prunedScene])
+
   const saveAndClose = useCallback(async () => {
     if (saving) return
     setSaving(true)
     try {
-      const { overlayPath } = await saveOverlay(queryClient, attachment, isEmpty ? null : scene)
+      const overlayPath = await persist()
       onSaved?.(overlayPath)
       onClose(true)
     } finally {
       setSaving(false)
     }
-  }, [saving, queryClient, attachment, isEmpty, scene, onClose, onSaved])
+  }, [saving, persist, onClose, onSaved])
 
   // ── Done / Cancel ───────────────────────────────────────────────────────────
   const onDone = saveAndClose
@@ -401,15 +457,21 @@ export function AnnotateEditor({
   // exists from youtube.capture and simply persists (note_id:null). Discard
   // soft-deletes via onDiscardOrphan. 'changes' (reopen): Discard reverts to the
   // saved scene (close without save — sidecar untouched).
+  // I2: reuse the `saving` guard + try/finally so a double-click can't double-fire
+  // saveOverlay and a rejection can't leave the editor dangling.
   const escKeep = useCallback(async () => {
+    if (saving) return
     setEscPrompt(false)
-    // Persist the drawing first if there is one (so it is not lost), but DON'T
-    // stage the chip — just leave the orphan. Empty scene → nothing to write.
-    if (!isEmpty) {
-      await saveOverlay(queryClient, attachment, scene)
+    setSaving(true)
+    try {
+      // Persist the drawing if there is one (so it's not lost), but DON'T stage
+      // the chip — just leave the orphan. Empty (after prune) → nothing to write.
+      if (!isEmpty) await persist()
+      onClose(false)
+    } finally {
+      setSaving(false)
     }
-    onClose(false)
-  }, [isEmpty, queryClient, attachment, scene, onClose])
+  }, [saving, isEmpty, persist, onClose])
 
   const escDiscard = useCallback(() => {
     setEscPrompt(false)
@@ -439,6 +501,39 @@ export function AnnotateEditor({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [escPrompt, escMode, dirty, onClose])
+
+  // ── what SceneSvg paints ────────────────────────────────────────────────────
+  // C1: blank the text of the block under edit so it isn't painted twice (its
+  // contentEditable overlay shows the live text instead). I1: append the
+  // in-progress pen stroke as a live preview element so drawing isn't blind.
+  // `previewTick` is read so this recomputes on each pointermove.
+  const displayScene = useMemo<Scene>(() => {
+    void previewTick
+    const elements: SceneElement[] = scene.elements.map((el) =>
+      el.kind === 'text' && el.id === editingId ? { ...el, text: '' } : el,
+    )
+    const live = drawing.current
+    if (live !== null && live.points.length >= 2) {
+      elements.push({
+        id: '__preview__',
+        kind: 'stroke',
+        points: live.points,
+        color,
+        size: BASE_STROKE_SIZE * dpr,
+        simulatePressure: live.simulatePressure,
+      })
+    }
+    return { ...scene, elements }
+  }, [scene, editingId, previewTick, color, dpr])
+
+  // The single text block under edit (its contentEditable overlay is shown).
+  const editingBlock = useMemo(
+    () =>
+      scene.elements.find((el) => el.id === editingId && el.kind === 'text') as
+        | TextBlock
+        | undefined,
+    [scene.elements, editingId],
+  )
 
   // ── render ────────────────────────────────────────────────────────────────
   return (
@@ -491,7 +586,7 @@ export function AnnotateEditor({
             type="button"
             aria-label={`color ${c}`}
             aria-pressed={color === c}
-            onClick={() => pickColor(c)}
+            onClick={() => setColor(c)}
             style={{
               width: 20,
               height: 20,
@@ -570,11 +665,13 @@ export function AnnotateEditor({
           onPointerDown={onSurfacePointerDown}
           onPointerMove={onSurfacePointerMove}
           onPointerUp={onSurfacePointerUp}
+          onPointerCancel={onSurfacePointerCancel}
           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
         >
           <EditorScene
             ref={svgRef}
-            scene={scene}
+            scene={displayScene}
+            editingBlock={editingBlock}
             onElementPointerDown={onElementPointerDown}
             onElementPointerEnter={onElementPointerEnter}
             onEditText={editText}
@@ -655,102 +752,140 @@ export function AnnotateEditor({
 }
 
 // ---------------------------------------------------------------------------
-// Editor scene wrapper — SceneSvg + contentEditable overlays for text blocks.
+// Editor scene wrapper — SceneSvg + one contentEditable overlay (block under edit).
 // ---------------------------------------------------------------------------
 
 /**
- * Renders the interactive `SceneSvg` plus an HTML overlay layer of
- * contentEditable divs for each text block (so text is editable while the SVG
- * provides hit-testing for the eraser). The contentEditable layer is only
- * interactive when the text tool is active.
+ * Renders the interactive `SceneSvg` (all committed elements) plus a SINGLE
+ * contentEditable overlay for the text block currently under edit.
  *
- * Why a forwardRef to the svg: the editor needs the live `<svg>` element for the
- * coordinate CTM (`clientToImagePoint`).
+ * **C1 — no double-render + correct size:** SceneSvg paints every committed text
+ * block via `<foreignObject>` at the viewBox scale; the editing overlay shows the
+ * live text for just the `editingBlock` (whose SceneSvg copy is blanked upstream,
+ * via `displayScene`), so the same text is never painted twice. The overlay is
+ * positioned/sized in MEASURED pixels mapped from image space through the SVG's
+ * CTM (`imageToClient`), accounting for `preserveAspectRatio="xMidYMid meet"`
+ * letterboxing — not the broken `%` font-size (which resolves against the parent
+ * font-size, ~13px, rendering a default 28×dpr block at sub-pixel size).
+ *
+ * Why we locate the `<svg>` from the wrapper: SceneSvg doesn't forward a ref, and
+ * its exported props must not change; we read the rendered element for CTM math.
  */
-const EditorScene = (() => {
-  // Inner component reads svgRef via a callback ref placed on SceneSvg's svg.
-  // SceneSvg doesn't forward a ref, so we locate the svg from the wrapper.
-  return function EditorSceneImpl({
-    ref,
-    scene,
-    onElementPointerDown,
-    onElementPointerEnter,
-    onEditText,
-    onTextPointerDown,
-    onTextPointerMove,
-    onTextPointerUp,
-    editable,
-  }: {
-    ref: React.RefObject<SVGSVGElement | null>
-    scene: Scene
-    onElementPointerDown: (id: string, e: ReactPointerEvent) => void
-    onElementPointerEnter: (id: string, e: ReactPointerEvent) => void
-    onEditText: (id: string, text: string) => void
-    onTextPointerDown: (id: string, e: ReactPointerEvent) => void
-    onTextPointerMove: (id: string, e: ReactPointerEvent) => void
-    onTextPointerUp: (id: string, e: ReactPointerEvent) => void
-    editable: boolean
-  }): React.JSX.Element {
-    const wrapRef = useRef<HTMLDivElement>(null)
-    // After mount, hand the rendered <svg> to the editor's svgRef for CTM math.
-    useEffect(() => {
-      const svg = wrapRef.current?.querySelector('svg')
-      if (svg) ref.current = svg as SVGSVGElement
-    })
+function EditorScene({
+  ref,
+  scene,
+  editingBlock,
+  onElementPointerDown,
+  onElementPointerEnter,
+  onEditText,
+  onTextPointerDown,
+  onTextPointerMove,
+  onTextPointerUp,
+  editable,
+}: {
+  ref: React.RefObject<SVGSVGElement | null>
+  scene: Scene
+  editingBlock: TextBlock | undefined
+  onElementPointerDown: (id: string, e: ReactPointerEvent) => void
+  onElementPointerEnter: (id: string, e: ReactPointerEvent) => void
+  onEditText: (id: string, text: string) => void
+  onTextPointerDown: (id: string, e: ReactPointerEvent) => void
+  onTextPointerMove: (id: string, e: ReactPointerEvent) => void
+  onTextPointerUp: (id: string, e: ReactPointerEvent) => void
+  editable: boolean
+}): React.JSX.Element {
+  const wrapRef = useRef<HTMLDivElement>(null)
+  // Re-measure on container resize so the overlay tracks the letterboxed image
+  // rect (the SVG CTM changes with size). A tick forces a re-render after layout.
+  const [measureTick, setMeasureTick] = useState(0)
+  useEffect(() => {
+    const svg = wrapRef.current?.querySelector('svg')
+    if (svg) ref.current = svg as SVGSVGElement
+    setMeasureTick((t) => t + 1)
+    const wrap = wrapRef.current
+    if (!wrap || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => setMeasureTick((t) => t + 1))
+    ro.observe(wrap)
+    return () => ro.disconnect()
+  }, [ref])
 
-    return (
-      <div ref={wrapRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
-        <SceneSvg
-          scene={scene}
-          onElementPointerDown={onElementPointerDown}
-          onElementPointerEnter={onElementPointerEnter}
-        />
-        {/* contentEditable overlay for text blocks — positioned in % of the
-            viewBox so it aligns with the SceneSvg foreignObjects. Only the text
-            tool makes these interactive; otherwise they're pointer-inert so the
-            eraser/pen reach the SVG beneath. */}
-        {scene.elements.map((el) =>
-          el.kind === 'text' ? (
-            // biome-ignore lint/a11y/useSemanticElements: a free-positioned multiline rich-text caption overlaid on the SVG needs contentEditable (an <input>/<textarea> can't be absolutely placed in viewBox-% space with auto-grow); role="textbox" is the correct ARIA mapping.
-            <div
-              key={el.id}
-              data-testid={`text-edit-${el.id}`}
-              contentEditable
-              suppressContentEditableWarning
-              role="textbox"
-              aria-label="annotation text"
-              tabIndex={0}
-              onInput={(e) => onEditText(el.id, (e.target as HTMLElement).textContent ?? '')}
-              // Text tool: pointerdown starts a drag-move; pointermove updates the
-              // block's x/y; pointerup commits (handlers no-op for other tools).
-              onPointerDown={(e) => onTextPointerDown(el.id, e)}
-              onPointerMove={(e) => onTextPointerMove(el.id, e)}
-              onPointerUp={(e) => onTextPointerUp(el.id, e)}
-              style={{
-                position: 'absolute',
-                left: `${(el.x / scene.width) * 100}%`,
-                top: `${(el.y / scene.height) * 100}%`,
-                width: `${(el.width / scene.width) * 100}%`,
-                color: el.color,
-                fontSize: `${(el.fontSize / scene.height) * 100}%`,
-                outline: editable ? '1px dashed var(--accent)' : 'none',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                // Draggable when the text tool is active; otherwise inert so the
-                // pen/eraser reach the SVG beneath.
-                pointerEvents: editable ? 'auto' : 'none',
-                cursor: editable ? 'move' : 'default',
-                touchAction: 'none',
-              }}
-            >
-              {el.text}
-            </div>
-          ) : null,
-        )}
-      </div>
-    )
-  }
-})()
+  // Map the editing block's image-space box to pixels relative to the wrap, via
+  // the SVG's forward CTM (image → screen). In happy-dom the CTM is identity and
+  // rects are 0, so this resolves to a 0-offset box (tests assert presence/coords
+  // via serialization, not pixel geometry).
+  const overlayBox = useMemo(() => {
+    void measureTick
+    const svg = ref.current
+    const wrap = wrapRef.current
+    if (!editingBlock || !svg || !wrap) return null
+    const ctm = svg.getScreenCTM()
+    if (!ctm) return null
+    const wrapRect = wrap.getBoundingClientRect()
+    // Manual 2D-affine apply (image → screen): DOMPoint.matrixTransform is
+    // unimplemented in happy-dom; the CTM is always a 2D affine (no perspective),
+    // so x' = a*x + c*y + e, y' = b*x + d*y + f is exact. Matches ink/coords.ts.
+    const screenX = ctm.a * editingBlock.x + ctm.c * editingBlock.y + ctm.e
+    const screenY = ctm.b * editingBlock.x + ctm.d * editingBlock.y + ctm.f
+    const scaleX = ctm.a // px per image-unit (uniform under meet)
+    const scaleY = ctm.d
+    return {
+      left: screenX - wrapRect.left,
+      top: screenY - wrapRect.top,
+      width: editingBlock.width * scaleX,
+      fontSize: editingBlock.fontSize * scaleY,
+    }
+  }, [editingBlock, measureTick, ref])
+
+  return (
+    <div ref={wrapRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
+      <SceneSvg
+        scene={scene}
+        onElementPointerDown={onElementPointerDown}
+        onElementPointerEnter={onElementPointerEnter}
+      />
+      {/* Single contentEditable overlay for the block under edit — measured px so
+          it renders at the on-screen size SceneSvg uses and stays aligned under
+          letterboxing. Only interactive in the text tool. */}
+      {editingBlock && (
+        // biome-ignore lint/a11y/useSemanticElements: a free-positioned multiline rich-text caption overlaid on the SVG needs contentEditable (an <input>/<textarea> can't be absolutely placed over the letterboxed image with auto-grow); role="textbox" is the correct ARIA mapping.
+        <div
+          key={editingBlock.id}
+          data-testid={`text-edit-${editingBlock.id}`}
+          contentEditable
+          suppressContentEditableWarning
+          role="textbox"
+          aria-label="annotation text"
+          tabIndex={0}
+          onInput={(e) => onEditText(editingBlock.id, (e.target as HTMLElement).textContent ?? '')}
+          // Text tool: pointerdown starts a drag-move; pointermove updates x/y;
+          // pointerup commits (handlers no-op for other tools).
+          onPointerDown={(e) => onTextPointerDown(editingBlock.id, e)}
+          onPointerMove={(e) => onTextPointerMove(editingBlock.id, e)}
+          onPointerUp={(e) => onTextPointerUp(editingBlock.id, e)}
+          style={{
+            position: 'absolute',
+            left: overlayBox ? `${overlayBox.left}px` : `${(editingBlock.x / scene.width) * 100}%`,
+            top: overlayBox ? `${overlayBox.top}px` : `${(editingBlock.y / scene.height) * 100}%`,
+            width: overlayBox
+              ? `${overlayBox.width}px`
+              : `${(editingBlock.width / scene.width) * 100}%`,
+            color: editingBlock.color,
+            // Measured px (NOT %, which resolves against the parent font-size).
+            fontSize: overlayBox ? `${overlayBox.fontSize}px` : `${editingBlock.fontSize}px`,
+            outline: editable ? '1px dashed var(--accent)' : 'none',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            pointerEvents: editable ? 'auto' : 'none',
+            cursor: editable ? 'move' : 'default',
+            touchAction: 'none',
+          }}
+        >
+          {editingBlock.text}
+        </div>
+      )}
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Toolbar bits
