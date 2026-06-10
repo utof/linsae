@@ -5,8 +5,7 @@
     "src/preload/index.ts",
     "src/renderer/src/main.tsx",
     "tests/**/*.test.{ts,tsx}",
-    "scripts/*.mjs",
-    "src/renderer/src/ink/*"
+    "scripts/*.mjs"
   ],
   "project": ["src/**/*.{ts,tsx}", "tests/**/*.{ts,tsx}"],
   "ignore": [
