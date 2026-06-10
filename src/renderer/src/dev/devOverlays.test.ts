@@ -7,8 +7,9 @@
  * @see src/renderer/src/dev/devOverlays.ts
  * @see docs/specs/v0.2.4-dev-tools-hud.md
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { getOverlay, setOverlay, toggleOverlay } from './devOverlays'
+import { act, renderHook } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { getOverlay, setOverlay, toggleOverlay, useDevOverlay } from './devOverlays'
 
 // Reset both module state and localStorage before each test using the PUBLIC API only.
 // (ephemeral record is module-private — do not reach in.)
@@ -17,6 +18,10 @@ beforeEach(() => {
   // Reset session-ephemeral state via public API
   setOverlay('reveal', false)
 })
+
+// Restore any Storage.prototype spies so a failing throw-safety assertion can't
+// leak a throwing mock into later tests.
+afterEach(() => vi.restoreAllMocks())
 
 describe('getOverlay defaults (nothing stored)', () => {
   it('fps defaults to true', () => {
@@ -113,7 +118,6 @@ describe('localStorage throw safety', () => {
       throw new Error('QuotaExceededError')
     })
     expect(() => setOverlay('boot', true)).not.toThrow()
-    vi.restoreAllMocks()
   })
 
   it('getOverlay("boot") returns the default (false) when localStorage.getItem throws', () => {
@@ -121,6 +125,23 @@ describe('localStorage throw safety', () => {
       throw new Error('SecurityError')
     })
     expect(getOverlay('boot')).toBe(false)
-    vi.restoreAllMocks()
+  })
+})
+
+describe('useDevOverlay subscriber notification', () => {
+  it('re-renders subscribers when an overlay changes', () => {
+    const { result } = renderHook(() => useDevOverlay('boot'))
+    expect(result.current).toBe(false)
+    act(() => setOverlay('boot', true))
+    expect(result.current).toBe(true)
+  })
+
+  it('stops re-rendering after unmount (listener cleaned up)', () => {
+    const { result, unmount } = renderHook(() => useDevOverlay('wave'))
+    expect(result.current).toBe(false)
+    unmount()
+    // No throw / no stale update after the subscriber is gone.
+    act(() => setOverlay('wave', true))
+    expect(getOverlay('wave')).toBe(true)
   })
 })

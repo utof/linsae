@@ -35,6 +35,7 @@ const DEFAULTS: Record<DevOverlayKey, boolean> = {
 const ephemeral: Record<'reveal', boolean> = { reveal: DEFAULTS.reveal }
 const listeners = new Set<() => void>()
 
+/** Current on/off state for one overlay (reads localStorage for fps/boot/wave). @see module doc above */
 export function getOverlay(key: DevOverlayKey): boolean {
   if (key === 'reveal') return ephemeral.reveal
   try {
@@ -46,6 +47,7 @@ export function getOverlay(key: DevOverlayKey): boolean {
   }
 }
 
+/** Set one overlay on/off (persists fps/boot/wave to localStorage; reveal in-memory) + notify. @see module doc above */
 export function setOverlay(key: DevOverlayKey, on: boolean): void {
   if (key === 'reveal') {
     ephemeral.reveal = on
@@ -59,6 +61,7 @@ export function setOverlay(key: DevOverlayKey, on: boolean): void {
   for (const l of listeners) l()
 }
 
+/** Flip one overlay's state. @see module doc above */
 export function toggleOverlay(key: DevOverlayKey): void {
   setOverlay(key, !getOverlay(key))
 }
@@ -70,7 +73,7 @@ function subscribe(cb: () => void): () => void {
   }
 }
 
-/** Subscribe a component to one overlay's on/off state. Re-renders on any `setOverlay`. */
+/** Subscribe a component to one overlay's on/off state. Re-renders on any `setOverlay`. @see ./devOverlays module doc above */
 export function useDevOverlay(key: DevOverlayKey): boolean {
   return useSyncExternalStore(
     subscribe,
