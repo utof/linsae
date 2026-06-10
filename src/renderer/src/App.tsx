@@ -4,6 +4,7 @@ import { useHotkeys } from 'react-hotkeys-hook'
 import type { Note, NoteType } from '../../shared/types'
 import { BacklinksPane } from './backlinks/BacklinksPane'
 import { Composer } from './composer/Composer'
+import { setOverlay, toggleOverlay, useDevOverlay } from './dev/devOverlays'
 import { Feed } from './feed/Feed'
 import { api } from './lib/api'
 import { parseYouTubeUrl } from './lib/parse-youtube-url'
@@ -77,8 +78,12 @@ export function App() {
   const [focusedId, setFocusedId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [playgroundOpen, setPlaygroundOpen] = useState(false)
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null)
+  // Dev-overlay state — MUST be called unconditionally (rules of hooks); the store
+  // is inert in prod but the hooks must not be gated on import.meta.env.DEV.
+  // @see src/renderer/src/dev/devOverlays.ts module doc
+  const waveOn = useDevOverlay('wave')
+  const revealOpen = useDevOverlay('reveal')
   const [draftBody, setDraftBody] = useState<string | null>(null)
   const [skipBannerDismissed, setSkipBannerDismissed] = useState(false)
   // threadNoteId: when non-null, the full-screen ThreadView replaces the feed+composer.
@@ -297,7 +302,7 @@ export function App() {
     'mod+shift+r',
     (e) => {
       e.preventDefault()
-      setPlaygroundOpen((o) => !o)
+      toggleOverlay('reveal')
     },
     { enabled: DEV_PLAYGROUND, enableOnFormTags: ['textarea', 'input'] },
   )
@@ -518,12 +523,12 @@ export function App() {
         onJump={setFocusedId}
       />
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      {DEV_PLAYGROUND && playgroundOpen && RevealPlayground && (
+      {DEV_PLAYGROUND && revealOpen && RevealPlayground && (
         <Suspense fallback={null}>
-          <RevealPlayground onClose={() => setPlaygroundOpen(false)} />
+          <RevealPlayground onClose={() => setOverlay('reveal', false)} />
         </Suspense>
       )}
-      {WaveTuner && (
+      {WaveTuner && waveOn && (
         <Suspense fallback={null}>
           <WaveTuner />
         </Suspense>

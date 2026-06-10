@@ -5,9 +5,9 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { Fragment, StrictMode } from 'react'
 import ReactDOM from 'react-dom/client'
 import { App } from './App'
-import { DevBootMeter } from './components/DevBootMeter'
-import { DevFpsMeter } from './components/DevFpsMeter'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { DevToolsHud } from './dev/DevToolsHud'
+import { BootMeterGate, FpsMeterGate } from './dev/overlayGates'
 import { queryClient } from './lib/query-client'
 
 // StrictMode double-invokes mount effects + state initialisers in dev so
@@ -45,16 +45,21 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       </ErrorBoundary>
       {/* Dev-only boot timeline readout (bottom-right): FCP / DOMContentLoaded /
          notes-query resolution — the renderer-side counterpart to the main
-         process `[boot]` logs. MUST be inside QueryClientProvider: it reads the
-         ['notes'] query via useQuery, so mounting it outside throws "No
-         QueryClient set"; being outside the ErrorBoundary too, that throw would
-         crash the whole render and leave the boot splash stuck. DEV-gated so
-         Vite tree-shakes it (and the import) from prod. */}
-      {import.meta.env.DEV && <DevBootMeter />}
+         process `[boot]` logs. BootMeterGate mounts DevBootMeter only when the
+         `boot` overlay is on (toggled via DevToolsHud). MUST be inside
+         QueryClientProvider: DevBootMeter reads the ['notes'] query via useQuery,
+         so mounting it outside throws "No QueryClient set"; being outside the
+         ErrorBoundary too, that throw would crash the whole render and leave the
+         boot splash stuck. DEV-gated so Vite tree-shakes it from prod. */}
+      {import.meta.env.DEV && <BootMeterGate />}
     </QueryClientProvider>
-    {/* Dev-only FPS overlay for benchmarking scroll perf. `import.meta.env.DEV`
-       is a literal `false` in production builds, so Vite tree-shakes both the
-       branch and the import out of the shipped bundle. */}
-    {import.meta.env.DEV && <DevFpsMeter />}
+    {/* Dev-only overlay gates + HUD for benchmarking and tuning. FpsMeterGate
+       mounts DevFpsMeter only when the `fps` overlay is on. DevToolsHud is the
+       mod+shift+d control panel for toggling all dev overlays. Both are outside
+       QueryClientProvider (no query deps). `import.meta.env.DEV` is a literal
+       `false` in production builds, so Vite tree-shakes both the branches and
+       the imports out of the shipped bundle. */}
+    {import.meta.env.DEV && <FpsMeterGate />}
+    {import.meta.env.DEV && <DevToolsHud />}
   </Strict>,
 )
