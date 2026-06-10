@@ -23,6 +23,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { z } from 'zod'
 import type { Attachment, Note, SearchHit } from '../shared/types'
 import type {
+  AttachmentRemoveInputSchema,
   AttachmentsListInputSchema,
   AttachToNoteInputSchema,
   BacklinksInputSchema,
@@ -34,6 +35,7 @@ import type {
   NotesListInputSchema,
   NotesUpdateInputSchema,
   ResolveInputSchema,
+  SaveOverlayInputSchema,
   SearchRunInputSchema,
   VideoSourcesGetInputSchema,
   VideoSourcesUpsertInputSchema,
@@ -91,12 +93,28 @@ const api = {
     importCookies: (): Promise<
       { canceled: true } | { canceled: false; ok: number; fail: number }
     > => ipcRenderer.invoke('youtube:importCookies'),
+    /**
+     * Write or clear the SVG annotation sidecar for a screenshot attachment.
+     * `svg: null` clears the overlay (deletes the sidecar, nulls overlay_path).
+     * Throws if the attachment id is unknown or soft-deleted.
+     * @see docs/specs/v0.2.5-screenshot-annotation.md §IPC contract (saveOverlay)
+     */
+    saveOverlay: (
+      i: z.input<typeof SaveOverlayInputSchema>,
+    ): Promise<{ overlayPath: string | null }> => ipcRenderer.invoke('youtube:saveOverlay', i),
   },
   attachments: {
     list: (i: z.input<typeof AttachmentsListInputSchema>): Promise<Attachment[]> =>
       ipcRenderer.invoke('attachments:list', i),
     attachToNote: (i: z.input<typeof AttachToNoteInputSchema>): Promise<void> =>
       ipcRenderer.invoke('attachments:attachToNote', i),
+    /**
+     * Soft-delete an orphan attachment and remove its SVG sidecar (if any).
+     * PNG bytes on disk are preserved; reclamation is a separate future concern.
+     * @see docs/specs/v0.2.5-screenshot-annotation.md §IPC contract (attachments.remove)
+     */
+    remove: (i: z.input<typeof AttachmentRemoveInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('attachments:remove', i),
   },
   videoSources: {
     upsert: (i: z.input<typeof VideoSourcesUpsertInputSchema>): Promise<void> =>

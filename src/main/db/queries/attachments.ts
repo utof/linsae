@@ -65,8 +65,18 @@ export function insertAttachment(db: DB, input: InsertAttachmentInput): Attachme
   return getAttachment(db, id)!
 }
 
-/** Retrieves one attachment by id, including soft-deleted (internal helper). */
-function getAttachment(db: DB, id: string): Attachment | null {
+/**
+ * Retrieves one attachment by id, including soft-deleted rows.
+ *
+ * Why exported: the `saveOverlay` and `attachments.remove` IPC handlers need
+ * to resolve `base_path` and check liveness (reject soft-deleted rows) before
+ * writing a sidecar. The liveness check (`deleted_at != null`) is the handler's
+ * responsibility — this getter is intentionally agnostic so `insertAttachment`
+ * can still read back fresh rows (including ones that are effectively live).
+ *
+ * @see docs/specs/v0.2.5-screenshot-annotation.md §New DB queries
+ */
+export function getAttachment(db: DB, id: string): Attachment | null {
   return (
     (db.prepare(`SELECT ${SELECT_COLS} FROM attachments WHERE id = ?`).get(id) as
       | Attachment
@@ -131,6 +141,19 @@ export function listAttachmentsForNote(db: DB, noteId: string): Attachment[] {
  */
 export function softDeleteAttachment(db: DB, id: string): void {
   db.prepare(`UPDATE attachments SET deleted_at = ? WHERE id = ?`).run(Date.now(), id)
+}
+
+/**
+ * Sets (or clears, when `null`) an attachment's overlay sidecar path.
+ *
+ * Unknown id → silent no-op (0 rows changed, no throw), matching the
+ * `attachToNote` contract so callers do not need separate not-found guards
+ * at the DB layer (the IPC handler does the liveness check before calling).
+ *
+ * @see docs/specs/v0.2.5-screenshot-annotation.md §New DB queries
+ */
+export function setOverlayPath(db: DB, args: { id: string; overlayPath: string | null }): void {
+  db.prepare(`UPDATE attachments SET overlay_path = ? WHERE id = ?`).run(args.overlayPath, args.id)
 }
 
 /**

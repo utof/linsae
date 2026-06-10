@@ -199,6 +199,17 @@ export const api = {
     importCookies: (): Promise<
       { canceled: true } | { canceled: false; ok: number; fail: number }
     > => window.api.youtube.importCookies(),
+    /**
+     * Write or clear the SVG annotation sidecar for a screenshot attachment.
+     * Pass `svg: null` to clear (deletes the sidecar file, nulls overlay_path).
+     * Throws if the attachment id is unknown or soft-deleted.
+     * @see docs/specs/v0.2.5-screenshot-annotation.md §IPC contract (saveOverlay)
+     */
+    saveOverlay: (
+      attachmentId: string,
+      svg: string | null,
+    ): Promise<{ overlayPath: string | null }> =>
+      window.api.youtube.saveOverlay({ attachmentId, svg }),
   },
   /**
    * Attachments IPC facade: list and associate screenshot/clip rows.
@@ -223,6 +234,13 @@ export const api = {
      */
     attachToNote: (attachmentId: string, noteId: string): Promise<void> =>
       window.api.attachments.attachToNote({ attachmentId, noteId }),
+    /**
+     * Soft-delete an orphan attachment and remove its SVG sidecar (if any).
+     * Used by the capture-time "Discard" prompt (Esc → Discard). PNG bytes
+     * on disk are preserved; file reclamation is a future concern.
+     * @see docs/specs/v0.2.5-screenshot-annotation.md §IPC contract (attachments.remove)
+     */
+    remove: (id: string): Promise<void> => window.api.attachments.remove({ id }),
   },
   /**
    * VideoSources IPC facade: upsert and retrieve cached video metadata.

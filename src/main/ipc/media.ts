@@ -9,10 +9,12 @@
 import type Database from 'better-sqlite3'
 import { BrowserWindow, ipcMain, screen } from 'electron'
 import {
+  AttachmentRemoveInputSchema,
   AttachmentsListInputSchema,
   AttachToNoteInputSchema,
   CaptureInputSchema,
   FetchOEmbedInputSchema,
+  SaveOverlayInputSchema,
   VideoSourcesGetInputSchema,
   VideoSourcesUpsertInputSchema,
 } from '../../shared/zod-schemas'
@@ -26,6 +28,7 @@ import {
 import { getVideoSource, upsertVideoSource } from '../db/queries/video-sources'
 import { fetchOEmbed } from '../media/oembed'
 import { persistCapture } from '../media/persist-capture'
+import { persistOverlay, removeAttachment } from '../media/persist-overlay'
 import { clampRect } from '../media/rect-clamp'
 
 type DB = Database.Database
@@ -109,5 +112,34 @@ export function registerMediaIpc(db: DB, attachmentsDir: string): void {
           durationSec: v.duration_sec,
         }
       : null
+  })
+
+  /**
+   * Write or clear the SVG annotation overlay for a screenshot attachment.
+   *
+   * Delegates to `persistOverlay` (the tested unit) which throws on unknown/
+   * soft-deleted ids before touching disk — no orphaned `.svg` can be created.
+   *
+   * @see src/main/media/persist-overlay.ts
+   * @see docs/specs/v0.2.5-screenshot-annotation.md §IPC contract (saveOverlay)
+   */
+  ipcMain.handle('youtube:saveOverlay', (_e, input) => {
+    const i = SaveOverlayInputSchema.parse(input)
+    return persistOverlay(db, { id: i.attachmentId, svg: i.svg })
+  })
+
+  /**
+   * Soft-delete an orphan attachment and remove its sidecar (if any).
+   *
+   * Used by the capture-time "Discard" prompt. PNG bytes on disk are not
+   * touched — file reclamation is a separate future concern
+   * (v0.2-youtube-annotation.md §Risks).
+   *
+   * @see src/main/db/queries/attachments.ts (softDeleteAttachment)
+   * @see docs/specs/v0.2.5-screenshot-annotation.md §IPC contract (attachments.remove)
+   */
+  ipcMain.handle('attachments:remove', (_e, input) => {
+    const i = AttachmentRemoveInputSchema.parse(input)
+    removeAttachment(db, { id: i.id })
   })
 }

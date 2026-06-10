@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  AttachmentRemoveInputSchema,
   AttachmentsListInputSchema,
   AttachToNoteInputSchema,
   CaptureInputSchema,
   FetchOEmbedInputSchema,
   NotesCreateInputSchema,
   NotesUpdateInputSchema,
+  SaveOverlayInputSchema,
   VideoSourcesGetInputSchema,
   VideoSourcesUpsertInputSchema,
 } from './zod-schemas'
@@ -122,6 +124,49 @@ describe('NotesCreateInputSchema — empty-body rule', () => {
       source_locator: { media: 'youtube', video_id: 'v' },
     })
     expect(result.body).toBe('   ')
+  })
+})
+
+describe('SaveOverlayInputSchema', () => {
+  it('accepts a valid svg string + attachmentId', () => {
+    const v = SaveOverlayInputSchema.parse({
+      attachmentId: 'att-1',
+      svg: '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+    })
+    expect(v.attachmentId).toBe('att-1')
+    expect(v.svg).toContain('<svg')
+  })
+
+  it('accepts svg: null (clear overlay)', () => {
+    const v = SaveOverlayInputSchema.parse({ attachmentId: 'att-1', svg: null })
+    expect(v.svg).toBeNull()
+  })
+
+  it('rejects a non-svg string (does not start with <svg)', () => {
+    expect(() => SaveOverlayInputSchema.parse({ attachmentId: 'att-1', svg: 'not svg' })).toThrow()
+    expect(() =>
+      SaveOverlayInputSchema.parse({ attachmentId: 'att-1', svg: '<div>nope</div>' }),
+    ).toThrow()
+  })
+
+  it('rejects an over-cap string (> 512_000 chars)', () => {
+    const huge = `<svg${'x'.repeat(512_000)}`
+    expect(() => SaveOverlayInputSchema.parse({ attachmentId: 'att-1', svg: huge })).toThrow()
+  })
+
+  it('rejects missing attachmentId', () => {
+    expect(() => SaveOverlayInputSchema.parse({ svg: '<svg></svg>' })).toThrow()
+  })
+})
+
+describe('AttachmentRemoveInputSchema', () => {
+  it('accepts a valid id', () => {
+    const v = AttachmentRemoveInputSchema.parse({ id: 'att-123' })
+    expect(v.id).toBe('att-123')
+  })
+
+  it('rejects a missing id', () => {
+    expect(() => AttachmentRemoveInputSchema.parse({})).toThrow()
   })
 })
 

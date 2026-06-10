@@ -4,12 +4,14 @@ import { openDb } from '../client'
 import { runMigrations } from '../migrate'
 import {
   attachToNote,
+  getAttachment,
   getAttachmentsByHash,
   insertAttachment,
   listAttachmentsByTitleLike,
   listAttachmentsByVideo,
   listAttachmentsForNote,
   listOrphanAttachments,
+  setOverlayPath,
   softDeleteAttachment,
 } from './attachments'
 
@@ -102,5 +104,48 @@ describe('attachments queries', () => {
     insertAttachment(db, base)
     expect(listAttachmentsByTitleLike(db, 'spectral')).toHaveLength(1)
     expect(listAttachmentsByTitleLike(db, 'nomatch')).toHaveLength(0)
+  })
+})
+
+describe('getAttachment (exported)', () => {
+  it('returns the row by id, including soft-deleted rows', () => {
+    const a = insertAttachment(db, base)
+    const found = getAttachment(db, a.id)
+    expect(found).not.toBeNull()
+    expect(found?.id).toBe(a.id)
+    expect(found?.base_sha256).toBe('abc123')
+    // also returns soft-deleted rows (callers check deleted_at themselves)
+    softDeleteAttachment(db, a.id)
+    const deleted = getAttachment(db, a.id)
+    expect(deleted).not.toBeNull()
+    expect(typeof deleted?.deleted_at).toBe('number')
+  })
+
+  it('returns null for an unknown id', () => {
+    expect(getAttachment(db, 'nonexistent-id')).toBeNull()
+  })
+})
+
+describe('setOverlayPath', () => {
+  it('sets overlay_path on an existing row', () => {
+    const a = insertAttachment(db, base)
+    setOverlayPath(db, { id: a.id, overlayPath: '/x/y.svg' })
+    const updated = getAttachment(db, a.id)
+    expect(updated?.overlay_path).toBe('/x/y.svg')
+  })
+
+  it('clears overlay_path when passed null', () => {
+    const a = insertAttachment(db, base)
+    setOverlayPath(db, { id: a.id, overlayPath: '/x/y.svg' })
+    setOverlayPath(db, { id: a.id, overlayPath: null })
+    const updated = getAttachment(db, a.id)
+    expect(updated?.overlay_path).toBeNull()
+  })
+
+  it('is a silent no-op for an unknown id (matches attachToNote contract)', () => {
+    // Should not throw even for a missing row
+    expect(() =>
+      setOverlayPath(db, { id: 'does-not-exist', overlayPath: '/x/y.svg' }),
+    ).not.toThrow()
   })
 })

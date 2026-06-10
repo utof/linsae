@@ -69,11 +69,15 @@ export interface MockApi {
   youtube: {
     capture: ReturnType<typeof vi.fn>
     fetchOEmbed: ReturnType<typeof vi.fn>
+    /** saveOverlay mock — added in v0.2.5. @see docs/specs/v0.2.5-screenshot-annotation.md */
+    saveOverlay: ReturnType<typeof vi.fn>
   }
   /** Attachments IPC mocks — added in v0.2. @see src/preload/index.ts */
   attachments: {
     list: ReturnType<typeof vi.fn>
     attachToNote: ReturnType<typeof vi.fn>
+    /** remove mock — added in v0.2.5. @see docs/specs/v0.2.5-screenshot-annotation.md */
+    remove: ReturnType<typeof vi.fn>
   }
   /** VideoSources IPC mocks — added in v0.2. @see src/preload/index.ts */
   videoSources: {
@@ -124,10 +128,14 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
         devicePixelRatio: 1,
       })),
       fetchOEmbed: vi.fn(async () => null),
+      saveOverlay: vi.fn(
+        async (): Promise<{ overlayPath: string | null }> => ({ overlayPath: null }),
+      ),
     },
     attachments: {
       list: vi.fn(async (): Promise<Attachment[]> => []),
       attachToNote: vi.fn(async (): Promise<void> => undefined),
+      remove: vi.fn(async (): Promise<void> => undefined),
     },
     videoSources: {
       upsert: vi.fn(async (): Promise<void> => undefined),

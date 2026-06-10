@@ -207,3 +207,32 @@ export const VideoSourcesGetInputSchema = z.object({ videoId: z.string().min(1) 
  * @issue utof/linsae#36
  */
 export const CommentsOfInputSchema = z.object({ noteId: z.string().min(1) })
+
+/**
+ * `youtube:saveOverlay` input — write or clear the SVG sidecar for a screenshot.
+ *
+ * Why `startsWith('<svg')`: rejects non-SVG payloads at the boundary (a plain
+ * string accepted by `z.string()` could be anything; the check is a cheap guard
+ * against accidentally sending JSON or other text). `max(512_000)` caps sidecar
+ * size at ~0.5 MB — generous for screen annotation but protects against runaway
+ * serialization. `svg: null` is the "clear overlay" sentinel.
+ *
+ * Why `attachmentId` not `id`: mirrors `AttachToNoteInputSchema` which uses
+ * `attachmentId` to distinguish from a note id at call sites.
+ *
+ * @see docs/specs/v0.2.5-screenshot-annotation.md §IPC contract
+ */
+export const SaveOverlayInputSchema = z.object({
+  attachmentId: z.string(),
+  svg: z.string().startsWith('<svg').max(512_000).nullable(),
+})
+
+/**
+ * `attachments:remove` input — soft-delete an orphan attachment and its sidecar.
+ *
+ * Why: the single Discard entry point for a never-posted screenshot
+ * (capture-time Esc → Discard).
+ *
+ * @see docs/specs/v0.2.5-screenshot-annotation.md §IPC contract
+ */
+export const AttachmentRemoveInputSchema = z.object({ id: z.string() })
