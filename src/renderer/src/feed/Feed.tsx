@@ -1,4 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { Check } from 'lucide-react'
 import { type Ref, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import type { Note } from '../../../shared/types'
@@ -7,6 +8,8 @@ import { dayKey, formatDayLabel } from '../lib/day'
 import { DayDivider, ScrollDatePill } from './DatePills'
 import { useEntranceAnimation } from './entrance/useEntranceAnimation'
 import { NoteBubble } from './NoteBubble'
+import { SelectionBar } from './SelectionBar'
+import { useDragSelect } from './useDragSelect'
 import { useExpandCollapseMorph } from './useExpandCollapseMorph'
 
 interface Props {
@@ -199,6 +202,68 @@ export function Feed({
   externalScrollerRef.current = scrollerRef
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set())
 
+  // ── multi-select (Telegram-style) ──────────────────────────────────────────
+  // Selected note ids; selection MODE is derived (size > 0) — deselecting the
+  // last note exits the mode, exactly like Telegram. Ephemeral by design: dies
+  // with the Feed (ThreadView swap), like expandedIds.
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set())
+  const selectionMode = selectedIds.size > 0
+  // Live mirror for useDragSelect: the drag-start closure must read the
+  // CURRENT selection as its rubber-band base without re-binding the
+  // pointerdown handler on every selection change.
+  const selectedIdsRef = useRef<ReadonlySet<string>>(selectedIds)
+  selectedIdsRef.current = selectedIds
+
+  // Prune ids whose notes vanished underneath the selection (external delete,
+  // reconciler refetch) so the bar's counts can't drift from reality.
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev
+      const alive = new Set(notes.map((n) => n.id))
+      const next = new Set([...prev].filter((id) => alive.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [notes])
+
+  // Esc exits selection mode. Document-level listener (the ContextMenu
+  // pattern) rather than App's useHotkeys ladder: selection is Feed-local
+  // state, and threading it up to App's Esc handler would couple App to a
+  // transient mode it otherwise never sees.
+  useEffect(() => {
+    if (!selectionMode) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSelectedIds(new Set())
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [selectionMode])
+
+  // Stable id-taking toggle (same shape as handleToggleExpand's set ops).
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((prev) => toggleSet(prev, id))
+  }, [])
+
+  // Copy = the "forward" analog: selected bodies in feed order, video cards
+  // contribute their watch URL (their body is empty by construction).
+  const copySelected = useCallback(() => {
+    const chunks = notes
+      .filter((n) => selectedIds.has(n.id))
+      .map((n) =>
+        n.type === 'source' && n.source_locator?.video_id != null
+          ? `https://youtu.be/${n.source_locator.video_id}`
+          : n.body,
+      )
+    void navigator.clipboard?.writeText(chunks.join('\n\n'))
+    setSelectedIds(new Set())
+  }, [notes, selectedIds])
+
+  const deleteSelected = useCallback(() => {
+    for (const n of notes) {
+      if (selectedIds.has(n.id)) onDelete(n.id)
+    }
+    setSelectedIds(new Set())
+  }, [notes, selectedIds, onDelete])
+
   // Indices that begin a new calendar day → an inline DayDivider renders above them
   // and their size estimate gains DAY_DIVIDER_H. Recomputed only when the list changes.
   const dayFirsts = useMemo(() => {
@@ -317,6 +382,14 @@ export function Feed({
     suppressThumbResizeRef,
     setWaveSettling,
     sendInFlight,
+  })
+  const { onGutterPointerDown } = useDragSelect({
+    scrollerEl,
+    contentRef,
+    virtualizer,
+    notes,
+    selectedIdsRef,
+    setSelectedIds,
   })
   // Prevent the virtualizer's own scroll-position correction from fighting the
   // manual bottom-anchor during an active morph OR make-room reveal. ADR 0007 /
@@ -522,6 +595,7 @@ export function Feed({
         <div
           ref={handleScrollerRef}
           onScroll={onFeedScroll}
+          onPointerDown={onGutterPointerDown}
           style={{
             height: '100%',
             overflowY: 'auto',
@@ -565,6 +639,19 @@ export function Feed({
                   // row full-size — useGlideReveal), so the revealing row stays measured.
                   ref={vItem.index === morphingIndex ? undefined : virtualizer.measureElement}
                   data-index={vItem.index}
+                  // Selection mode is MODAL (Telegram): clicks anywhere on a row toggle
+                  // membership instead of focusing/acting. Capture phase so the toggle
+                  // wins over NoteBubble's onClick (focus) and the hover-bar buttons
+                  // without threading a mode prop through every click handler.
+                  onClickCapture={
+                    selectionMode
+                      ? (e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          toggleSelected(note.id)
+                        }
+                      : undefined
+                  }
                   style={{
                     position: 'absolute',
                     top: 0,
@@ -577,6 +664,13 @@ export function Feed({
                     // Same rationale as `6564a3d` carried forward.
                     paddingTop: 6,
                     paddingBottom: 6,
+                    // Full-row tint marks selected rows (Telegram-style); accent at 8%
+                    // keeps bubble borders readable on top of it.
+                    background: selectedIds.has(note.id)
+                      ? 'rgba(13, 153, 255, 0.08)'
+                      : 'transparent',
+                    borderRadius: 10,
+                    transition: 'background 120ms ease',
                   }}
                 >
                   {dayFirsts.has(vItem.index) && (
@@ -600,6 +694,34 @@ export function Feed({
                     onCopyLink={onCopyLink}
                     {...(onOpenThread ? { onOpenThread } : {})}
                   />
+                  {selectionMode && (
+                    <button
+                      type="button"
+                      aria-label={selectedIds.has(note.id) ? 'deselect note' : 'select note'}
+                      // No onClick: the wrapper's capture-phase handler above performs the
+                      // toggle for every in-row click, including this button. The button
+                      // exists as the visible affordance + semantic target.
+                      style={{
+                        position: 'absolute',
+                        right: 8,
+                        top: '50%',
+                        transform: 'translateY(-50%)',
+                        width: 22,
+                        height: 22,
+                        borderRadius: '50%',
+                        border: selectedIds.has(note.id) ? 0 : '2px solid var(--border-1)',
+                        background: selectedIds.has(note.id) ? '#0D99FF' : 'transparent',
+                        color: '#fff',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: 0,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {selectedIds.has(note.id) && <Check size={14} strokeWidth={3} />}
+                    </button>
+                  )}
                 </div>
               )
             })}
@@ -615,6 +737,14 @@ export function Feed({
           setThumbHovered={thumb.setThumbHovered}
           onPointerDown={thumb.onThumbPointerDown}
         />
+        {selectionMode && (
+          <SelectionBar
+            count={selectedIds.size}
+            onCopy={copySelected}
+            onDelete={deleteSelected}
+            onCancel={() => setSelectedIds(new Set())}
+          />
+        )}
         {scrollPill && (
           <ScrollDatePill label={scrollPill.label} push={scrollPill.push} visible={pillVisible} />
         )}
