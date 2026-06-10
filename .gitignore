@@ -24,6 +24,10 @@ scripts/.send-shots/
 scripts/.reveal-shots/
 scripts/.wave-shots/
 
+# Editor settings are personal — kept local, not shared via the repo.
+.vscode/
+.idea/
+
 # Allow markdown in docs/ and adrs/ even though *.md is globally gitignored (CLAUDE.md rule)
 *.md
 !/README.md
