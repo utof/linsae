@@ -680,3 +680,43 @@ describe('NoteBubble', () => {
     expect(screen.getByText('a comment')).toBeInTheDocument()
   })
 })
+
+describe('NoteBubble selecting mode', () => {
+  it('does not show the hover action bar while selecting', () => {
+    render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        selecting
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    fireEvent.mouseEnter(screen.getByText('hello'))
+    expect(screen.queryByRole('button', { name: 'edit' })).not.toBeInTheDocument()
+  })
+
+  it('does not open the context menu while selecting', () => {
+    render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        selecting
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    fireEvent.contextMenu(screen.getByText('hello'))
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+})

@@ -693,6 +693,7 @@ export function Feed({
                     onDelete={onDelete}
                     onCopyLink={onCopyLink}
                     {...(onOpenThread ? { onOpenThread } : {})}
+                    selecting={selectionMode}
                   />
                   {selectionMode && (
                     <button
