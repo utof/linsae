@@ -131,6 +131,10 @@ export function MediaFeedNote({
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: the card root only tracks hover to reveal the action toolbar; the actionable targets are the inner <button>s (thumbnail / open-notes / copy / delete).
     <div
+      // data-bubble: exclusion-selector parity with text bubbles — the drag hook
+      // and the gutter right-click handler both use closest('[data-bubble]') to
+      // skip presses/right-clicks ON a card (their own handlers own those).
+      data-bubble
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => {
         setHover(false)

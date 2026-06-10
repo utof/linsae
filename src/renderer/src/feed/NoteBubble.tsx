@@ -42,6 +42,11 @@ interface Props {
   onCopyLink: (id: string) => void
   /** Called when the user clicks "open video notes" on a source-kind note. */
   onOpenThread?: (id: string) => void
+  /** True while the Feed's multi-select mode is active. Hides the hover
+   * action bar and disables the context menu — row clicks toggle selection
+   * (Feed intercepts them in capture phase), so per-note affordances would
+   * be dead controls. */
+  selecting?: boolean
 }
 
 /**
@@ -83,6 +88,7 @@ export function NoteBubble({
   onDelete,
   onCopyLink,
   onOpenThread,
+  selecting = false,
 }: Props) {
   const [hover, setHover] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
@@ -103,6 +109,7 @@ export function NoteBubble({
 
   const handleContextMenu = (e: MouseEvent) => {
     e.preventDefault()
+    if (selecting) return
     // Why we do NOT call onFocus here: in this app, focusing a bubble opens
     // the BacklinksPane (App.tsx wires focusedId → pane visibility). Opening
     // a context menu shouldn't also open backlinks — the menu's actions
@@ -363,7 +370,7 @@ export function NoteBubble({
         </div>
       )}
 
-      {hover && (
+      {hover && !selecting && (
         // biome-ignore lint/a11y/noStaticElementInteractions: container only captures clicks to stop propagation to the parent bubble; semantic targets are the inner <button>s.
         // biome-ignore lint/a11y/useKeyWithClickEvents: buttons inside handle keyboard activation; the wrapper has no own keyboard semantics.
         <div
@@ -417,7 +424,11 @@ export function NoteBubble({
         </div>
       )}
 
-      {contextMenu && (
+      {/* Why `!selecting`: if selection mode starts via keyboard (x/Shift+Arrow)
+         while a context menu is open, no mousedown-outside fires to close it —
+         so we gate it here to ensure a linger-open menu is unmounted the
+         moment the bubble enters selecting mode. */}
+      {contextMenu && !selecting && (
         <NoteContextMenu
           pos={contextMenu}
           onEdit={handleEdit}

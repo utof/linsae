@@ -2,8 +2,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createRpc } from './rpc'
 
-const flush = () => new Promise((r) => setTimeout(r, 0))
-
 describe('createRpc', () => {
   it('invoke resolves with the handler return across the channel', async () => {
     const { port1, port2 } = new MessageChannel()
@@ -34,8 +32,13 @@ describe('createRpc', () => {
     const seen: unknown[] = []
     host.on('tick', (p) => seen.push(p))
     guest.send('tick', 42)
-    await flush()
-    expect(seen).toEqual([42])
+    // Poll instead of a single setTimeout(0) flush: happy-dom groups zero-delay
+    // timeouts into one shared Node timer (BrowserWindow.js timeout grouping), so
+    // under `isolate: false` worker sharing (vitest.config.ts) the flush could join
+    // a group timer armed BEFORE postMessage and resolve before MessagePort delivery.
+    await vi.waitFor(() => {
+      expect(seen).toEqual([42])
+    })
     host.destroy()
     guest.destroy()
   })

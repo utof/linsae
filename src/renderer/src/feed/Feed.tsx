@@ -1,12 +1,17 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { Check, CheckCircle2, Copy, ListChecks, Trash2, XCircle } from 'lucide-react'
 import { type Ref, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import type { Note } from '../../../shared/types'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { dayKey, formatDayLabel } from '../lib/day'
+import { type ContextMenuItem, type ContextMenuPos, ContextMenuShell } from './ContextMenu'
 import { DayDivider, ScrollDatePill } from './DatePills'
 import { useEntranceAnimation } from './entrance/useEntranceAnimation'
 import { NoteBubble } from './NoteBubble'
+import { SelectionBar } from './SelectionBar'
+import { fillToIndex } from './selectionRange'
+import { useDragSelect } from './useDragSelect'
 import { useExpandCollapseMorph } from './useExpandCollapseMorph'
 
 interface Props {
@@ -61,6 +66,18 @@ function removeId(prev: ReadonlySet<string>, id: string): ReadonlySet<string> {
   const next = new Set(prev)
   next.delete(id)
   return next
+}
+
+/**
+ * True when a keyboard event originates inside an editable field, so the Feed's
+ * global key shortcuts must yield. Why: an arrow/`x` while composing must reach
+ * the textarea, never move feed focus (mirrors src/renderer/src/thread/ThreadView.tsx:349's reason for
+ * omitting `enableOnFormTags`).
+ */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  const el = target as HTMLElement
+  return el.closest('textarea, input, [contenteditable="true"]') != null
 }
 
 /**
@@ -199,6 +216,142 @@ export function Feed({
   externalScrollerRef.current = scrollerRef
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set())
 
+  // ── multi-select (Telegram-style) ──────────────────────────────────────────
+  // Selected note ids; selection MODE is derived (size > 0) — deselecting the
+  // last note exits the mode, exactly like Telegram. Ephemeral by design: dies
+  // with the Feed (ThreadView swap), like expandedIds.
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set())
+  const selectionMode = selectedIds.size > 0
+  // Live mirror for useDragSelect: the drag-start closure must read the
+  // CURRENT selection as its rubber-band base without re-binding the
+  // pointerdown handler on every selection change.
+  const selectedIdsRef = useRef<ReadonlySet<string>>(selectedIds)
+  selectedIdsRef.current = selectedIds
+
+  // Prune ids whose notes vanished underneath the selection (external delete,
+  // reconciler refetch) so the bar's counts can't drift from reality.
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev
+      const alive = new Set(notes.map((n) => n.id))
+      const next = new Set([...prev].filter((id) => alive.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [notes])
+
+  // Esc exits selection mode. Document-level listener (the ContextMenu
+  // pattern) rather than App's useHotkeys ladder: selection is Feed-local
+  // state, and threading it up to App's Esc handler would couple App to a
+  // transient mode it otherwise never sees.
+  useEffect(() => {
+    if (!selectionMode) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSelectedIds(new Set())
+        setSelMenu(null)
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [selectionMode])
+
+  // Stable id-taking toggle (same shape as handleToggleExpand's set ops).
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((prev) => toggleSet(prev, id))
+  }, [])
+
+  // Copy = the "forward" analog: selected bodies in feed order, video cards
+  // contribute their watch URL (their body is empty by construction).
+  const copySelected = useCallback(() => {
+    const chunks = notes
+      .filter((n) => selectedIds.has(n.id))
+      .map((n) =>
+        n.type === 'source' && n.source_locator?.video_id != null
+          ? `https://youtu.be/${n.source_locator.video_id}`
+          : n.body,
+      )
+    void navigator.clipboard?.writeText(chunks.join('\n\n'))
+    setSelectedIds(new Set())
+  }, [notes, selectedIds])
+
+  const deleteSelected = useCallback(() => {
+    for (const n of notes) {
+      if (selectedIds.has(n.id)) onDelete(n.id)
+    }
+    setSelectedIds(new Set())
+  }, [notes, selectedIds, onDelete])
+
+  // Right-click selection menu: which note row it targets + viewport coords.
+  const [selMenu, setSelMenu] = useState<{ pos: ContextMenuPos; noteId: string } | null>(null)
+
+  // Telegram's "Select up to this message": bridge from the nearest selected
+  // row to the target, inclusive (see fillToIndex's rationale).
+  const selectUpTo = useCallback(
+    (noteId: string) => {
+      const target = notes.findIndex((n) => n.id === noteId)
+      if (target === -1) return
+      const selectedIndices = notes.flatMap((n, i) => (selectedIds.has(n.id) ? [i] : []))
+      const next = new Set(selectedIds)
+      for (const i of fillToIndex(selectedIndices, target)) {
+        const n = notes[i]
+        if (n) next.add(n.id)
+      }
+      setSelectedIds(next)
+    },
+    [notes, selectedIds],
+  )
+
+  // Items depend on what was right-clicked: a selected row gets the bulk
+  // actions; an unselected row gets the two grow-the-selection verbs (only
+  // "Select" when the mode isn't active yet — matches Telegram).
+  const selectionMenuItems = (noteId: string): ContextMenuItem[] => {
+    if (selectedIds.has(noteId)) {
+      return [
+        {
+          key: 'copy',
+          label: 'Copy selected as text',
+          icon: <Copy size={14} />,
+          onClick: copySelected,
+          mnemonic: 'c',
+        },
+        {
+          key: 'delete',
+          label: 'Delete selected',
+          icon: <Trash2 size={14} />,
+          onClick: deleteSelected,
+          danger: true,
+          mnemonic: 'd',
+        },
+        {
+          key: 'clear',
+          label: 'Clear selection',
+          icon: <XCircle size={14} />,
+          onClick: () => setSelectedIds(new Set()),
+          mnemonic: 'l',
+        },
+      ]
+    }
+    const items: ContextMenuItem[] = [
+      {
+        key: 'select',
+        label: 'Select',
+        icon: <CheckCircle2 size={14} />,
+        onClick: () => setSelectedIds(addId(selectedIds, noteId)),
+        mnemonic: 's',
+      },
+    ]
+    if (selectionMode) {
+      items.push({
+        key: 'up-to',
+        label: 'Select up to this note',
+        icon: <ListChecks size={14} />,
+        onClick: () => selectUpTo(noteId),
+        mnemonic: 'u',
+      })
+    }
+    return items
+  }
+
   // Indices that begin a new calendar day → an inline DayDivider renders above them
   // and their size estimate gains DAY_DIVIDER_H. Recomputed only when the list changes.
   const dayFirsts = useMemo(() => {
@@ -318,6 +471,91 @@ export function Feed({
     setWaveSettling,
     sendInFlight,
   })
+  const { onGutterPointerDown } = useDragSelect({
+    scrollerEl,
+    contentRef,
+    virtualizer,
+    notes,
+    selectedIdsRef,
+    setSelectedIds,
+  })
+
+  // ── keyboard focus navigation + selection (always mounted) ──────────────────
+  // ArrowDown/ArrowUp move note focus; Shift+Arrow extends the selection
+  // text-editor-style (focused note + destination both join selectedIds);
+  // `x` toggles the focused note. Escape is deliberately NOT handled here —
+  // the selection-Esc listener above and App's hotkey ladder own it.
+  //
+  // Why a document listener (not react-hotkeys-hook): matches the selection-Esc
+  // precedent directly above and keeps this transient navigation Feed-local
+  // (App never sees it). Guarded against modifiers (other than the explicit
+  // Shift extension) and typing targets so it never steals composer keystrokes
+  // — same rationale as src/renderer/src/thread/ThreadView.tsx:349.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (isTypingTarget(e.target)) return
+      if (notes.length === 0) return
+      const cur = focusedId === null ? -1 : notes.findIndex((n) => n.id === focusedId)
+
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        const down = e.key === 'ArrowDown'
+        // Nothing focused: ArrowUp grabs the LAST row (nearest the composer),
+        // ArrowDown the first. Otherwise step one and clamp at the ends.
+        const next =
+          cur === -1
+            ? down
+              ? 0
+              : notes.length - 1
+            : Math.max(0, Math.min(notes.length - 1, cur + (down ? 1 : -1)))
+        e.preventDefault()
+        // Clamped onto itself with nothing to extend → nothing to do.
+        if (next === cur && !e.shiftKey) return
+        if (e.shiftKey && cur !== -1) {
+          // Extend: add BOTH ends of the step to the selection (entry into
+          // selection mode from the keyboard), then move focus.
+          const a = notes[cur]
+          const b = notes[next]
+          setSelectedIds((prev) => {
+            const out = new Set(prev)
+            if (a) out.add(a.id)
+            if (b) out.add(b.id)
+            return out
+          })
+        }
+        // Only move focus on a REAL step: at a clamped boundary (next === cur,
+        // Shift held) the extension above already selected the focused note, and
+        // re-focusing the same id would TOGGLE it off via App's
+        // `cur === id ? null : id` handler — closing the BacklinksPane.
+        if (next !== cur) {
+          const dest = notes[next]
+          if (dest) {
+            onFocus(dest.id)
+            // Imperative scroll gated like every other one in this file (the
+            // anchorTo gating + ResizeObserver re-pin): scrollToIndex arms
+            // virtual-core's scroll-reconcile loop, which must stay dormant
+            // during a morph or entrance animation (ADR 0007 / 0019).
+            if (morphingIndexRef.current === null && !suppressFollow) {
+              virtualizer.scrollToIndex(next, { align: 'auto' })
+            }
+          }
+        }
+        return
+      }
+
+      if (e.key === 'x') {
+        if (cur === -1) return // nothing focused → no-op
+        const n = notes[cur]
+        if (n) {
+          e.preventDefault()
+          toggleSelected(n.id)
+        }
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [notes, focusedId, onFocus, virtualizer, toggleSelected, suppressFollow])
+
   // Prevent the virtualizer's own scroll-position correction from fighting the
   // manual bottom-anchor during an active morph OR make-room reveal. ADR 0007 /
   // ADR 0019. Both drive scrollTop themselves; an estimate→measured size
@@ -522,6 +760,7 @@ export function Feed({
         <div
           ref={handleScrollerRef}
           onScroll={onFeedScroll}
+          onPointerDown={onGutterPointerDown}
           style={{
             height: '100%',
             overflowY: 'auto',
@@ -556,6 +795,7 @@ export function Feed({
               const note = notes[vItem.index]
               if (!note) return null
               return (
+                // biome-ignore lint/a11y/noStaticElementInteractions: the row wrapper is a virtualizer measurement container; the actionable targets are NoteBubble, the check-circle button, and the SelectionBar — the capture-phase click and context-menu handlers here implement the modal selection layer, not primary interactivity.
                 <div
                   key={vItem.key}
                   // Detach measureElement only while this item is MORPHING — the morph
@@ -565,6 +805,42 @@ export function Feed({
                   // row full-size — useGlideReveal), so the revealing row stays measured.
                   ref={vItem.index === morphingIndex ? undefined : virtualizer.measureElement}
                   data-index={vItem.index}
+                  // Selection mode is MODAL (Telegram): clicks anywhere on a row toggle
+                  // membership instead of focusing/acting. Capture phase so the toggle
+                  // wins over NoteBubble's onClick (focus) and the hover-bar buttons
+                  // without threading a mode prop through every click handler.
+                  onClickCapture={
+                    selectionMode
+                      ? (e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          toggleSelected(note.id)
+                        }
+                      : undefined
+                  }
+                  // Selection mode is MODAL for right-click too: CAPTURE phase intercepts
+                  // before NoteBubble's / MediaFeedNote's own onContextMenu can open the
+                  // per-note menu, so the selection menu is the only menu while selecting.
+                  onContextMenuCapture={
+                    selectionMode
+                      ? (e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setSelMenu({ pos: { x: e.clientX, y: e.clientY }, noteId: note.id })
+                        }
+                      : undefined
+                  }
+                  // Outside selection mode, only the free gutter opens the Select menu —
+                  // presses on the bubble/card keep their own Edit/Copy-link/Delete menu.
+                  onContextMenu={
+                    !selectionMode
+                      ? (e) => {
+                          if ((e.target as HTMLElement).closest('[data-bubble]')) return
+                          e.preventDefault()
+                          setSelMenu({ pos: { x: e.clientX, y: e.clientY }, noteId: note.id })
+                        }
+                      : undefined
+                  }
                   style={{
                     position: 'absolute',
                     top: 0,
@@ -577,6 +853,13 @@ export function Feed({
                     // Same rationale as `6564a3d` carried forward.
                     paddingTop: 6,
                     paddingBottom: 6,
+                    // Full-row tint marks selected rows (Telegram-style); accent at 8%
+                    // keeps bubble borders readable on top of it.
+                    background: selectedIds.has(note.id)
+                      ? 'rgba(13, 153, 255, 0.08)'
+                      : 'transparent',
+                    borderRadius: 10,
+                    transition: 'background 120ms ease',
                   }}
                 >
                   {dayFirsts.has(vItem.index) && (
@@ -599,7 +882,36 @@ export function Feed({
                     onDelete={onDelete}
                     onCopyLink={onCopyLink}
                     {...(onOpenThread ? { onOpenThread } : {})}
+                    selecting={selectionMode}
                   />
+                  {selectionMode && (
+                    <button
+                      type="button"
+                      aria-label={selectedIds.has(note.id) ? 'deselect note' : 'select note'}
+                      // No onClick: the wrapper's capture-phase handler above performs the
+                      // toggle for every in-row click, including this button. The button
+                      // exists as the visible affordance + semantic target.
+                      style={{
+                        position: 'absolute',
+                        right: 8,
+                        top: '50%',
+                        transform: 'translateY(-50%)',
+                        width: 22,
+                        height: 22,
+                        borderRadius: '50%',
+                        border: selectedIds.has(note.id) ? 0 : '2px solid var(--border-1)',
+                        background: selectedIds.has(note.id) ? '#0D99FF' : 'transparent',
+                        color: '#fff',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: 0,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {selectedIds.has(note.id) && <Check size={14} strokeWidth={3} />}
+                    </button>
+                  )}
                 </div>
               )
             })}
@@ -615,6 +927,21 @@ export function Feed({
           setThumbHovered={thumb.setThumbHovered}
           onPointerDown={thumb.onThumbPointerDown}
         />
+        {selectionMode && (
+          <SelectionBar
+            count={selectedIds.size}
+            onCopy={copySelected}
+            onDelete={deleteSelected}
+            onCancel={() => setSelectedIds(new Set())}
+          />
+        )}
+        {selMenu && (
+          <ContextMenuShell
+            pos={selMenu.pos}
+            items={selectionMenuItems(selMenu.noteId)}
+            onClose={() => setSelMenu(null)}
+          />
+        )}
         {scrollPill && (
           <ScrollDatePill label={scrollPill.label} push={scrollPill.push} visible={pillVisible} />
         )}

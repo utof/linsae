@@ -680,3 +680,82 @@ describe('NoteBubble', () => {
     expect(screen.getByText('a comment')).toBeInTheDocument()
   })
 })
+
+describe('NoteBubble selecting mode', () => {
+  it('does not show the hover action bar while selecting', () => {
+    render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        selecting
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    fireEvent.mouseEnter(screen.getByText('hello'))
+    expect(screen.queryByRole('button', { name: 'edit' })).not.toBeInTheDocument()
+  })
+
+  it('does not open the context menu while selecting', () => {
+    render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        selecting
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    fireEvent.contextMenu(screen.getByText('hello'))
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('menu already open closes when selecting prop becomes true (keyboard entry into selection mode)', () => {
+    // Open the context menu without selecting mode.
+    const { rerender } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        selecting={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    const bubble = document.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    // Rerender with selecting=true (keyboard-driven entry: x / Shift+Arrow —
+    // no mousedown fires, so the outside-mousedown closer never runs).
+    rerender(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        selecting={true}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+})
