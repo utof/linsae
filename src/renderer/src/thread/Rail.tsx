@@ -30,11 +30,11 @@
 import { PinOff } from 'lucide-react'
 import { Fragment } from 'react'
 import type { Attachment, Note } from '../../../shared/types'
+import { AnnotatedFrame } from '../annotate/AnnotatedFrame'
 import { DayDivider } from '../feed/DatePills'
 import { useClock24 } from '../lib/clock-pref'
 import { dayKey, formatDayLabel } from '../lib/day'
 import { Markdown } from '../lib/markdown'
-import { mediaUrlFromPath } from '../lib/media-url'
 import { formatClock } from '../lib/time'
 import { formatTimeOnly } from '../lib/wallclock'
 import { activeClusterIndex, logGapHeight } from './rail-layout'
@@ -45,8 +45,6 @@ import { activeClusterIndex, logGapHeight } from './rail-layout'
 // ThreadView; Rail draws into the gutter to its LEFT via negative offsets.
 const RAIL = -20
 const DOTC = RAIL + 1
-// The only blessed hardcoded color in this area is the dark media frame.
-const MEDIA_BG = '#1c1c1e'
 
 /**
  * A thread item as produced by `useThreadNotes`. Structural shape — Rail does
@@ -115,21 +113,12 @@ function NoteBubble({
       }}
     >
       {item.attachment && (
-        <div
-          style={{
-            marginBottom: item.note.body ? 8 : 0,
-            width: '100%',
-            aspectRatio: '16 / 9',
-            overflow: 'hidden',
-            borderRadius: 'var(--r-3)',
-            background: MEDIA_BG,
-          }}
-        >
-          <img
-            src={mediaUrlFromPath(item.attachment.base_path)}
-            alt="captured frame"
-            style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
-          />
+        // T3: AnnotatedFrame renders base img + optional inert overlay (SceneSvg).
+        // onReopen is omitted here — T4 will add it when the editor modal ships.
+        // Why: spec §Rail.tsx integration says "prefer omitting onReopen in T3
+        // so no dead handler ships; note this clearly so T4 knows to add it."
+        <div style={{ marginBottom: item.note.body ? 8 : 0 }}>
+          <AnnotatedFrame attachment={item.attachment} />
         </div>
       )}
       {item.note.body && (
