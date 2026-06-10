@@ -254,6 +254,106 @@ describe('AnnotateEditor', () => {
     expect(onClose).toHaveBeenCalled()
   })
 
+  // ── Esc prompts (both flows) ──────────────────────────────────────────────
+
+  it("Esc in 'changes' mode with NO unsaved edits closes immediately (no prompt)", () => {
+    const onClose = vi.fn()
+    renderWithProviders(
+      <AnnotateEditor
+        attachment={ATTACHMENT}
+        initialScene={null}
+        onClose={onClose}
+        escMode="changes"
+      />,
+    )
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByTestId('annotate-esc-prompt')).toBeNull()
+    expect(onClose).toHaveBeenCalledWith(false)
+  })
+
+  it("Esc in 'changes' mode WITH unsaved edits opens the Discard-changes prompt; Discard closes without saving", () => {
+    const onClose = vi.fn()
+    renderWithProviders(
+      <AnnotateEditor
+        attachment={ATTACHMENT}
+        initialScene={null}
+        onClose={onClose}
+        escMode="changes"
+      />,
+    )
+    drawStroke(getEditorSvg(), { pointerType: 'mouse' })
+    fireEvent.keyDown(window, { key: 'Escape' })
+
+    // Prompt appears; nothing closed yet.
+    expect(screen.getByTestId('annotate-esc-prompt')).toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
+
+    // Discard → close without save (sidecar untouched).
+    fireEvent.click(screen.getByRole('button', { name: /^discard$/i }))
+    expect(mockApi.youtube.saveOverlay).not.toHaveBeenCalled()
+    expect(onClose).toHaveBeenCalledWith(false)
+  })
+
+  it("Esc in 'orphan' mode: Discard calls onDiscardOrphan then closes; saveOverlay not called", () => {
+    const onClose = vi.fn()
+    const onDiscardOrphan = vi.fn()
+    renderWithProviders(
+      <AnnotateEditor
+        attachment={ATTACHMENT}
+        initialScene={null}
+        onClose={onClose}
+        escMode="orphan"
+        onDiscardOrphan={onDiscardOrphan}
+      />,
+    )
+    // Esc with no edits still prompts in orphan mode (capture must confirm).
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.getByTestId('annotate-esc-prompt')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /^discard$/i }))
+    expect(onDiscardOrphan).toHaveBeenCalledOnce()
+    expect(mockApi.youtube.saveOverlay).not.toHaveBeenCalled()
+    expect(onClose).toHaveBeenCalledWith(false)
+  })
+
+  it("Esc in 'orphan' mode: Keep saves a non-empty scene then closes (saved)", async () => {
+    const onClose = vi.fn()
+    const onDiscardOrphan = vi.fn()
+    renderWithProviders(
+      <AnnotateEditor
+        attachment={ATTACHMENT}
+        initialScene={null}
+        onClose={onClose}
+        escMode="orphan"
+        onDiscardOrphan={onDiscardOrphan}
+      />,
+    )
+    drawStroke(getEditorSvg(), { pointerType: 'mouse' })
+    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.click(screen.getByRole('button', { name: /keep as orphan/i }))
+
+    await waitFor(() => expect(mockApi.youtube.saveOverlay).toHaveBeenCalledOnce())
+    expect(onDiscardOrphan).not.toHaveBeenCalled()
+    await waitFor(() => expect(onClose).toHaveBeenCalledWith(true))
+  })
+
+  it("Esc in 'orphan' mode: Keep with an EMPTY scene leaves the orphan (no save)", () => {
+    const onClose = vi.fn()
+    renderWithProviders(
+      <AnnotateEditor
+        attachment={ATTACHMENT}
+        initialScene={null}
+        onClose={onClose}
+        escMode="orphan"
+        onDiscardOrphan={vi.fn()}
+      />,
+    )
+    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.click(screen.getByRole('button', { name: /keep as orphan/i }))
+    expect(mockApi.youtube.saveOverlay).not.toHaveBeenCalled()
+    expect(onClose).toHaveBeenCalledWith(false)
+  })
+
   it('loads an initialScene (reopen): existing strokes render', () => {
     renderWithProviders(
       <AnnotateEditor

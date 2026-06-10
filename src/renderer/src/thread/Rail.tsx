@@ -83,6 +83,13 @@ export interface RailProps {
    * on follow-scroll / click-to-seek, cleared after a short timeout). `-1` = none.
    */
   flashClusterIdx?: number
+  /**
+   * When supplied, each posted screenshot frame shows a hover pencil that calls
+   * this with the frame's attachment so the caller opens the annotation editor
+   * (T4 reopen flow). Omit → no edit affordance (read-only overlays only).
+   * @see docs/specs/v0.2.5-screenshot-annotation.md §"Reopen a posted screenshot"
+   */
+  onReopenAttachment?: (attachment: Attachment) => void
 }
 
 /** A neutral note bubble: screenshot frame (if any) fills the bubble, body below. */
@@ -90,11 +97,14 @@ function NoteBubble({
   item,
   active,
   dataDay,
+  onReopenAttachment,
 }: {
   item: RailItem
   active: boolean
   /** Day label (capture mode only) — read by ThreadView's floating date pill. */
   dataDay?: string
+  /** Threaded from RailProps; opens the editor for this frame's attachment. */
+  onReopenAttachment?: (attachment: Attachment) => void
 }) {
   const clock24 = useClock24()
   return (
@@ -113,12 +123,20 @@ function NoteBubble({
       }}
     >
       {item.attachment && (
-        // T3: AnnotatedFrame renders base img + optional inert overlay (SceneSvg).
-        // onReopen is omitted here — T4 will add it when the editor modal ships.
-        // Why: spec §Rail.tsx integration says "prefer omitting onReopen in T3
-        // so no dead handler ships; note this clearly so T4 knows to add it."
+        // AnnotatedFrame renders base img + optional inert overlay (SceneSvg).
+        // T4: when onReopenAttachment is supplied, the hover pencil opens the
+        // editor for this frame (the reopen flow). exactOptionalPropertyTypes —
+        // capture the non-null attachment in a const so the closure is typed.
         <div style={{ marginBottom: item.note.body ? 8 : 0 }}>
-          <AnnotatedFrame attachment={item.attachment} />
+          {(() => {
+            const att = item.attachment
+            return (
+              <AnnotatedFrame
+                attachment={att}
+                {...(onReopenAttachment && { onReopen: () => onReopenAttachment(att) })}
+              />
+            )
+          })()}
         </div>
       )}
       {item.note.body && (
@@ -155,12 +173,14 @@ function ClusterRow({
   active,
   flash,
   onSeek,
+  onReopenAttachment,
 }: {
   cluster: RailCluster
   index: number
   active: boolean
   flash: boolean
   onSeek: (t: number) => void
+  onReopenAttachment?: (attachment: Attachment) => void
 }) {
   return (
     <div
@@ -225,7 +245,12 @@ function ClusterRow({
       />
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {cluster.notes.map((it) => (
-          <NoteBubble key={it.id} item={it} active={active} />
+          <NoteBubble
+            key={it.id}
+            item={it}
+            active={active}
+            {...(onReopenAttachment && { onReopenAttachment })}
+          />
         ))}
       </div>
     </div>
@@ -328,7 +353,11 @@ export function Rail({
   playheadT,
   onSeekNote,
   flashClusterIdx = -1,
+  onReopenAttachment,
 }: RailProps) {
+  // exactOptionalPropertyTypes: only spread the handler when defined so child
+  // props stay `(fn) | absent` rather than `| undefined`.
+  const reopenProp = onReopenAttachment ? { onReopenAttachment } : {}
   if (mode === 'capture') {
     // Capture order is chronological by creation, so the feed's Telegram-style day
     // dividers fit here. They make NO sense in video-time order (which has no date
@@ -342,7 +371,7 @@ export function Rail({
           return (
             <Fragment key={it.id}>
               {newDay && <DayDivider label={label} />}
-              <NoteBubble item={it} active={false} dataDay={label} />
+              <NoteBubble item={it} active={false} dataDay={label} {...reopenProp} />
             </Fragment>
           )
         })}
@@ -378,6 +407,7 @@ export function Rail({
               active={i === activeIdx}
               flash={i === flashClusterIdx}
               onSeek={onSeekNote}
+              {...reopenProp}
             />
             {i === activeIdx && <Playhead t={playheadT} />}
           </div>
@@ -405,7 +435,7 @@ export function Rail({
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {anchorless.map((it) => (
-              <NoteBubble key={it.id} item={it} active={false} />
+              <NoteBubble key={it.id} item={it} active={false} {...reopenProp} />
             ))}
           </div>
         </div>

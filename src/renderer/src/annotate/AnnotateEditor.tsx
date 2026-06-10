@@ -85,6 +85,17 @@ type Tool = 'pen' | 'text' | 'eraser'
 // Props
 // ---------------------------------------------------------------------------
 
+/**
+ * Which Esc-prompt the editor shows (the two entry flows differ — spec §Key flows):
+ * - `'changes'` (reopen a posted screenshot): Esc with unsaved edits → "Discard
+ *   changes?" → Discard reverts to the saved scene (close without save; the
+ *   sidecar/note persist). Esc with NO unsaved edits closes immediately.
+ * - `'orphan'` (capture-time, never posted): Esc → "Discard / Keep as orphan" →
+ *   Keep saves the scene if non-empty then leaves the orphan; Discard calls
+ *   `onDiscardOrphan` (the capture flow soft-deletes the orphan row + sidecar).
+ */
+type EscMode = 'changes' | 'orphan'
+
 export interface AnnotateEditorProps {
   /** The screenshot attachment being annotated. */
   attachment: Attachment
@@ -94,11 +105,24 @@ export interface AnnotateEditorProps {
    */
   initialScene: Scene | null
   /**
-   * Called when the editor finishes (Done after save, or Cancel without save).
-   * The caller unmounts the modal. `saved` reports whether a save happened, so
-   * a capture-time caller can distinguish Done from Cancel for chip wiring.
+   * Called when the editor finishes (Done/Keep after save, or Cancel/Discard
+   * without save). The caller unmounts the modal. `saved` reports whether a save
+   * happened, so a capture-time caller can distinguish a saved frame from a
+   * discarded/cancelled one for chip wiring.
    */
   onClose: (saved: boolean) => void
+  /**
+   * Which Esc prompt to show. Defaults to `'changes'` (reopen flow).
+   * @see EscMode
+   */
+  escMode?: EscMode
+  /**
+   * Capture-time only (`escMode: 'orphan'`): called when the user chooses
+   * **Discard** on the Esc prompt. The capture flow soft-deletes the orphan
+   * attachment row + its sidecar via `attachments.remove`. Ignored in `'changes'`
+   * mode (a posted screenshot is never soft-deleted from the editor).
+   */
+  onDiscardOrphan?: () => void
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +137,8 @@ export function AnnotateEditor({
   attachment,
   initialScene,
   onClose,
+  escMode = 'changes',
+  onDiscardOrphan,
 }: AnnotateEditorProps): React.JSX.Element {
   const queryClient = useQueryClient()
   const dpr = attachment.device_pixel_ratio || 1
@@ -127,6 +153,11 @@ export function AnnotateEditor({
   const [tool, setTool] = useState<Tool>('pen')
   const [color, setColor] = useState<string>(SWATCHES[0])
   const [saving, setSaving] = useState(false)
+  // True once the user has mutated the scene this session (drives the reopen
+  // "Discard changes?" prompt — Esc with no edits just closes).
+  const [dirty, setDirty] = useState(false)
+  // When set, an Esc-prompt confirmation overlay is shown.
+  const [escPrompt, setEscPrompt] = useState(false)
 
   // Undo snapshot stack — full-element-array snapshots pushed BEFORE each
   // mutation. Scenes are tiny (screenshot markup), so this is trivial.
@@ -140,9 +171,10 @@ export function AnnotateEditor({
   // True while the eraser pointer is held down (erase-on-enter while dragging).
   const erasing = useRef(false)
 
-  /** Push the current elements onto the undo stack before mutating. */
+  /** Push the current elements onto the undo stack before mutating + mark dirty. */
   const snapshot = useCallback(() => {
     undoStack.current.push(scene.elements)
+    setDirty(true)
   }, [scene.elements])
 
   // ── undo (Cmd/Ctrl+Z) ──────────────────────────────────────────────────────
@@ -263,27 +295,27 @@ export function AnnotateEditor({
 
   // ── text editing (contentEditable) ──────────────────────────────────────────
   const editText = useCallback((id: string, text: string) => {
+    setDirty(true)
     setScene((s) => ({
       ...s,
       elements: s.elements.map((el) => (el.id === id && el.kind === 'text' ? { ...el, text } : el)),
     }))
   }, [])
 
-  // ── recolor (active swatch applies to the most-recently placed text block) ──
-  // Selecting a swatch sets the active color for new elements; for an in-progress
-  // empty text block we also recolor it so the choice is visible immediately.
+  // ── recolor (active swatch applies to new elements) ─────────────────────────
   const pickColor = useCallback((c: string) => {
     setColor(c)
   }, [])
 
-  // ── Done / Cancel ───────────────────────────────────────────────────────────
+  // ── persist (shared by Done + Esc-Keep) ─────────────────────────────────────
   const isEmpty = scene.elements.length === 0
-  const onDone = useCallback(async () => {
+  // Save then close. Empty scene → null clears overlay_path + removes the
+  // sidecar; non-empty → serialized SVG. saveOverlay handles serialize + cache
+  // invalidation. Guarded by `saving` to avoid a double-submit.
+  const saveAndClose = useCallback(async () => {
     if (saving) return
     setSaving(true)
     try {
-      // Empty scene → null clears overlay_path + removes the sidecar. Non-empty
-      // → serialized SVG. saveOverlay handles serialize + cache invalidation.
       await saveOverlay(queryClient, attachment, isEmpty ? null : scene)
       onClose(true)
     } finally {
@@ -291,9 +323,55 @@ export function AnnotateEditor({
     }
   }, [saving, queryClient, attachment, isEmpty, scene, onClose])
 
+  // ── Done / Cancel ───────────────────────────────────────────────────────────
+  const onDone = saveAndClose
+
   const onCancel = useCallback(() => {
     onClose(false)
   }, [onClose])
+
+  // ── Esc prompt actions ──────────────────────────────────────────────────────
+  // 'orphan' (capture): Keep saves if non-empty then leaves the orphan; Discard
+  // soft-deletes via onDiscardOrphan. 'changes' (reopen): Discard reverts to the
+  // saved scene (close without save — sidecar untouched).
+  const escKeep = useCallback(() => {
+    setEscPrompt(false)
+    if (isEmpty) {
+      // Nothing drawn — keep the bare orphan; no sidecar written (v0.2.0 parity).
+      onClose(false)
+    } else {
+      void saveAndClose()
+    }
+  }, [isEmpty, onClose, saveAndClose])
+
+  const escDiscard = useCallback(() => {
+    setEscPrompt(false)
+    if (escMode === 'orphan') onDiscardOrphan?.()
+    onClose(false)
+  }, [escMode, onDiscardOrphan, onClose])
+
+  const escDismiss = useCallback(() => setEscPrompt(false), [])
+
+  // ── Esc key ───────────────────────────────────────────────────────────────
+  // 'changes' + not dirty → close immediately (nothing to lose). Otherwise open
+  // the confirmation prompt. A second Esc while the prompt is open dismisses it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      if (escPrompt) {
+        setEscPrompt(false)
+        return
+      }
+      if (escMode === 'changes' && !dirty) {
+        onClose(false)
+        return
+      }
+      setEscPrompt(true)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [escPrompt, escMode, dirty, onClose])
 
   // ── render ────────────────────────────────────────────────────────────────
   return (
@@ -437,6 +515,71 @@ export function AnnotateEditor({
           />
         </div>
       </div>
+
+      {/* Esc confirmation prompt — two flows (spec §Key flows). */}
+      {escPrompt && (
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-label={escMode === 'orphan' ? 'Discard or keep' : 'Discard changes'}
+          data-testid="annotate-esc-prompt"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'rgba(0,0,0,0.45)',
+          }}
+        >
+          <div
+            style={{
+              minWidth: 280,
+              padding: 18,
+              borderRadius: 'var(--r-4)',
+              background: 'var(--bg-0)',
+              boxShadow: 'var(--shadow-3)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 14,
+            }}
+          >
+            <div style={{ fontSize: 14, color: 'var(--fg-0)', lineHeight: 1.5 }}>
+              {escMode === 'orphan'
+                ? 'discard this capture, or keep it as an orphan?'
+                : 'discard unsaved changes?'}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button
+                type="button"
+                aria-label="keep editing"
+                onClick={escDismiss}
+                style={chromeButtonStyle(false)}
+              >
+                keep editing
+              </button>
+              {escMode === 'orphan' && (
+                <button
+                  type="button"
+                  aria-label="keep as orphan"
+                  onClick={escKeep}
+                  style={chromeButtonStyle(false)}
+                >
+                  keep
+                </button>
+              )}
+              <button
+                type="button"
+                aria-label="discard"
+                onClick={escDiscard}
+                style={{ ...chromeButtonStyle(false), color: 'var(--status-wtf)' }}
+              >
+                discard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -379,6 +379,43 @@ describe('ThreadView capture flow', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Reopen a posted screenshot (T4.2): hover-pencil on a Rail frame opens the
+// editor modal for that attachment.
+// ---------------------------------------------------------------------------
+
+describe('ThreadView reopen flow', () => {
+  const SCREENSHOT = {
+    id: 'att-r1',
+    note_id: 'note-a',
+    kind: 'screenshot' as const,
+    base_sha256: 'sha',
+    base_path: '/store/2026/05/sha.png',
+    overlay_path: null,
+    video_id: 'abc',
+    time_seconds: 10,
+    width_px: 1920,
+    height_px: 1080,
+    device_pixel_ratio: 1,
+    created_at: 200,
+    deleted_at: null,
+  }
+
+  it('clicking the frame pencil opens the annotation editor modal', async () => {
+    mockApi.links.commentsOf.mockResolvedValue([{ note: NOTE_A, attachment: SCREENSHOT }])
+
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('annotated-frame-reopen')).toBeInTheDocument())
+
+    // No editor modal until the pencil is clicked.
+    expect(screen.queryByTestId('annotate-editor')).toBeNull()
+    fireEvent.click(screen.getByTestId('annotated-frame-reopen'))
+
+    // ReopenEditor resolves the (null) overlay then mounts AnnotateEditor.
+    await waitFor(() => expect(screen.getByTestId('annotate-editor')).toBeInTheDocument())
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Scroll-never-seeks invariant: dispatching a scroll event on the scroll
 // container must NOT call player.seekTo (no scroll→playback coupling).
 // ---------------------------------------------------------------------------

@@ -9,6 +9,8 @@ import {
   useState,
 } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
+import type { Attachment } from '../../../shared/types'
+import { ReopenEditor } from '../annotate/ReopenEditor'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { ScrollDatePill } from '../feed/DatePills'
 import { api } from '../lib/api'
@@ -343,6 +345,12 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   // the feed's inline error UX. Cleared on the next keystroke via onClearError.
   const [postError, setPostError] = useState<string | null>(null)
 
+  // ── reopen-a-posted-screenshot (T4.2) ──────────────────────────────────────
+  // When set, the ReopenEditor modal is mounted for this attachment (hover-pencil
+  // on a Rail frame). Done invalidates ['thread', noteId] so the Rail re-reads the
+  // new overlay_path (B-4). null = closed.
+  const [reopenAttachment, setReopenAttachment] = useState<Attachment | null>(null)
+
   // ⌘⇧C / camera button: screenshot the live webview rect at the current time.
   // No-op when no player is mounted (getMediaRect → null). On failure (e.g. the
   // main-process 0-area guard, #34) we leave pendingFrame untouched so no junk
@@ -493,6 +501,7 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
               mode={sortMode}
               playheadT={currentTime}
               flashClusterIdx={flashClusterIdx}
+              onReopenAttachment={setReopenAttachment}
               onSeekNote={(t) => {
                 // Explicit seek ONLY — dot/time click. Seeking is never wired from
                 // scroll, so scrolling the list cannot move playback.
@@ -762,6 +771,17 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
           />
           {notesPane}
         </div>
+      )}
+
+      {/* Reopen-a-posted-screenshot editor (T4.2). ReopenEditor fetches the
+          saved scene then mounts AnnotateEditor; Done invalidates the commentsOf
+          query so the Rail re-reads the new overlay_path (B-4). */}
+      {reopenAttachment && (
+        <ReopenEditor
+          attachment={reopenAttachment}
+          noteId={noteId}
+          onClose={() => setReopenAttachment(null)}
+        />
       )}
     </div>
   )
