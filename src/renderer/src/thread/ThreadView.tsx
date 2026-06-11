@@ -383,8 +383,15 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     captureInFlightRef.current = true
     try {
       const t = await player.getCurrentTime()
+      // getBoundingClientRect is in CSS px, but the main process's capturePage
+      // expects DIP, and on fractional-scaled desktops window.devicePixelRatio
+      // (CSS→physical) diverges from the OS scaleFactor screen reports (dpr=1.31
+      // while scaleFactor=1 → capturePage grabbed only the top-left slice, #?).
+      // Send PHYSICAL px (CSS × dpr); main divides by scaleFactor → DIP. When
+      // dpr == scaleFactor (normal/retina) this is identity (CSS px, as before).
+      const dpr = window.devicePixelRatio || 1
       const res = await api.youtube.capture(
-        { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        { x: rect.x * dpr, y: rect.y * dpr, width: rect.width * dpr, height: rect.height * dpr },
         videoId,
         t,
       )

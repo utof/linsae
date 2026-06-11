@@ -845,44 +845,101 @@ function EditorScene({
       />
       {/* Single contentEditable overlay for the block under edit — measured px so
           it renders at the on-screen size SceneSvg uses and stays aligned under
-          letterboxing. Only interactive in the text tool. */}
+          letterboxing. Keyed by block id so it remounts (with fresh initial text)
+          when the edited block changes. Only interactive in the text tool. */}
       {editingBlock && (
-        // biome-ignore lint/a11y/useSemanticElements: a free-positioned multiline rich-text caption overlaid on the SVG needs contentEditable (an <input>/<textarea> can't be absolutely placed over the letterboxed image with auto-grow); role="textbox" is the correct ARIA mapping.
-        <div
+        <TextEditOverlay
           key={editingBlock.id}
-          data-testid={`text-edit-${editingBlock.id}`}
-          contentEditable
-          suppressContentEditableWarning
-          role="textbox"
-          aria-label="annotation text"
-          tabIndex={0}
-          onInput={(e) => onEditText(editingBlock.id, (e.target as HTMLElement).textContent ?? '')}
-          // Text tool: pointerdown starts a drag-move; pointermove updates x/y;
-          // pointerup commits (handlers no-op for other tools).
-          onPointerDown={(e) => onTextPointerDown(editingBlock.id, e)}
-          onPointerMove={(e) => onTextPointerMove(editingBlock.id, e)}
-          onPointerUp={(e) => onTextPointerUp(editingBlock.id, e)}
-          style={{
-            position: 'absolute',
-            left: overlayBox ? `${overlayBox.left}px` : `${(editingBlock.x / scene.width) * 100}%`,
-            top: overlayBox ? `${overlayBox.top}px` : `${(editingBlock.y / scene.height) * 100}%`,
-            width: overlayBox
-              ? `${overlayBox.width}px`
-              : `${(editingBlock.width / scene.width) * 100}%`,
-            color: editingBlock.color,
-            // Measured px (NOT %, which resolves against the parent font-size).
-            fontSize: overlayBox ? `${overlayBox.fontSize}px` : `${editingBlock.fontSize}px`,
-            outline: editable ? '1px dashed var(--accent)' : 'none',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            pointerEvents: editable ? 'auto' : 'none',
-            cursor: editable ? 'move' : 'default',
-            touchAction: 'none',
-          }}
-        >
-          {editingBlock.text}
-        </div>
+          block={editingBlock}
+          overlayBox={overlayBox}
+          scene={scene}
+          editable={editable}
+          onEditText={onEditText}
+          onTextPointerDown={onTextPointerDown}
+          onTextPointerMove={onTextPointerMove}
+          onTextPointerUp={onTextPointerUp}
+        />
       )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Single contentEditable overlay for the text block under edit.
+// ---------------------------------------------------------------------------
+
+/**
+ * Free-positioned, multiline `contentEditable` caption overlaid on the SVG for
+ * the block currently under edit.
+ *
+ * **Uncontrolled-content invariant (the caret-reset fix):** the text node is
+ * rendered from `initialText` captured ONCE at mount and NEVER from live scene
+ * state. A `contentEditable` whose children are re-set from state on every
+ * keystroke makes the browser drop the caret to index 0 after each input, so the
+ * next character lands at the front ("hi" → "ih", "hello" → "olleh"). The element
+ * is therefore uncontrolled: the DOM (and caret) belong to the browser; React
+ * only reads via `onInput`. `EditorScene` mounts this with `key={block.id}`, so a
+ * different edited block remounts with the correct fresh `initialText`.
+ *
+ * Geometry/color/fontSize stay live (they're attributes, not children — updating
+ * them never touches the text node or the caret).
+ *
+ * Why: GH issue — text annotation typed in reverse.
+ */
+function TextEditOverlay({
+  block,
+  overlayBox,
+  scene,
+  editable,
+  onEditText,
+  onTextPointerDown,
+  onTextPointerMove,
+  onTextPointerUp,
+}: {
+  block: TextBlock
+  overlayBox: { left: number; top: number; width: number; fontSize: number } | null
+  scene: Scene
+  editable: boolean
+  onEditText: (id: string, text: string) => void
+  onTextPointerDown: (id: string, e: ReactPointerEvent) => void
+  onTextPointerMove: (id: string, e: ReactPointerEvent) => void
+  onTextPointerUp: (id: string, e: ReactPointerEvent) => void
+}): React.JSX.Element {
+  // Captured ONCE per mount — the children must never be driven by live state
+  // (see component docs: that resets the caret to 0 each keystroke).
+  const initialText = useRef(block.text).current
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: a free-positioned multiline rich-text caption overlaid on the SVG needs contentEditable (an <input>/<textarea> can't be absolutely placed over the letterboxed image with auto-grow); role="textbox" is the correct ARIA mapping.
+    <div
+      data-testid={`text-edit-${block.id}`}
+      contentEditable
+      suppressContentEditableWarning
+      role="textbox"
+      aria-label="annotation text"
+      tabIndex={0}
+      onInput={(e) => onEditText(block.id, (e.target as HTMLElement).textContent ?? '')}
+      // Text tool: pointerdown starts a drag-move; pointermove updates x/y;
+      // pointerup commits (handlers no-op for other tools).
+      onPointerDown={(e) => onTextPointerDown(block.id, e)}
+      onPointerMove={(e) => onTextPointerMove(block.id, e)}
+      onPointerUp={(e) => onTextPointerUp(block.id, e)}
+      style={{
+        position: 'absolute',
+        left: overlayBox ? `${overlayBox.left}px` : `${(block.x / scene.width) * 100}%`,
+        top: overlayBox ? `${overlayBox.top}px` : `${(block.y / scene.height) * 100}%`,
+        width: overlayBox ? `${overlayBox.width}px` : `${(block.width / scene.width) * 100}%`,
+        color: block.color,
+        // Measured px (NOT %, which resolves against the parent font-size).
+        fontSize: overlayBox ? `${overlayBox.fontSize}px` : `${block.fontSize}px`,
+        outline: editable ? '1px dashed var(--accent)' : 'none',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        pointerEvents: editable ? 'auto' : 'none',
+        cursor: editable ? 'move' : 'default',
+        touchAction: 'none',
+      }}
+    >
+      {initialText}
     </div>
   )
 }
