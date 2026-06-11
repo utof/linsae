@@ -81,10 +81,19 @@ const MATRIX = [
 ]
 
 const rows = []
+let runError = null
 for (const [name, opts] of MATRIX) {
-  const st = await win.evaluate(([n, o]) => window.Spike.scenarios[n](o), [name, opts])
-  rows.push({ scenario: `${name} ${JSON.stringify(opts)}`, ...st })
-  console.log(JSON.stringify(rows[rows.length - 1]))
+  try {
+    const st = await win.evaluate(([n, o]) => window.Spike.scenarios[n](o), [name, opts])
+    rows.push({ scenario: `${name} ${JSON.stringify(opts)}`, ...st })
+    console.log(JSON.stringify(rows[rows.length - 1]))
+  } catch (err) {
+    // A scenario crash is a harness failure, not a perf finding — print what we
+    // have, then exit 1 (distinct from the always-0 perf-verdict semantics).
+    console.error(`SCENARIO ERROR [${name} ${JSON.stringify(opts)}]: ${err.message}`)
+    runError = err
+    break
+  }
 }
 
 console.log('\n| scenario | meanFps | p50 | p95 | p99 | max | >17ms | >100ms |')
@@ -105,3 +114,4 @@ console.log(
     : 'VERDICT: CHECK — below threshold somewhere; map to research §Benchmarks/thresholds',
 )
 await app.close()
+if (runError) process.exit(1)
