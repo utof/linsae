@@ -19,7 +19,16 @@ for (let i = 0; i < 20 && !gpu.gpu_compositing; i++) {
   if (!gpu.gpu_compositing) await new Promise((r) => setTimeout(r, 100))
 }
 const info = await app.evaluate(({ app: a }) => a.getGPUInfo('complete'))
-const glRenderer = info?.auxAttributes?.glRenderer || 'unknown'
+const glRenderer =
+  info?.auxAttributes?.glRenderer ||
+  [
+    info?.gpuDevice?.[0]?.driverVendor,
+    info?.gpuDevice?.[0]?.driverVersion,
+    info?.auxAttributes?.glImplementationParts,
+  ]
+    .filter(Boolean)
+    .join(' ') ||
+  'unknown'
 const env = await win.evaluate(() => ({
   dpr: devicePixelRatio,
   w: innerWidth,
