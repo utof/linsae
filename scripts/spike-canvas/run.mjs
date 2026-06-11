@@ -48,5 +48,60 @@ if (INK) {
   await new Promise((resolve) => app.on('close', resolve))
   process.exit(0)
 }
-console.log('scaffold OK')
+// Measured vsync on the idle page: thresholds below assume ~16.7ms (60Hz).
+// On a 75/120Hz panel "p95 ≤ 18ms" means something else — record and interpret.
+const vsync = await win.evaluate(
+  () =>
+    new Promise((resolve) => {
+      const ts = []
+      const tick = (now) => {
+        ts.push(now)
+        if (ts.length >= 61) {
+          const ints = ts
+            .slice(1)
+            .map((t, i) => t - ts[i])
+            .sort((a, b) => a - b)
+          resolve(+ints[Math.floor(ints.length / 2)].toFixed(2))
+        } else {
+          requestAnimationFrame(tick)
+        }
+      }
+      requestAnimationFrame(tick)
+    }),
+)
+console.log(`vsync p50 ≈ ${vsync}ms`)
+
+const MATRIX = [
+  ['cards', { mode: 'none' }],
+  ['cards', { mode: 'cull' }],
+  ['cards', { mode: 'cv-all' }],
+  ['cards', { mode: 'cull+cv' }],
+  ['dots', { dprCap: false }],
+  ['dots', { dprCap: true }],
+]
+
+const rows = []
+for (const [name, opts] of MATRIX) {
+  const st = await win.evaluate(([n, o]) => window.Spike.scenarios[n](o), [name, opts])
+  rows.push({ scenario: `${name} ${JSON.stringify(opts)}`, ...st })
+  console.log(JSON.stringify(rows[rows.length - 1]))
+}
+
+console.log('\n| scenario | meanFps | p50 | p95 | p99 | max | >17ms | >100ms |')
+console.log('|---|---|---|---|---|---|---|---|')
+for (const r of rows) {
+  console.log(
+    `| ${r.scenario} | ${r.meanFps} | ${r.p50} | ${r.p95} | ${r.p99} | ${r.max} | ${r.over17}/${r.frames} | ${r.over100} |`,
+  )
+}
+
+// 'none' is the diagnostic baseline (the Obsidian repro) — it may fail without
+// failing the spike; only mitigated scenarios gate the verdict.
+const gated = rows.filter((r) => !r.scenario.includes('"none"'))
+const pass = gated.every((r) => r.meanFps >= 55 && r.p95 <= 18 && r.over100 === 0)
+console.log(
+  pass
+    ? 'VERDICT: PASS — 60fps go/no-go met on all mitigated scenarios'
+    : 'VERDICT: CHECK — below threshold somewhere; map to research §Benchmarks/thresholds',
+)
 await app.close()
