@@ -43,5 +43,10 @@ if (!/enabled/.test(gpu.gpu_compositing || '') || /llvmpipe|swiftshader/i.test(g
   await app.close()
   process.exit(1)
 }
+if (INK) {
+  console.log('Ink window open — draw; d toggles desynchronized, c clears. Close window to exit.')
+  await new Promise((resolve) => app.on('close', resolve))
+  process.exit(0)
+}
 console.log('scaffold OK')
 await app.close()
