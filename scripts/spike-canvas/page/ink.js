@@ -22,6 +22,7 @@
     canvas?.remove()
     moves = 0
     samples = 0
+    drawing = false
     canvas = document.createElement('canvas')
     canvas.style.cssText = 'position:fixed;inset:0;touch-action:none'
     const dpr = devicePixelRatio
