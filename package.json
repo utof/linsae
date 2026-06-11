@@ -20,6 +20,7 @@
     "knip": "knip",
     "smoke:capture": "node scripts/capture-smoke.mjs",
     "smoke:thread": "node scripts/thread-smoke.mjs",
+    "spike:canvas": "node scripts/spike-canvas/run.mjs",
     "harness:send": "xvfb-run -a node scripts/send-harness.mjs",
     "harness:reveal": "xvfb-run -a node scripts/reveal-stress.mjs",
     "doctor": "npx react-doctor@latest"
