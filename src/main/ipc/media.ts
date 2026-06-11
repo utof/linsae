@@ -49,7 +49,19 @@ export function registerMediaIpc(db: DB, attachmentsDir: string): void {
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) throw new Error('capture: no window for sender')
     const view = win.getContentBounds()
-    const rect = clampRect(i.rect, { width: view.width, height: view.height })
+    const devicePixelRatio = screen.getDisplayMatching(win.getBounds()).scaleFactor
+    // The renderer sends the rect in PHYSICAL px (CSS rect × window.devicePixelRatio)
+    // so it survives a renderer devicePixelRatio that differs from the OS scaleFactor
+    // (fractional desktop scaling: dpr=1.31 but scaleFactor=1). capturePage AND
+    // getContentBounds work in DIP, so divide physical → DIP here. When dpr ==
+    // scaleFactor (normal/retina) this is identity. See ThreadView.onCapture.
+    const dipRect = {
+      x: i.rect.x / devicePixelRatio,
+      y: i.rect.y / devicePixelRatio,
+      width: i.rect.width / devicePixelRatio,
+      height: i.rect.height / devicePixelRatio,
+    }
+    const rect = clampRect(dipRect, { width: view.width, height: view.height })
     // clampRect can collapse a fully off-viewport iframe to a 0-area rect; Electron's
     // capturePage RESOLVES (not rejects) on 0×0, writing a degenerate empty PNG + junk
     // row (verified via scripts/capture-smoke.mjs). Reject early instead. (GH #34)
@@ -58,7 +70,6 @@ export function registerMediaIpc(db: DB, attachmentsDir: string): void {
     }
     const image = await win.webContents.capturePage(rect)
     const size = image.getSize() // physical px (rect × scaleFactor)
-    const devicePixelRatio = screen.getDisplayMatching(win.getBounds()).scaleFactor
     return persistCapture(db, {
       png: image.toPNG(),
       attachmentsDir,
