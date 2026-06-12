@@ -9,3 +9,24 @@
  */
 export const ROOT_CANVAS_ID = 'root'
 export const MANUAL_ARRANGEMENT_ID = 'manual'
+
+/** One node_layouts row. x/y are world coords; both-null = shelved.
+ * @see docs/specs/v0.4-canvas-mvp.md §1 */
+export interface CanvasLayoutRow {
+  canvas_id: string
+  arrangement_id: string
+  note_id: string
+  x: number | null
+  y: number | null
+  created_at: number
+  placed_at: number | null
+  updated_at: number
+}
+
+/** Recent-popover entry (spec §2 recency rule).
+ * @see docs/specs/v0.4-canvas-mvp.md §2 */
+export interface RecentEntry {
+  noteId: string
+  kind: 'edited' | 'placed' | 'created'
+  at: number
+}
