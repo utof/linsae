@@ -236,3 +236,78 @@ export const SaveOverlayInputSchema = z.object({
  * @see docs/specs/v0.2.5-screenshot-annotation.md §IPC contract
  */
 export const AttachmentRemoveInputSchema = z.object({ id: z.string() })
+
+/**
+ * Shared canvas key — every canvas channel except getState/setState carries the
+ * opaque (canvasId, arrangementId) pair (vision principles 3-4). Spread into the
+ * schemas below so the pair is defined exactly once. Not a schema itself.
+ * @see docs/specs/v0.4-canvas-mvp.md §2
+ */
+const CanvasKey = {
+  canvasId: z.string().min(1),
+  arrangementId: z.string().min(1),
+}
+
+/** canvas:listLayouts input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasListLayoutsInputSchema = z.object({ ...CanvasKey })
+
+/** canvas:edges input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasEdgesInputSchema = z.object({ ...CanvasKey })
+
+/** canvas:shelveNote input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasShelveNoteInputSchema = z.object({ ...CanvasKey, noteId: z.string().min(1) })
+
+/** canvas:placeNote input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasPlaceNoteInputSchema = z.object({
+  ...CanvasKey,
+  noteId: z.string().min(1),
+  x: z.number().finite(),
+  y: z.number().finite(),
+})
+
+/** canvas:moveNotes input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasMoveNotesInputSchema = z.object({
+  ...CanvasKey,
+  moves: z
+    .array(z.object({ noteId: z.string().min(1), x: z.number().finite(), y: z.number().finite() }))
+    .min(1),
+})
+
+/** canvas:unplaceNotes / canvas:removeNotes input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasNoteIdsInputSchema = z.object({
+  ...CanvasKey,
+  noteIds: z.array(z.string().min(1)).min(1),
+})
+
+/** canvas:restoreLayouts input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasRestoreLayoutsInputSchema = z.object({
+  ...CanvasKey,
+  rows: z
+    .array(
+      z.object({
+        noteId: z.string().min(1),
+        x: z.number().finite().nullable(),
+        y: z.number().finite().nullable(),
+        createdAt: z.number().int(),
+        placedAt: z.number().int().nullable(),
+      }),
+    )
+    .min(1),
+})
+
+/** canvas:getState input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasGetStateInputSchema = z.object({ canvasId: z.string().min(1) })
+
+/** canvas:setState input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasSetStateInputSchema = z.object({
+  canvasId: z.string().min(1),
+  camera_x: z.number().finite(),
+  camera_y: z.number().finite(),
+  zoom: z.number().finite().positive(),
+})
+
+/** canvas:recentOnCanvas input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasRecentInputSchema = z.object({
+  ...CanvasKey,
+  limit: z.number().int().min(1).max(50).default(8),
+})

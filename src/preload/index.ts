@@ -21,12 +21,23 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import type { z } from 'zod'
+import type { CanvasCamera, CanvasEdge, CanvasLayoutRow, RecentEntry } from '../shared/canvas'
 import type { Attachment, Note, SearchHit } from '../shared/types'
 import type {
   AttachmentRemoveInputSchema,
   AttachmentsListInputSchema,
   AttachToNoteInputSchema,
   BacklinksInputSchema,
+  CanvasEdgesInputSchema,
+  CanvasGetStateInputSchema,
+  CanvasListLayoutsInputSchema,
+  CanvasMoveNotesInputSchema,
+  CanvasNoteIdsInputSchema,
+  CanvasPlaceNoteInputSchema,
+  CanvasRecentInputSchema,
+  CanvasRestoreLayoutsInputSchema,
+  CanvasSetStateInputSchema,
+  CanvasShelveNoteInputSchema,
   CaptureInputSchema,
   CommentsOfInputSchema,
   FetchOEmbedInputSchema,
@@ -67,6 +78,30 @@ const api = {
       i: z.input<typeof CommentsOfInputSchema>,
     ): Promise<Array<{ note: Note; attachment: Attachment | null }>> =>
       ipcRenderer.invoke('links:commentsOf', i),
+  },
+  canvas: {
+    listLayouts: (i: z.input<typeof CanvasListLayoutsInputSchema>): Promise<CanvasLayoutRow[]> =>
+      ipcRenderer.invoke('canvas:listLayouts', i),
+    edges: (i: z.input<typeof CanvasEdgesInputSchema>): Promise<CanvasEdge[]> =>
+      ipcRenderer.invoke('canvas:edges', i),
+    shelveNote: (i: z.input<typeof CanvasShelveNoteInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('canvas:shelveNote', i),
+    placeNote: (i: z.input<typeof CanvasPlaceNoteInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('canvas:placeNote', i),
+    moveNotes: (i: z.input<typeof CanvasMoveNotesInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('canvas:moveNotes', i),
+    unplaceNotes: (i: z.input<typeof CanvasNoteIdsInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('canvas:unplaceNotes', i),
+    restoreLayouts: (i: z.input<typeof CanvasRestoreLayoutsInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('canvas:restoreLayouts', i),
+    removeNotes: (i: z.input<typeof CanvasNoteIdsInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('canvas:removeNotes', i),
+    getState: (i: z.input<typeof CanvasGetStateInputSchema>): Promise<CanvasCamera> =>
+      ipcRenderer.invoke('canvas:getState', i),
+    setState: (i: z.input<typeof CanvasSetStateInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('canvas:setState', i),
+    recentOnCanvas: (i: z.input<typeof CanvasRecentInputSchema>): Promise<RecentEntry[]> =>
+      ipcRenderer.invoke('canvas:recentOnCanvas', i),
   },
   youtube: {
     capture: (
