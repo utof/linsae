@@ -22,6 +22,7 @@
 import type Database from 'better-sqlite3'
 import { uuidv7 } from 'uuidv7'
 import type { Note, NoteType, SourceLocator } from '../shared/types'
+import { deleteLayoutsForNote } from './db/queries/layouts'
 import { replaceLinksForNote, setCommentOnEdge } from './db/queries/links'
 import { getNote } from './db/queries/notes'
 import { appendRevision } from './db/queries/revisions'
@@ -126,6 +127,8 @@ export function saveNote(db: DB, nd: NotesDir, input: SaveInput): Note {
     // 2. DB second, in one transaction. Drop outbound links per spec §235.
     db.transaction(() => {
       replaceLinksForNote(db, input.id, [])
+      // spec v0.4 §1: a layout row for a soft-deleted note is a bug, not a tombstone
+      deleteLayoutsForNote(db, input.id)
       db.prepare('UPDATE notes SET deleted_at = ? WHERE id = ?').run(now, input.id)
     })()
 
