@@ -30,3 +30,19 @@ export interface RecentEntry {
   kind: 'edited' | 'placed' | 'created'
   at: number
 }
+
+/** Resolved link between two placed notes (read-only display).
+ * @see docs/specs/v0.4-canvas-mvp.md §11 */
+export interface CanvasEdge {
+  fromNoteId: string
+  toNoteId: string
+  edgeType: string
+}
+
+/** Per-canvas persisted camera.
+ * @see docs/specs/v0.4-canvas-mvp.md §1 */
+export interface CanvasCamera {
+  camera_x: number
+  camera_y: number
+  zoom: number
+}
