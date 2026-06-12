@@ -5,8 +5,8 @@
 //   'cv-all'  — mount all 500 once, content-visibility:auto does the skipping
 //   'cull+cv' — both
 // Why: research §Stage 0 go/no-go (60fps pan/zoom at 500 cards) + §1 Tier-1
-// content-visibility item. World sized so culled modes sustain ~70 in-rect
-// cards at z=1 and ~225 at the zoom trough — inside/above the Obsidian
+// content-visibility item. World sized so culled modes sustain ~110 in-rect
+// cards at z=1 and ~265 at the zoom trough (measured, seed 42) — inside/above the Obsidian
 // 40–200-card lag band the research cites. Cards are built once and cached;
 // enter/exit churn measured here is append/remove + layout/paint (the
 // Obsidian failure mode), not re-render. Vanilla DOM = substrate floor;
