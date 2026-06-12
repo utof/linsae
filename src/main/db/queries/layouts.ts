@@ -147,6 +147,8 @@ interface RestoreRow {
  * Undo-of-remove: full-row upsert preserving original timestamps.
  * Skips notes deleted since the entry was recorded — a stale undo must never
  * resurrect layout rows for a dead note.
+ * Unlike placeNote, ON CONFLICT overwrites placed_at verbatim (no COALESCE):
+ * restore replays the recorded value, it is not a fresh place.
  * @see docs/specs/v0.4-canvas-mvp.md §2 §13
  */
 export function restoreLayouts(db: DB, i: Key & { rows: RestoreRow[] }): void {
