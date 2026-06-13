@@ -176,10 +176,295 @@ function medianByMeanFps(runs) {
   return sorted[Math.floor(sorted.length / 2)]
 }
 
+// ── SMOKE FLOW (--smoke) ───────────────────────────────────────────────────────
+// A SEPARATE code path (does NOT run the perf gates) that drives REAL pointers via
+// win.mouse against the seeded board to verify the Plan-3 interactions wired in
+// happy-dom-untestable territory actually fire. It reuses the shared setup (launch
+// + GPU/vsync guard + IPC-seed + reload + switch-to-canvas + board-non-empty guard)
+// and runs INSTEAD of the 3 phases. Each assertion prints `OK <label>` or
+// `FAIL <label>`; runSmoke returns 1 if ANY failed, else 0. Verifies these issues:
+//   #119 — drag-commit invalidation flash (the card must NOT jump back to origin
+//          on any frame right after mouse.up before settling at the new spot).
+//   #121 — double-click OVER a card edits (opens [data-canvas-card-editor]) and
+//          does NOT create (the [data-note-id] count is unchanged).
+//   #111 — keep-alive abandonment under the §6 Motion slide: toggling feed↔canvas
+//          mid-interaction must leave a clean canvas (world present, dragged card
+//          present, no orphaned [data-canvas-ghost]) after the canvas remounts.
+// @see scripts/canvas-perf-harness.mjs (shared setup) · @see send-harness.mjs (trajectory print)
+
+// Read the on-screen rect of a card by its data-note-id (viewport-relative client
+// coords via getBoundingClientRect — what the pointer sees), or null if not mounted.
+async function noteRect(win, noteId) {
+  return win.evaluate((id) => {
+    const el = document.querySelector(`[data-note-id="${id}"]`)
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    return { x: r.x, y: r.y, w: r.width, h: r.height }
+  }, noteId)
+}
+
+// The data-note-id of the card whose center is nearest the given client point AND
+// whose rect lies fully inside the viewport (so a drag/dblclick lands on it, not a
+// half-culled edge card). Returns null if none qualify — the caller then FAILs.
+async function pickCardNear(win, cx, cy) {
+  return win.evaluate(
+    ([px, py]) => {
+      const vp = document.querySelector('[data-canvas-viewport]')
+      if (!vp) return null
+      const v = vp.getBoundingClientRect()
+      let best = null
+      let bestD = Number.POSITIVE_INFINITY
+      for (const el of document.querySelectorAll('[data-note-id]')) {
+        const r = el.getBoundingClientRect()
+        const inside =
+          r.left >= v.left && r.top >= v.top && r.right <= v.right && r.bottom <= v.bottom
+        if (!inside) continue
+        const dx = r.x + r.width / 2 - px
+        const dy = r.y + r.height / 2 - py
+        const d = dx * dx + dy * dy
+        if (d < bestD) {
+          bestD = d
+          best = { id: el.getAttribute('data-note-id'), x: r.x, y: r.y, w: r.width, h: r.height }
+        }
+      }
+      return best
+    },
+    [cx, cy],
+  )
+}
+
+// Drive the smoke assertions. `out` collects [label, ok] like the gate's `checks`.
+// Returns 0 if all passed, 1 if any FAILed (caller sets exitCode).
+async function runSmoke(win) {
+  const out = []
+  const assert = (label, ok) => {
+    out.push([label, !!ok])
+    console.log(`${ok ? 'OK  ' : 'FAIL'} ${label}`)
+  }
+
+  const vp = await win.locator('[data-canvas-viewport]').boundingBox()
+  if (!vp) {
+    console.error('FAIL: viewport has no bounding box — cannot drive pointers.')
+    return 1
+  }
+  // A point well inside the viewport, away from edges, as the drag start anchor.
+  const probe = { x: vp.x + vp.width * 0.45, y: vp.y + vp.height * 0.45 }
+
+  // ── Drag-to-move + commit (§8) + #119 (no commit-flash back to origin) ────────
+  const card = await pickCardNear(win, probe.x, probe.y)
+  if (!card) {
+    assert('drag: a fully-visible card to grab', false)
+    return out.filter(([, ok]) => !ok).length > 0 ? 1 : 0
+  }
+  const startC = { x: card.x + card.w / 2, y: card.y + card.h / 2 }
+  const DELTA = { x: 220, y: -140 } // enough to clear the §8 drag threshold + be visible
+  await win.mouse.move(startC.x, startC.y)
+  await win.mouse.down()
+  // A few steps so the move is a real drag, not a teleport (matches send-harness).
+  for (let i = 1; i <= 5; i++) {
+    await win.mouse.move(startC.x + (DELTA.x * i) / 5, startC.y + (DELTA.y * i) / 5)
+  }
+  await win.mouse.up()
+  // #119: sample the card's rect across the frames right after mouse.up. If the
+  // commit invalidation flashes, the card snaps back toward its ORIGIN (card.x)
+  // for ≥1 frame before re-settling at the dragged spot. Capture ~12 rAF frames.
+  const flash = await win.evaluate(
+    ([id, frames]) =>
+      new Promise((resolve) => {
+        const xs = []
+        const sample = () => {
+          const el = document.querySelector(`[data-note-id="${id}"]`)
+          xs.push(el ? +el.getBoundingClientRect().x.toFixed(1) : null)
+          if (xs.length >= frames) resolve(xs)
+          else requestAnimationFrame(sample)
+        }
+        requestAnimationFrame(sample)
+      }),
+    [card.id, 12],
+  )
+  console.log('drag x-trajectory (px):', JSON.stringify(flash)) // like send-harness `top trajectory`
+  await win.waitForTimeout(400) // let the commit settle
+  const settled = await noteRect(win, card.id)
+  const movedX = settled ? settled.x - card.x : 0
+  const movedY = settled ? settled.y - card.y : 0
+  // Allow generous tolerance: the drag delta is in SCREEN px at zoom 1, so the card
+  // should land ≈DELTA away. Half-delta floor proves it moved and STAYED moved.
+  assert(
+    'drag-to-move commit: card landed ≈ drag delta and stayed (§8)',
+    settled !== null && Math.abs(movedX - DELTA.x) < 80 && Math.abs(movedY - DELTA.y) < 80,
+  )
+  // #119: the origin is card.x. A flash is any sampled frame whose x is back near
+  // the origin (within 40px) while the settled position is far from it (the card
+  // genuinely moved). If it never moved we skip (movedX≈0 ⇒ no meaningful origin).
+  const originX = card.x
+  const reallyMoved = Math.abs(movedX) > 80
+  const flashed = reallyMoved && flash.some((x) => x !== null && Math.abs(x - originX) < 40)
+  assert('#119 no drag-commit flash: card never snapped back to origin post-up', !flashed)
+
+  // ── Marquee select (§8): rubber-band ≥2 cards → ≥2 selection rings ────────────
+  // Find an empty surface point (no card under it) inside the viewport to start the
+  // marquee, then drag a wide rect. Scan a coarse grid for an empty spot.
+  const emptyPt = await win.evaluate(() => {
+    const vpEl = document.querySelector('[data-canvas-viewport]')
+    if (!vpEl) return null
+    const v = vpEl.getBoundingClientRect()
+    for (let gy = 0.2; gy <= 0.8; gy += 0.1) {
+      for (let gx = 0.2; gx <= 0.8; gx += 0.1) {
+        const px = v.left + v.width * gx
+        const py = v.top + v.height * gy
+        const top = document.elementFromPoint(px, py)
+        // empty iff the topmost element is not inside any card shell
+        if (top && !top.closest('[data-note-id]')) return { x: px, y: py }
+      }
+    }
+    return null
+  })
+  if (!emptyPt) {
+    assert('marquee: an empty surface point to start the band', false)
+  } else {
+    await win.mouse.move(emptyPt.x, emptyPt.y)
+    await win.mouse.down()
+    // Rubber-band a large rect across much of the viewport (covers many cards).
+    let marqueeSeen = false
+    for (let i = 1; i <= 6; i++) {
+      await win.mouse.move(emptyPt.x + 60 * i, emptyPt.y + 50 * i)
+      if (!marqueeSeen) {
+        marqueeSeen = (await win.locator('[data-canvas-marquee]').count()) > 0
+      }
+    }
+    assert('marquee appeared mid-drag ([data-canvas-marquee])', marqueeSeen)
+    await win.mouse.up()
+    await win.waitForTimeout(200)
+    // A selected card has box-shadow '0 0 0 2px var(--accent), var(--shadow-2)'
+    // (NoteCard.tsx:163); in computed style the var resolves to rgb, so a selected
+    // shell has a non-`none` box-shadow. Count shells with a non-none box-shadow.
+    const ringCount = await win.evaluate(() => {
+      let n = 0
+      for (const el of document.querySelectorAll('[data-note-id]')) {
+        const bs = getComputedStyle(el).boxShadow
+        if (bs && bs !== 'none') n++
+      }
+      return n
+    })
+    console.log(`selected shells (non-none box-shadow): ${ringCount}`)
+    assert('marquee selected ≥2 cards (selection ring on ≥2 shells §8)', ringCount >= 2)
+    // Clear the selection so it does not bleed into the next assertions.
+    await win.keyboard.press('Escape')
+    await win.waitForTimeout(150)
+  }
+
+  // ── #121: double-click OVER a card edits, does NOT create ─────────────────────
+  const beforeEdit = await win.locator('[data-note-id]').count()
+  const editCard = await pickCardNear(win, probe.x, probe.y)
+  if (!editCard) {
+    assert('#121: a fully-visible card to double-click', false)
+  } else {
+    const ec = { x: editCard.x + editCard.w / 2, y: editCard.y + editCard.h / 2 }
+    await win.mouse.dblclick(ec.x, ec.y)
+    await win.waitForTimeout(300)
+    const editorOpen = (await win.locator('[data-canvas-card-editor]').count()) > 0
+    const afterEdit = await win.locator('[data-note-id]').count()
+    assert('#121 dblclick-over-card opened in-place editor ([data-canvas-card-editor])', editorOpen)
+    assert(
+      '#121 dblclick-over-card did NOT create a card (count unchanged)',
+      afterEdit === beforeEdit,
+    )
+    await win.keyboard.press('Escape') // close the editor
+    await win.waitForTimeout(200)
+  }
+
+  // ── Placement via double-click-create (§5/§7) — the robust path ───────────────
+  // The `/` picker is NOT used here: every seeded note is already PLACED, so the
+  // picker would JUMP to a match (onJump) rather than place a NEW card — the count
+  // never increases. Double-click-create (the plan's offered substitute) creates a
+  // genuinely new note → [data-note-id] count +1, proving the placement wiring.
+  const beforeCreate = await win.locator('[data-note-id]').count()
+  const createPt = await win.evaluate(() => {
+    const vpEl = document.querySelector('[data-canvas-viewport]')
+    if (!vpEl) return null
+    const v = vpEl.getBoundingClientRect()
+    for (let gy = 0.25; gy <= 0.75; gy += 0.1) {
+      for (let gx = 0.25; gx <= 0.75; gx += 0.1) {
+        const px = v.left + v.width * gx
+        const py = v.top + v.height * gy
+        const top = document.elementFromPoint(px, py)
+        if (top && !top.closest('[data-note-id]')) return { x: px, y: py }
+      }
+    }
+    return null
+  })
+  if (!createPt) {
+    assert('placement: an empty point to double-click-create', false)
+  } else {
+    await win.mouse.dblclick(createPt.x, createPt.y)
+    await win.locator('[data-canvas-create]').waitFor({ state: 'visible', timeout: 4000 })
+    // The create composer's textarea (Composer.tsx) — type then Enter submits
+    // (Composer onKeyDown: Enter without shift → onSubmit, Composer.tsx:163).
+    const ta = win.locator('[data-canvas-create] textarea')
+    await ta.click()
+    await ta.fill('Smoke placed note')
+    await win.keyboard.press('Enter')
+    await win.waitForTimeout(500) // create txn + invalidate + refreshCanvas + remount
+    const afterCreate = await win.locator('[data-note-id]').count()
+    console.log(`cards before/after create: ${beforeCreate} → ${afterCreate}`)
+    assert(
+      'placement via double-click-create added a card (count +1, §7)',
+      afterCreate === beforeCreate + 1,
+    )
+  }
+
+  // ── #111: keep-alive abandonment under the §6 Motion slide ────────────────────
+  // Toggle feed↔canvas mid-interaction (right after a drag). Toggling to feed
+  // UNMOUNTS CanvasStage → its guarded effect runs uninstallHarnessBridge(), so the
+  // bridge is gone on the feed view. So we assert PURELY via DOM after the canvas
+  // remounts (S2). First do a small drag to be "mid-interaction".
+  const tCard = await pickCardNear(win, probe.x, probe.y)
+  let toggledCardId = null
+  if (tCard) {
+    toggledCardId = tCard.id
+    const tc = { x: tCard.x + tCard.w / 2, y: tCard.y + tCard.h / 2 }
+    await win.mouse.move(tc.x, tc.y)
+    await win.mouse.down()
+    await win.mouse.move(tc.x + 40, tc.y + 30)
+    await win.mouse.up()
+  }
+  // Toggle to feed then back to canvas (platform-aware MOD, NOT a hardcoded Meta).
+  await win.keyboard.press(`${MOD}+1`)
+  await win.waitForTimeout(250)
+  await win.keyboard.press(`${MOD}+2`)
+  // Wait for the canvas to REMOUNT (world visible) before asserting (the §6
+  // AnimatePresence exit can interrupt the render — this is the #111 guard).
+  await win.locator('[data-canvas-world]').waitFor({ state: 'visible', timeout: 8000 })
+  await win.waitForTimeout(400)
+  const worldBack = (await win.locator('[data-canvas-world]').count()) > 0
+  const cardBack = toggledCardId
+    ? (await win.locator(`[data-note-id="${toggledCardId}"]`).count()) > 0
+    : (await win.locator('[data-note-id]').count()) > 0
+  const noGhost = (await win.locator('[data-canvas-ghost]').count()) === 0
+  assert('#111 canvas remounted after feed↔canvas toggle (world present)', worldBack)
+  assert('#111 dragged card still present after toggle (no abandonment)', cardBack)
+  assert('#111 no orphaned ghost after toggle ([data-canvas-ghost] count 0)', noGhost)
+
+  const failures = out.filter(([, ok]) => !ok)
+  console.log('')
+  console.log(
+    failures.length === 0
+      ? `SMOKE VERDICT: PASS — all ${out.length} assertions OK (#119 #121 #111 covered)`
+      : `SMOKE VERDICT: FAIL — ${failures.length}/${out.length} assertions failed: ` +
+          failures.map(([l]) => l).join(' · '),
+  )
+  return failures.length === 0 ? 0 : 1
+}
+
 // react-hotkeys-hook `mod` = Meta on macOS, Control elsewhere (App binds `mod+2`);
 // Playwright sends the literal key, so pick the modifier per platform or the
 // shortcut silently no-ops on the (Linux) reference hardware.
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
+// --smoke flips this whole runner from the perf GATES to the pointer SMOKE flow
+// (Task 3). The shared setup (launch + guards + seed + reload + switch-to-canvas +
+// board-non-empty) runs for BOTH; only the post-setup body branches. The default
+// `pnpm harness:canvas` (no flag) behaves EXACTLY as before.
+const SMOKE = process.argv.includes('--smoke')
 const userDataDir = mkdtempSync(join(tmpdir(), 'linsae-perf-harness-'))
 
 const app = await electron.launch({
@@ -273,64 +558,70 @@ try {
     process.exit(1)
   }
 
-  // ---- run the three phases, 3× each, take the median by mean fps.
-  const results = {}
-  for (const phase of ['churn', 'steady', 'dot']) {
-    if (phase === 'dot') {
-      await win.evaluate(() =>
-        window.__canvasHarness?.setDevLod({
-          forceTier: 'dot',
-          syntheticDots: true,
-          unclampZoom: true,
-        }),
-      )
-      await win.waitForTimeout(300) // let cards unmount + the dot layer draw
+  // ---- BRANCH: --smoke runs the pointer smoke flow (Task 3) instead of the perf
+  // gates. The default path (no flag) is the unchanged 3-phase / 3-run verdict.
+  if (SMOKE) {
+    exitCode = await runSmoke(win)
+  } else {
+    // ---- run the three phases, 3× each, take the median by mean fps.
+    const results = {}
+    for (const phase of ['churn', 'steady', 'dot']) {
+      if (phase === 'dot') {
+        await win.evaluate(() =>
+          window.__canvasHarness?.setDevLod({
+            forceTier: 'dot',
+            syntheticDots: true,
+            unclampZoom: true,
+          }),
+        )
+        await win.waitForTimeout(300) // let cards unmount + the dot layer draw
+      }
+      const runs = []
+      for (let r = 0; r < RUNS; r++) {
+        runs.push(await runPhase(win, phase, PHASE_MS))
+        await win.waitForTimeout(300)
+      }
+      results[phase] = { median: medianByMeanFps(runs), runs }
+      if (phase === 'dot') {
+        await win.evaluate(() =>
+          window.__canvasHarness?.setDevLod({
+            forceTier: 'auto',
+            syntheticDots: false,
+            unclampZoom: false,
+          }),
+        )
+      }
     }
-    const runs = []
-    for (let r = 0; r < RUNS; r++) {
-      runs.push(await runPhase(win, phase, PHASE_MS))
-      await win.waitForTimeout(300)
-    }
-    results[phase] = { median: medianByMeanFps(runs), runs }
-    if (phase === 'dot') {
-      await win.evaluate(() =>
-        window.__canvasHarness?.setDevLod({
-          forceTier: 'auto',
-          syntheticDots: false,
-          unclampZoom: false,
-        }),
-      )
-    }
-  }
 
-  // ---- verdict table + gate judging.
-  console.log('\n| phase | meanFps | p50 | p95 | p99 | max | >17ms | >100ms |')
-  console.log('|---|---|---|---|---|---|---|---|')
-  for (const phase of ['churn', 'steady', 'dot']) {
-    const m = results[phase].median
+    // ---- verdict table + gate judging.
+    console.log('\n| phase | meanFps | p50 | p95 | p99 | max | >17ms | >100ms |')
+    console.log('|---|---|---|---|---|---|---|---|')
+    for (const phase of ['churn', 'steady', 'dot']) {
+      const m = results[phase].median
+      console.log(
+        `| ${phase} | ${m.meanFps} | ${m.p50} | ${m.p95} | ${m.p99} | ${m.max} | ${m.over17}/${m.frames} | ${m.over100} |`,
+      )
+    }
+    const c = results.churn.median
+    const s = results.steady.median
+    const d = results.dot.median
+    const checks = [
+      ['churn meanFps ≥ 55', c.meanFps >= GATES.churn.meanFps],
+      ['churn p95 ≤ 33.4', c.p95 <= GATES.churn.p95],
+      ['churn zero >100ms', c.over100 === GATES.churn.over100],
+      ['steady p95 ≤ 18', s.p95 <= GATES.steady.p95],
+      ['dot p95 ≤ 18', d.p95 <= GATES.dot.p95],
+    ]
+    console.log('')
+    for (const [label, ok] of checks) console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}`)
+    const pass = checks.every(([, ok]) => ok)
     console.log(
-      `| ${phase} | ${m.meanFps} | ${m.p50} | ${m.p95} | ${m.p99} | ${m.max} | ${m.over17}/${m.frames} | ${m.over100} |`,
+      pass
+        ? '\nVERDICT: PASS — §3 gates met on the median run'
+        : '\nVERDICT: FAIL — below a §3 gate; suspect React reconcile first (profile; React Compiler is on)',
     )
+    exitCode = pass ? 0 : 1
   }
-  const c = results.churn.median
-  const s = results.steady.median
-  const d = results.dot.median
-  const checks = [
-    ['churn meanFps ≥ 55', c.meanFps >= GATES.churn.meanFps],
-    ['churn p95 ≤ 33.4', c.p95 <= GATES.churn.p95],
-    ['churn zero >100ms', c.over100 === GATES.churn.over100],
-    ['steady p95 ≤ 18', s.p95 <= GATES.steady.p95],
-    ['dot p95 ≤ 18', d.p95 <= GATES.dot.p95],
-  ]
-  console.log('')
-  for (const [label, ok] of checks) console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}`)
-  const pass = checks.every(([, ok]) => ok)
-  console.log(
-    pass
-      ? '\nVERDICT: PASS — §3 gates met on the median run'
-      : '\nVERDICT: FAIL — below a §3 gate; suspect React reconcile first (profile; React Compiler is on)',
-  )
-  exitCode = pass ? 0 : 1
 } catch (err) {
   console.error(`HARNESS ERROR: ${err.stack || err.message}`)
   exitCode = 1
