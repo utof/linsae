@@ -827,30 +827,61 @@ async function runSmoke(win) {
   await win.waitForTimeout(150)
 
   // ── select + ⌫ deletes a drawn edge (§5) ──────────────────────────────────────
-  // Click the SCREEN midpoint of the ctrl-drag edge's two card centers (computed
-  // above). The edge is a center-to-center segment, so the midpoint lies on it; a
-  // click there with no card underneath routes onWorldPointerDown → hitEdgeAt →
-  // setSelectedEdge (CanvasStage.tsx:1290). We assert selection via the
-  // [data-edge-selected] marker on [data-canvas-world] (present iff selectedEdge),
-  // then ⌫ deletes the row (deleteEdgeMut, no confirm) → edge count −1.
+  // The ctrl-drag edge (sub-test 1) is a center-to-center segment between two known
+  // card centers. We click a point ON that segment with NO card under it so
+  // onWorldPointerDown's card-precedence branch (hitVisibleAt !== null,
+  // CanvasStage.tsx:1281) is NOT taken and it falls through to hitEdgeAt →
+  // setSelectedEdge (:1290). The raw midpoint sits near viewport-center — the
+  // densest region of the deterministic 500-card seed — so a THIRD card usually
+  // covers it; a plain click there would select that CARD, and an unconditional
+  // ⌫ would then route to onRemove() and DELETE the card (corrupting sub-test 4).
+  // So we (a) sample several fractions along the segment, (b) accept a candidate
+  // ONLY when the click selects the EDGE ([data-edge-selected] present AND
+  // selectedCardId null), Escaping (never ⌫) past any candidate that grabbed a
+  // card, and (c) gate ⌫ on a confirmed edge selection — the card-delete path is
+  // impossible. If no candidate selects the edge → honest skip (no deletion).
   if (!srcCenter || !dstCenter) {
     assert('edge select: a drawn edge from the ctrl-drag sub-test to select', false)
   } else {
-    const mid = { x: (srcCenter.x + dstCenter.x) / 2, y: (srcCenter.y + dstCenter.y) / 2 }
-    const before = await edgeCount()
-    await win.mouse.move(mid.x, mid.y)
-    await win.mouse.down()
-    await win.mouse.up()
-    await win.waitForTimeout(150)
-    const selected = await win.evaluate(() =>
-      document.querySelector('[data-canvas-world]')?.hasAttribute('data-edge-selected'),
-    )
-    assert('edge click selected the drawn edge ([data-edge-selected] §5)', selected === true)
-    await win.keyboard.press('Backspace')
-    await win.waitForTimeout(500) // deleteEdge txn + invalidate + edges refetch
-    const after = await edgeCount()
-    console.log(`edges before/after select+⌫: ${before} → ${after}`)
-    assert('edge ⌫ deleted the selected drawn edge (count −1, §5)', after === before - 1)
+    let edgePicked = false
+    for (const f of [0.5, 0.4, 0.6, 0.35, 0.65]) {
+      const p = {
+        x: srcCenter.x + (dstCenter.x - srcCenter.x) * f,
+        y: srcCenter.y + (dstCenter.y - srcCenter.y) * f,
+      }
+      await win.mouse.move(p.x, p.y)
+      await win.mouse.down()
+      await win.mouse.up()
+      await win.waitForTimeout(120)
+      const edgeSel = await win.evaluate(() =>
+        document.querySelector('[data-canvas-world]')?.hasAttribute('data-edge-selected'),
+      )
+      // The edge is selected only if the marker is present AND no card is ringed
+      // (selectedCardId null) — a card click sets the ring, not the edge marker,
+      // but assert the conjunction defensively before allowing ⌫.
+      const cardSel = await selectedCardId(win)
+      if (edgeSel === true && cardSel === null) {
+        edgePicked = true
+        break
+      }
+      // A card (or nothing) got picked — clear WITHOUT ⌫ so no card is deleted.
+      await win.keyboard.press('Escape')
+      await win.waitForTimeout(80)
+    }
+    assert('edge click selected the drawn edge ([data-edge-selected], not a card §5)', edgePicked)
+    if (edgePicked) {
+      const before = await edgeCount()
+      await win.keyboard.press('Backspace') // safe: an EDGE is confirmed selected
+      await win.waitForTimeout(500) // deleteEdge txn + invalidate + edges refetch
+      const after = await edgeCount()
+      console.log(`edges before/after select+⌫: ${before} → ${after}`)
+      assert('edge ⌫ deleted the selected drawn edge (count −1, §5)', after === before - 1)
+    } else {
+      // No on-segment point selected the edge (dense board covered them all). Do
+      // NOT ⌫ — sub-test 4 must see an uncorrupted board. The select assert above
+      // already records the miss honestly.
+      console.log('edge select: no card-free point on the segment selected the edge — skipping ⌫')
+    }
   }
   await win.keyboard.press('Escape')
   await win.waitForTimeout(150)
