@@ -84,6 +84,20 @@ export interface MockApi {
     upsert: ReturnType<typeof vi.fn>
     get: ReturnType<typeof vi.fn>
   }
+  /** Canvas IPC mocks — added in v0.4. @see src/preload/index.ts */
+  canvas: {
+    listLayouts: ReturnType<typeof vi.fn>
+    edges: ReturnType<typeof vi.fn>
+    shelveNote: ReturnType<typeof vi.fn>
+    placeNote: ReturnType<typeof vi.fn>
+    moveNotes: ReturnType<typeof vi.fn>
+    unplaceNotes: ReturnType<typeof vi.fn>
+    restoreLayouts: ReturnType<typeof vi.fn>
+    removeNotes: ReturnType<typeof vi.fn>
+    getState: ReturnType<typeof vi.fn>
+    setState: ReturnType<typeof vi.fn>
+    recentOnCanvas: ReturnType<typeof vi.fn>
+  }
   system: {
     revealNotesFolder: ReturnType<typeof vi.fn>
     openLogsFolder: ReturnType<typeof vi.fn>
@@ -140,6 +154,19 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
     videoSources: {
       upsert: vi.fn(async (): Promise<void> => undefined),
       get: vi.fn(async () => null),
+    },
+    canvas: {
+      listLayouts: vi.fn(async () => []),
+      edges: vi.fn(async () => []),
+      shelveNote: vi.fn(async () => undefined),
+      placeNote: vi.fn(async () => undefined),
+      moveNotes: vi.fn(async () => undefined),
+      unplaceNotes: vi.fn(async () => undefined),
+      restoreLayouts: vi.fn(async () => undefined),
+      removeNotes: vi.fn(async () => undefined),
+      getState: vi.fn(async () => ({ camera_x: 0, camera_y: 0, zoom: 1 })),
+      setState: vi.fn(async () => undefined),
+      recentOnCanvas: vi.fn(async () => []),
     },
     system: {
       revealNotesFolder: vi.fn(async () => ({ ok: true })),
