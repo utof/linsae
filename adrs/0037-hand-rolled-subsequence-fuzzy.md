@@ -27,7 +27,7 @@ so cmdk's own filter does not re-order the pre-ranked results.
 ## Alternatives
 
 - **A fuzzy library (fuse.js / fzf / cmdk's built-in filter)** — rejected. A runtime dep for a
-  ~30-line algorithm is a FIRE trigger per CLAUDE.md verify-or-not policy (a new `import` for a
+  ~30-line core scoring loop is a FIRE trigger per CLAUDE.md verify-or-not policy (a new `import` for a
   package not already in the repo). cmdk's own `shouldFilter` would also re-order the pre-ranked
   results unless disabled — defeating the point. The hand-rolled matcher is exact, instant, and
   has no version surface.

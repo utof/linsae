@@ -53,3 +53,5 @@ all slug-based references uniformly.
 - `src/main/db/queries/canvas-edges.ts:23` — `canvasEdges` (slug join — dangling slugs return nothing)
 - Issues #129 (rename propagation), #98 (alias resolution)
 - ADR 0002 (slug-strict identity — the slug-as-PK philosophy drawn edges inherit)
+- ADR 0035 (distinct `edge_type`) — the companion decision about the same
+  `(from_note_id, to_slug, edge_type)` row

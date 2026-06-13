@@ -5,8 +5,9 @@ Status: accepted (v0.4.1)
 ## Context
 
 Drawn edges are real `links` rows — the same table that stores wikilink-derived `'reference'`
-edges and `'comment-on'` annotation edges. The trap: `replaceLinksForNote`
-(`src/main/db/queries/links.ts:46`) executes `DELETE FROM links WHERE from_note_id = ? AND
+edges and `'comment-on'` annotation edges. The trap: the `replaceLinksForNote` function
+(`src/main/db/queries/links.ts:46`), whose DELETE at `links.ts:48` is scoped to
+`edge_type = 'reference'`, executes `DELETE FROM links WHERE from_note_id = ? AND
 edge_type = 'reference'` inside a transaction, then rebuilds only body-derived wikilinks. This
 runs on **every note save** (`src/main/save-note.ts:228`), on soft-delete
 (`src/main/save-note.ts:129`), on canvas create (`src/main/db/queries/layouts.ts:258`), and on
@@ -55,10 +56,13 @@ saves.
 ## Sources
 
 - `docs/specs/v0.4.1-canvas-edges.md` §1, §2, §7
-- `src/main/db/queries/links.ts:46` — `replaceLinksForNote` (the DELETE scope)
+- `src/main/db/queries/links.ts:46` — `replaceLinksForNote` (signature); the scoped DELETE is at
+  `src/main/db/queries/links.ts:48`
 - `src/main/save-note.ts:228` — call-site on note save
 - `src/main/save-note.ts:129` — call-site on soft-delete
 - `src/main/db/queries/layouts.ts:258` — call-site on canvas create
 - `src/main/db/reconcile.ts:150,163` — call-sites in reconciler
 - `src/main/db/queries/edges.ts` — `RESERVED_EDGE_TYPES`, `createDrawnEdge`, `deleteDrawnEdge`
 - `src/shared/zod-schemas.ts:339` — `EdgeTypeSchema` (Zod boundary guard)
+- ADR 0036 (slug-based drawn edges) — the companion `to_slug` decision about the same
+  `(from_note_id, to_slug, edge_type)` row
