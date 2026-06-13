@@ -23,6 +23,8 @@ measured phases through the `window.__canvasHarness` bridge — all without any
 Each phase runs **3×**; the verdict uses the **median run by mean fps**
 (the pinned protocol — see below).
 
+> **Motion-LOD note:** churn/steady drive `setCamera` through the bridge → `moveCamera` → `bump()`, re-arming the 120 ms settle timer every frame, so `isMoving` stays **true** the whole phase — these phases therefore measure the §3-credited motion-LOD placeholder/amortization path, not full-Markdown cards (`NoteCard`'s `upgradedRef` latches once-upgraded, adding run-to-run nondeterminism).
+
 ### IPC-seed + reload + board-non-empty guard
 
 The harness seeds via `window.api.canvas.createNoteAt` (the app's own IPC,
@@ -109,6 +111,11 @@ pnpm harness:canvas -- --smoke
   This is a feature, not a bug. The "p95 ≤ 18ms" steady/dot gates are
   calibrated to 60 Hz; a 75 Hz or throttled/DPMS-off display makes the numbers
   meaningless. The v0.4.0 spike found that DPMS-off throttles rAF to ~1 Hz.
+- **Mid-run throttle tripwire (#126):** the vsync probe only catches a display
+  *already* asleep at start. If the screen DPMS-blanks **during** a phase, every
+  run's median frame interval jumps to ~1000 ms (~1 Hz); the harness detects
+  `p50 > 100ms` per run and aborts with the cause rather than a bogus
+  "suspect React reconcile" verdict. Re-run with `xset -dpms s off` (restore after).
 - **Run on a real display session, NEVER under xvfb or SSH:** software GL
   invalidates results. This is the same hard rule as the v0.1.3 morph harness
   and the spike harness.

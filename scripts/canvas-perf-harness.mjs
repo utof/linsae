@@ -45,6 +45,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { _electron as electron } from 'playwright'
 
+// Operator-facing abort (bad GPU / wrong vsync / empty board / tier-flip fail /
+// mid-run rAF throttle). Carries `expected = true` so the top-level catch prints
+// just the message (no stack — these are NOT bugs) and still routes through the
+// `finally` cleanup (app.close + rmSync) so an aborted run leaks no tmpdir (#126).
+class AbortError extends Error {
+  expected = true
+}
+
 // ---- §3 gates (exact). churn vs steady vs dot, each judged on the median run.
 const GATES = {
   churn: { meanFps: 55, p95: 33.4, over100: 0 },
@@ -65,6 +73,14 @@ const CARD_W = 360 // CanvasStage CARD_WIDTH
 const CARD_H = 140 // CanvasStage DEFAULT_CARD_HEIGHT
 const RUNS = 3
 const PHASE_MS = 8000 // per-phase choreography duration
+// Mid-run rAF-throttle tripwire (#126). The start-of-run vsync probe only catches
+// a display ALREADY asleep; the screen can DPMS-blank DURING an 8s phase (or a
+// waitForTimeout gap), and Chromium then throttles rAF to ~1Hz (p50 ≈ 1000ms).
+// Gate on the run's MEDIAN frame interval (p50), not p95/max: a real perf
+// regression keeps a low-ish median with occasional spikes, but only genuine
+// throttling drags the MEDIAN to ~1000ms. 100ms is 6× the worst plausible good
+// frame (16.7ms) and 10× below the ~1Hz floor — an unambiguous band.
+const THROTTLE_P50_MS = 100
 // Culling mounts only viewport-intersecting cards, so NOT all 500 are in the DOM
 // at once; this floor just proves seeding + reconcile didn't wipe the board (B1).
 const MIN_CARDS = 50
@@ -136,10 +152,15 @@ async function seedViaIpc(win) {
 // UNCLAMPED Dispatch (clamping lives only in the gesture helpers, which the bridge
 // never touches), so {x,y,zoom} are written verbatim. Runs entirely in the page so
 // the rAF clock and the setCamera writes share a frame (the spike's runChoreo).
+// MOTION-LOD: churn/steady drive setCamera through the bridge → useCanvasCamera's
+// moveCamera → bump() (useCanvasCamera.ts:106-112), re-arming the 120ms settle timer
+// each frame, so isMoving stays TRUE the whole phase. Cards therefore render the
+// motion-LOD placeholder/skeleton (NoteCard.tsx:110 `showFull = !isMoving || upgradedRef.current`),
+// so these phases measure the §3-credited motion-LOD/amortization path — correct,
+// but note `upgradedRef` latches once-upgraded-never-demote → run-to-run nondeterminism.
 async function runPhase(win, mode, durationMs) {
   return win.evaluate(
     async ([m, dur, statsSrc, world]) => {
-      // biome-ignore lint: injected stats() (spike-verbatim)
       const stats = new Function(`${statsSrc}; return stats`)()
       const h = window.__canvasHarness
       if (!h) throw new Error('window.__canvasHarness missing — isHarness not set?')
@@ -605,9 +626,7 @@ try {
     `gpu_compositing=${gpu.gpu_compositing} gl="${glRenderer}" session=${process.env.XDG_SESSION_TYPE}`,
   )
   if (!/enabled/.test(gpu.gpu_compositing || '') || /llvmpipe|swiftshader/i.test(glRenderer)) {
-    console.error('FAIL: GPU compositing not hardware-accelerated — results invalid (xvfb/ssh?).')
-    await app.close()
-    process.exit(1)
+    throw new AbortError('GPU compositing not hardware-accelerated — results invalid (xvfb/ssh?).')
   }
 
   // ---- vsync probe: VERBATIM from spike run.mjs:53-72 (61 rAF frames → median).
@@ -634,11 +653,9 @@ try {
   // Pinned-protocol trap: a non-60Hz/throttled display makes "p95 ≤ 18ms" mean
   // something else. Abort outside 15–18ms (the 60Hz band).
   if (vsync < 15 || vsync > 18) {
-    console.error(
-      `FAIL: vsync p50 ${vsync}ms outside 15–18ms — display not at 60Hz / awake. Aborting.`,
+    throw new AbortError(
+      `vsync p50 ${vsync}ms outside 15–18ms — display not at 60Hz / awake. Aborting.`,
     )
-    await app.close()
-    process.exit(1)
   }
 
   // ---- SEED via createNoteAt IPC, then RELOAD so the canvas re-reads the rows.
@@ -666,12 +683,10 @@ try {
   const cardCount = await win.locator('[data-note-id]').count()
   console.log(`mounted cards in viewport: ${cardCount} (floor ${MIN_CARDS})`)
   if (cardCount < MIN_CARDS) {
-    console.error(
-      `FAIL: only ${cardCount} cards mounted after seed+reload — board empty/near-empty ` +
+    throw new AbortError(
+      `only ${cardCount} cards mounted after seed+reload — board empty/near-empty ` +
         `(seeding or reconcile failed?). Aborting before measuring.`,
     )
-    await app.close()
-    process.exit(1)
   }
 
   // Diagnostic: a hidden page throttles rAF to ~1Hz. If this prints
@@ -708,12 +723,10 @@ try {
         const dotCards = await win.locator('[data-note-id]').count()
         console.log(`dot-tier card count: ${dotCards} (expect 0 — cards unmount at dot tier)`)
         if (dotCards > 0) {
-          console.error(
-            `FAIL: ${dotCards} cards still mounted after forcing dot tier — tier did NOT ` +
+          throw new AbortError(
+            `${dotCards} cards still mounted after forcing dot tier — tier did NOT ` +
               `flip, so the dot gate would measure the card tier. Aborting.`,
           )
-          await app.close()
-          process.exit(1)
         }
         // Zoom FAR + center on the synthetic dot field so ~all 10k dots are
         // on-screen — without this the dot phase oscillates at the zoom-1 camera
@@ -739,7 +752,19 @@ try {
       }
       const runs = []
       for (let r = 0; r < RUNS; r++) {
-        runs.push(await runPhase(win, phase, PHASE_MS))
+        const run = await runPhase(win, phase, PHASE_MS)
+        // Mid-run rAF-throttle tripwire (#126): a ~1Hz throttle (DPMS-blank) pushes
+        // the MEDIAN frame interval to ~1000ms. Abort with the cause, not a bogus
+        // "suspect React reconcile" verdict that sends the operator chasing a ghost.
+        if (run.p50 > THROTTLE_P50_MS) {
+          throw new AbortError(
+            `display throttled mid-run (phase=${phase} run=${r} p50=${run.p50}ms ` +
+              `≈ ${(1000 / run.p50).toFixed(1)}fps) — the screen likely DPMS-blanked, which ` +
+              `throttles rAF to ~1Hz and is NOT a render regression. Re-run with the display ` +
+              `kept awake: xset -dpms s off (restore after). See docs/harness/canvas-perf.md + issue #126.`,
+          )
+        }
+        runs.push(run)
         await win.waitForTimeout(300)
       }
       results[phase] = { median: medianByMeanFps(runs), runs }
@@ -784,7 +809,11 @@ try {
     exitCode = pass ? 0 : 1
   }
 } catch (err) {
-  console.error(`HARNESS ERROR: ${err.stack || err.message}`)
+  // Expected operator-facing aborts (AbortError) print just the message — a stack
+  // is noise for "your display went to sleep". Unexpected bugs still print the stack.
+  console.error(
+    err.expected ? `HARNESS ABORT: ${err.message}` : `HARNESS ERROR: ${err.stack || err.message}`,
+  )
   exitCode = 1
 } finally {
   await app.close()
