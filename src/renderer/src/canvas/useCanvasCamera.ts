@@ -18,6 +18,7 @@ import {
   type SetStateAction,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react'
@@ -77,8 +78,11 @@ export function useCanvasCamera(
   // Once the boot read resolves, snap the camera to the persisted value. Guard
   // with a ref so a later cache write-through (same data) never re-snaps over a
   // gesture in flight — only the FIRST resolution initialises the camera.
+  // useLayoutEffect (not useEffect): the snap must commit BEFORE the browser
+  // paints the first ready render, or the world flashes {0,0,1} for one frame
+  // ("first paint at the persisted camera" is a binding Done criterion).
   const initialisedRef = useRef(false)
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (initialisedRef.current || !persisted) return
     initialisedRef.current = true
     setCamera({ x: persisted.camera_x, y: persisted.camera_y, zoom: persisted.zoom })

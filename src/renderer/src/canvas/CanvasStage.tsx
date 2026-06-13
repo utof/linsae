@@ -28,13 +28,14 @@ interface Props {
 }
 
 /**
- * Renders the canvas viewport for the root canvas. Gated on the camera hook's
- * `ready` flag so the first paint of the world is at the persisted camera, not
- * a {0,0,1}-then-jump.
+ * Renders the canvas viewport for the root canvas. The viewport div always
+ * mounts (gestures bind immediately, layout is stable), but the world
+ * container is gated on the camera hook's `ready` flag — its first paint is
+ * at the persisted camera, never {0,0,1}-then-jump.
  */
 export function CanvasStage(_props: Props): React.JSX.Element {
   const viewportRef = useRef<HTMLDivElement>(null)
-  const { camera } = useCanvasCamera(ROOT_CANVAS_ID, viewportRef, { unclampZoom: false })
+  const { camera, ready } = useCanvasCamera(ROOT_CANVAS_ID, viewportRef, { unclampZoom: false })
 
   return (
     // tabIndex makes the viewport focusable so canvas-scoped hotkeys can check
@@ -59,18 +60,20 @@ export function CanvasStage(_props: Props): React.JSX.Element {
         outline: 'none',
       }}
     >
-      <div
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          transformOrigin: '0 0',
-          transform:
-            `translate(${-camera.x * camera.zoom}px, ${-camera.y * camera.zoom}px)` +
-            ` scale(${camera.zoom})`,
-        }}
-        data-canvas-world
-      />
+      {ready && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            transformOrigin: '0 0',
+            transform:
+              `translate(${-camera.x * camera.zoom}px, ${-camera.y * camera.zoom}px)` +
+              ` scale(${camera.zoom})`,
+          }}
+          data-canvas-world
+        />
+      )}
     </div>
   )
 }

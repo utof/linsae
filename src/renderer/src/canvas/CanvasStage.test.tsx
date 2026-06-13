@@ -48,21 +48,30 @@ function world(container: HTMLElement): HTMLElement {
 }
 
 describe('CanvasStage', () => {
-  it('renders the viewport and paints the persisted camera transform', async () => {
-    mockApi.canvas.getState.mockResolvedValue({ camera_x: 100, camera_y: 50, zoom: 2 })
+  it('gates the world on ready and paints it at the persisted camera', async () => {
+    // Deferred getState: hold the boot read open so the pre-ready render is
+    // observable — the viewport mounts (gestures bind, layout stable) but the
+    // world container must be ABSENT until the persisted camera is known.
+    let resolveState!: (c: { camera_x: number; camera_y: number; zoom: number }) => void
+    mockApi.canvas.getState.mockImplementation(
+      () =>
+        new Promise((r) => {
+          resolveState = r
+        }),
+    )
     const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
-    // viewport exists immediately (gestures bind before the boot read resolves)
     expect(container.querySelector('[data-canvas-viewport]')).not.toBeNull()
-    // once getState resolves, the world transform = translate(-x*z, -y*z) scale(z)
+    expect(container.querySelector('[data-canvas-world]')).toBeNull()
+    resolveState({ camera_x: 100, camera_y: 50, zoom: 2 })
+    // once getState resolves the world appears at translate(-x*z, -y*z) scale(z)
     await waitFor(() => {
       expect(world(container).style.transform).toBe('translate(-200px, -100px) scale(2)')
     })
   })
 
   it('ctrl+wheel zoom changes the transform scale', async () => {
-    // Boot camera_x = 10 so the persisted transform (translate(-10px,…)) differs
-    // from the {0,0,1} initial — an unambiguous "ready" signal to wait on before
-    // the wheel (otherwise the initial paint already reads scale(1)/translate 0).
+    // The world only exists once ready, so waiting on its persisted transform
+    // (boot camera_x = 10 → translate(-10px,…)) guarantees ready before the wheel.
     mockApi.canvas.getState.mockResolvedValue({ camera_x: 10, camera_y: 0, zoom: 1 })
     const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
     await waitFor(() => {
@@ -77,7 +86,8 @@ describe('CanvasStage', () => {
   })
 
   it('flushes the camera via api.canvas.setState on unmount', async () => {
-    // camera_x = 10 gives a ready signal; the flush is unconditional once ready.
+    // Waiting on the world's persisted transform guarantees ready; the flush on
+    // unmount is unconditional once ready.
     mockApi.canvas.getState.mockResolvedValue({ camera_x: 10, camera_y: 0, zoom: 1 })
     const { container, unmount } = renderWithProviders(<CanvasStage {...noopProps} />)
     await waitFor(() => {
