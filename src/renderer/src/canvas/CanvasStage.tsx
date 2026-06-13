@@ -38,19 +38,21 @@ import { Composer } from '../composer/Composer'
 import { api } from '../lib/api'
 import type { UnderlayLayer } from './CanvasUnderlay'
 import { CanvasUnderlay } from './CanvasUnderlay'
-import { centerCamera, type Point, screenToWorld, visibleWorldRect } from './camera'
+import { centerCamera, fitCamera, type Point, screenToWorld, visibleWorldRect } from './camera'
 import { useCanvasDevLod } from './dev-lod'
 import { edgeSegment } from './edge-geometry'
 import { tierForZoom } from './lod'
 import { NoteCard } from './NoteCard'
 import { Picker } from './Picker'
 import { CanvasSelectionBar } from './SelectionBar'
+import { centroid } from './selection-geometry'
 import type { WorldRect } from './spatial-index'
 import { CardSpatialIndex } from './spatial-index'
 import type { Pos, UndoEntry } from './undo-stack'
 import { emptyUndo, pushOp, redo as redoStack, undo as undoStack } from './undo-stack'
 import { useCanvasCamera } from './useCanvasCamera'
 import { useCanvasInteractions } from './useCanvasInteractions'
+import { ZeroState } from './ZeroState'
 
 interface Props {
   /** Navigate to (or draft) the note for a clicked `[[slug]]` wikilink. */
@@ -1089,6 +1091,36 @@ export function CanvasStage({
               onClose={() => setPickerAnchor(null)}
             />
           )}
+          {/* Zero state (spec §14): centered in the viewport, shown when no cards
+              are placed. Follows the camera (viewport-space, not world-space). */}
+          <div
+            aria-hidden={placedLayouts.length > 0}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'grid',
+              placeItems: 'center',
+              pointerEvents: 'none',
+            }}
+          >
+            <ZeroState visible={placedLayouts.length === 0} />
+          </div>
+          {/* Centroid arrow (spec §14 G2): quiet pill pointing toward the placed-
+              cards centroid when ≥1 card exists but none intersect the viewport.
+              Click → zoom-to-fit. The arrow glyph (↖/↗/↙/↘) tracks the angle
+              from the viewport center to the centroid world point. */}
+          <CentroidArrow
+            placedLayouts={placedLayouts}
+            visibleIds={visibleIds}
+            placedRects={placedRects}
+            camera={camera}
+            viewportSize={viewportSize}
+            onFit={() =>
+              setCamera((c) =>
+                fitCamera([...placedRects.values()], viewportSize.w, viewportSize.h, 48, c),
+              )
+            }
+          />
         </>
       )}
     </div>
@@ -1151,6 +1183,97 @@ function CardEditor({
         onSubmit={({ body, type }) => onCommit(body, type)}
         onCancel={onCancel}
       />
+    </div>
+  )
+}
+
+/**
+ * Orientation pill shown when ≥1 card is placed but none intersect the viewport
+ * (§14 G2). The arrow glyph is computed from the angle between the viewport
+ * center and the placed-cards centroid (world space), giving the user a spatial
+ * hint. Click = zoom-to-fit.
+ *
+ * Why a child component: reads `placedRects.values()` for the centroid call,
+ * which is a Map iterator — not a stable value — so placing the logic here keeps
+ * the `centroid` import away from the CanvasStage render body (no extra render).
+ *
+ * @see docs/specs/v0.4-canvas-mvp.md §14 (G2 centroid arrow)
+ * @see src/renderer/src/canvas/selection-geometry.ts (centroid)
+ * @see src/renderer/src/canvas/camera.ts (fitCamera)
+ */
+function CentroidArrow({
+  placedLayouts,
+  visibleIds,
+  placedRects,
+  camera,
+  viewportSize,
+  onFit,
+}: {
+  placedLayouts: { note_id: string }[]
+  visibleIds: Set<string>
+  placedRects: Map<string, WorldRect>
+  camera: import('./camera').Camera
+  viewportSize: { w: number; h: number }
+  onFit: () => void
+}): React.JSX.Element | null {
+  // Only show when cards exist but none are visible in the viewport.
+  if (placedLayouts.length === 0 || visibleIds.size > 0) return null
+
+  const c = centroid([...placedRects.values()])
+  if (!c) return null
+
+  // Camera viewport center in world coordinates.
+  const vcx = camera.x + viewportSize.w / camera.zoom / 2
+  const vcy = camera.y + viewportSize.h / camera.zoom / 2
+
+  // Angle from viewport center to centroid; map to an octant arrow glyph.
+  const dx = c.x - vcx
+  const dy = c.y - vcy
+  const angle = Math.atan2(dy, dx) * (180 / Math.PI) // degrees, -180..180
+  // 8-directional arrows mapped from angle: right=0, down=90, left=±180, up=-90.
+  let arrow = '→'
+  if (angle >= -22.5 && angle < 22.5) arrow = '→'
+  else if (angle >= 22.5 && angle < 67.5) arrow = '↘'
+  else if (angle >= 67.5 && angle < 112.5) arrow = '↓'
+  else if (angle >= 112.5 && angle < 157.5) arrow = '↙'
+  else if (angle >= 157.5 || angle < -157.5) arrow = '←'
+  else if (angle >= -157.5 && angle < -112.5) arrow = '↖'
+  else if (angle >= -112.5 && angle < -67.5) arrow = '↑'
+  else arrow = '↗'
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        bottom: 16,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        pointerEvents: 'auto',
+      }}
+    >
+      <button
+        type="button"
+        data-canvas-centroid-arrow
+        onClick={onFit}
+        title="zoom to fit all cards"
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '5px 12px',
+          background: 'var(--bg-1)',
+          border: '1px solid var(--border-0)',
+          borderRadius: 'var(--r-pill)',
+          boxShadow: 'var(--shadow-1)',
+          cursor: 'pointer',
+          fontFamily: 'var(--font-sans)',
+          fontSize: 'var(--t-12)',
+          color: 'var(--fg-2)',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {arrow} back to your notes
+      </button>
     </div>
   )
 }
