@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getPane } from './Pane'
 
 /** Dock width bounds (spec §10 — resizable 220–400 px by edge drag). */
@@ -52,6 +52,17 @@ export function Dock({ open, paneId, onClose }: DockProps): React.JSX.Element | 
     [width, onPointerMove, onPointerUp],
   )
 
+  // Unmount safety: if the Dock unmounts mid-drag (e.g. onClose swaps the
+  // stage), window listeners would otherwise leak and call setWidth on an
+  // unmounted component. Both callbacks are stable (useCallback) so this runs
+  // only on real unmount — it does not tear down listeners mid-drag.
+  useEffect(() => {
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', onPointerUp)
+    }
+  }, [onPointerMove, onPointerUp])
+
   if (!open) return null
   const pane = getPane(paneId)
   if (!pane) return null
@@ -101,6 +112,9 @@ export function Dock({ open, paneId, onClose }: DockProps): React.JSX.Element | 
         </button>
       </header>
       <div style={{ flex: 1, overflow: 'auto' }}>{pane.render()}</div>
+      {/* Intentionally pointer-only — keyboard resize (the WAI-ARIA
+          role="separator" splitter pattern) is deferred to the dock-shell
+          milestone (vision §Dock shell), so no role/aria here yet. */}
       <div
         data-dock-resize
         onPointerDown={onResizeStart}
