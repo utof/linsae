@@ -31,26 +31,114 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useHotkeys } from 'react-hotkeys-hook'
 import { MANUAL_ARRANGEMENT_ID, ROOT_CANVAS_ID } from '../../../shared/canvas'
 import type { Note, NoteType } from '../../../shared/types'
 import { Composer } from '../composer/Composer'
 import { api } from '../lib/api'
 import type { UnderlayLayer } from './CanvasUnderlay'
 import { CanvasUnderlay } from './CanvasUnderlay'
-import { visibleWorldRect } from './camera'
+import { centerCamera, type Point, screenToWorld, visibleWorldRect } from './camera'
 import { useCanvasDevLod } from './dev-lod'
 import { edgeSegment } from './edge-geometry'
 import { tierForZoom } from './lod'
 import { NoteCard } from './NoteCard'
+import { Picker } from './Picker'
+import { CanvasSelectionBar } from './SelectionBar'
 import type { WorldRect } from './spatial-index'
 import { CardSpatialIndex } from './spatial-index'
+import type { Pos, UndoEntry } from './undo-stack'
+import { emptyUndo, pushOp, redo as redoStack, undo as undoStack } from './undo-stack'
 import { useCanvasCamera } from './useCanvasCamera'
+import { useCanvasInteractions } from './useCanvasInteractions'
 
 interface Props {
   /** Navigate to (or draft) the note for a clicked `[[slug]]` wikilink. */
   onWikilinkClick: (slug: string) => void
   /** Synchronous dangling-class check for a wikilink slug (render pass). */
   resolveSlug: (slug: string) => boolean
+  /**
+   * One-shot placement state (spec §6), set by App when "place on canvas…" is
+   * chosen from the feed. When non-null the stage shows a top-center banner + a
+   * ghost card under the cursor; a click commits the placement and clears it.
+   * CanvasStage only CONSUMES this prop — App owns setting/clearing it (Task 10).
+   */
+  placing?: { noteId: string; title: string } | null
+  /** Clear one-shot placement (called on commit or esc-cancel). */
+  onPlacingDone?: () => void
+}
+
+/**
+ * Captured timestamps for a removed layout row, keyed by note id. Stashed at
+ * remove time so an undo can `restoreLayouts` with the ORIGINAL `created_at` /
+ * `placed_at` rather than re-stamping (which would corrupt the §2 recency rule).
+ * @see docs/specs/v0.4-canvas-mvp.md §13
+ */
+export type LayoutTimestamps = Map<string, { createdAt: number; placedAt: number | null }>
+
+/** IPC surface `applyEntry` drives; the `api.canvas` facade satisfies it. */
+type CanvasApi = Pick<
+  typeof api.canvas,
+  'placeNote' | 'moveNotes' | 'unplaceNotes' | 'restoreLayouts' | 'removeNotes'
+>
+
+/**
+ * Drive one undo entry's items to their target positions via canvas IPC.
+ *
+ * `dir==='undo'` moves each item `to`→`from`; `'redo'` moves `from`→`to`. The
+ * verb is chosen by the TARGET position (per the {@link undo-stack} mapping):
+ *   - `'shelf'`  → `unplaceNotes`
+ *   - `'absent'` → `removeNotes`
+ *   - `{x,y}`    → `restoreLayouts` when coming FROM `'absent'` (re-insert with
+ *     the preserved timestamps from `deps.timestamps`), else `placeNote`.
+ *
+ * Exported so the remove→undo round-trip is unit-testable headless without a
+ * pointer-driven selection (the only way Step 6d can assert timestamp
+ * preservation deterministically in happy-dom).
+ *
+ * @see docs/specs/v0.4-canvas-mvp.md §13
+ * @see src/renderer/src/canvas/undo-stack.ts (Pos → IPC verb mapping comment)
+ */
+export async function applyEntry(
+  entry: UndoEntry,
+  dir: 'undo' | 'redo',
+  deps: { canvas: CanvasApi; timestamps: LayoutTimestamps },
+): Promise<void> {
+  const key = { canvasId: ROOT_CANVAS_ID, arrangementId: MANUAL_ARRANGEMENT_ID }
+  const places: { noteId: string; x: number; y: number }[] = []
+  const restores: {
+    noteId: string
+    x: number | null
+    y: number | null
+    createdAt: number
+    placedAt: number | null
+  }[] = []
+  const shelves: string[] = []
+  const removes: string[] = []
+
+  for (const item of entry.items) {
+    const source: Pos = dir === 'undo' ? item.to : item.from
+    const target: Pos = dir === 'undo' ? item.from : item.to
+    if (target === 'shelf') shelves.push(item.noteId)
+    else if (target === 'absent') removes.push(item.noteId)
+    else if (source === 'absent') {
+      const ts = deps.timestamps.get(item.noteId)
+      restores.push({
+        noteId: item.noteId,
+        x: target.x,
+        y: target.y,
+        createdAt: ts?.createdAt ?? Date.now(),
+        placedAt: ts?.placedAt ?? Date.now(),
+      })
+    } else places.push({ noteId: item.noteId, x: target.x, y: target.y })
+  }
+
+  const calls: Promise<unknown>[] = []
+  for (const p of places) calls.push(deps.canvas.placeNote({ ...key, ...p }))
+  if (restores.length > 0) calls.push(deps.canvas.restoreLayouts({ ...key, rows: restores }))
+  if (shelves.length > 0) calls.push(deps.canvas.unplaceNotes({ ...key, noteIds: shelves }))
+  if (removes.length > 0) calls.push(deps.canvas.removeNotes({ ...key, noteIds: removes }))
+  await Promise.all(calls)
 }
 
 /**
@@ -120,7 +208,12 @@ const DOT_SCREEN_RADIUS = 3
  *
  * @see docs/specs/v0.4-canvas-mvp.md §3
  */
-export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.Element {
+export function CanvasStage({
+  onWikilinkClick,
+  resolveSlug,
+  placing = null,
+  onPlacingDone,
+}: Props): React.JSX.Element {
   const viewportRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
 
@@ -128,9 +221,15 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
   // 'auto' and the [0.5,2.0] zoom clamp keeps tierForZoom in 'card' normally).
   const devLod = useCanvasDevLod()
 
-  const { camera, ready, isMoving } = useCanvasCamera(ROOT_CANVAS_ID, viewportRef, {
+  const { camera, setCamera, ready, isMoving } = useCanvasCamera(ROOT_CANVAS_ID, viewportRef, {
     unclampZoom: devLod.unclampZoom,
   })
+
+  // Live camera mirror for the interaction hook's pointer listeners (they read
+  // it via a ref so a gesture mid-pan/zoom stays correct — ADR 0006, same
+  // posture as useCanvasCamera's own internal cameraRef).
+  const cameraRef = useRef(camera)
+  cameraRef.current = camera
 
   // Active tier: a forced tier wins; otherwise zoom decides (spec §12). 'title'
   // and 'card' both render cards as today; only 'dot' swaps to the dot renderer.
@@ -187,21 +286,41 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
     [layouts],
   )
 
+  // ---- Measured-height cache (declared here so placedRects can read it). See
+  // handleMeasured below; mutated, not pruned on unplace (bounded by note count).
+  const heightCacheRef = useRef(new Map<string, number>())
+
+  // Bumped by handleMeasured when a card's measured height genuinely changes, so
+  // the memos that read the (biome-invisible) height cache re-run.
+  const [cullEpoch, setCullEpoch] = useState(0)
+
+  /**
+   * noteId → world rect, built DURING render from each placed row's real x/y and
+   * the measured-height cache. THE single source of card rects: `edgesLayer`,
+   * `index`, and the interaction hook (drag/marquee `from`) all read this map so
+   * they can never disagree. Why `cullEpoch` is a dep: the height cache is a ref
+   * (biome can't see it), so `cullEpoch` gates rebuilds on a height change.
+   */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cullEpoch gates height-cache reads (heightCacheRef is a stable ref)
+  const placedRects = useMemo(() => {
+    const m = new Map<string, WorldRect>()
+    for (const r of placedLayouts) {
+      m.set(r.note_id, {
+        x: r.x as number,
+        y: r.y as number,
+        w: CARD_WIDTH,
+        h: heightCacheRef.current.get(r.note_id) ?? DEFAULT_CARD_HEIGHT,
+      })
+    }
+    return m
+  }, [placedLayouts, cullEpoch])
+
   // ---- Edge data: resolved links between placed notes (read-only, spec §11)
   const { data: edges = EMPTY } = useQuery({
     queryKey: ['canvas-edges', ROOT_CANVAS_ID],
     queryFn: () =>
       api.canvas.edges({ canvasId: ROOT_CANVAS_ID, arrangementId: MANUAL_ARRANGEMENT_ID }),
   })
-
-  // ---- Measured-height cache, keyed by note id; mutated by handleMeasured.
-  // Not pruned on unplace: bounded by note count, and a stale height only shifts
-  // the cull rect within the 1-viewport inflation margin (§3), so it's tolerated.
-  const heightCacheRef = useRef(new Map<string, number>())
-
-  // Bumped by handleMeasured when a card's measured height genuinely changes, so
-  // the index memo (which reads the height cache, invisible to biome) re-runs.
-  const [cullEpoch, setCullEpoch] = useState(0)
 
   /**
    * Cached CSS token for edge stroke colour (`--fg-3`), resolved once on first
@@ -213,27 +332,12 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
 
   /**
    * UnderlayLayer that draws resolved note edges in world coordinates. Rebuilt
-   * on [edges, placedLayouts, cullEpoch] so a new array reference marks the
-   * underlay dirty via the `layers` identity change (spec §3 dirty-flag cadence).
-   * Reading placedLayouts + heightCacheRef here uses the SAME source as culling —
-   * Plan 3 drag will only need to mark dirty per frame, no separate rect source.
-   *
-   * Why cullEpoch is a dep: heightCacheRef is a stable ref (biome can't see it),
-   * so cullEpoch gates rebuilds when a measured height changes.
+   * on [edges, placedRects] so a new array reference marks the underlay dirty via
+   * the `layers` identity change (spec §3 dirty-flag cadence). Reads the shared
+   * {@link placedRects} map — the SAME source as culling + the interaction hook.
    */
-  // biome-ignore lint/correctness/useExhaustiveDependencies: cullEpoch gates height-cache reads (heightCacheRef is a stable ref)
   const edgesLayer: UnderlayLayer = useMemo(() => {
-    // Build a noteId → WorldRect map from the SAME height-cache/layout source
-    // as the culling index, so both always agree on card rects.
-    const rectByNoteId = new Map<string, WorldRect>()
-    for (const r of placedLayouts) {
-      rectByNoteId.set(r.note_id, {
-        x: r.x as number,
-        y: r.y as number,
-        w: CARD_WIDTH,
-        h: heightCacheRef.current.get(r.note_id) ?? DEFAULT_CARD_HEIGHT,
-      })
-    }
+    const rectByNoteId = placedRects
 
     return {
       // drawCamera (not the render-closure camera): the hairline math uses the
@@ -283,7 +387,7 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
         }
       },
     }
-  }, [edges, placedLayouts, cullEpoch])
+  }, [edges, placedRects])
 
   /**
    * Cached `--fg-2` token for the dot fill, resolved once on first dot draw.
@@ -352,30 +456,17 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
   )
 
   /**
-   * Spatial index built DURING render from the placed layouts' real x/y and the
-   * measured-height cache. Building it in render (not a post-render effect) means
-   * `visibleIds` reads a fresh index in the SAME render — no staleness, and no
-   * render→effect→setState cull loop. Bug 1 (measure-time origin teleport) is
-   * unrepresentable here: the index is always seeded from each row's real x/y.
-   * Why `cullEpoch` is a dep: the height cache is a ref (biome can't see it), so
-   * `cullEpoch` gates rebuilds when a measured height changes.
+   * Spatial index built DURING render from the shared {@link placedRects} map
+   * (each row's real x/y + measured height). Building it in render (not a post-
+   * render effect) means `visibleIds` reads a fresh index in the SAME render — no
+   * staleness, and no render→effect→setState cull loop. Bug 1 (measure-time origin
+   * teleport) is unrepresentable: the rects are always seeded from real x/y.
    */
-  // biome-ignore lint/correctness/useExhaustiveDependencies: cullEpoch gates height-cache reads (heightCacheRef is a stable ref)
   const index = useMemo(() => {
     const idx = new CardSpatialIndex()
-    idx.rebuild(
-      placedLayouts.map((r) => ({
-        id: r.note_id,
-        rect: {
-          x: r.x as number,
-          y: r.y as number,
-          w: CARD_WIDTH,
-          h: heightCacheRef.current.get(r.note_id) ?? DEFAULT_CARD_HEIGHT,
-        },
-      })),
-    )
+    idx.rebuild([...placedRects].map(([id, rect]) => ({ id, rect })))
     return idx
-  }, [placedLayouts, cullEpoch])
+  }, [placedRects])
 
   /**
    * Record a card's measured shell height and trigger one index rebuild iff the
@@ -419,6 +510,294 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
     },
     onError: (err) => setEditError(err instanceof Error ? err.message : String(err)),
   })
+
+  // ---- Spatial-undo stack (spec §13). A render-stable ref: the stack is
+  // per-window in-memory and dies on close. The reducer (undo-stack.ts) is pure;
+  // `applyEntry` (exported above) maps an entry's items to canvas IPC. The
+  // timestamp side-map captures removed rows' created_at/placed_at so a
+  // restoreLayouts undo reconstructs them with the ORIGINAL timestamps (§13).
+  const undoRef = useRef(emptyUndo())
+  const timestampsRef = useRef<LayoutTimestamps>(new Map())
+
+  /** Invalidate the canvas queries after any layout write so the surface refreshes. */
+  const refreshCanvas = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ['canvas-layouts', ROOT_CANVAS_ID] })
+    void queryClient.invalidateQueries({ queryKey: ['canvas-edges'] })
+  }, [queryClient])
+
+  /** Record a committed op on the undo stack (coalescing handled by pushOp). */
+  const recordOp = useCallback((entry: UndoEntry) => {
+    undoRef.current = pushOp(undoRef.current, entry)
+  }, [])
+
+  const undo = useCallback(async () => {
+    const { state, entry } = undoStack(undoRef.current)
+    undoRef.current = state
+    if (!entry) return
+    await applyEntry(entry, 'undo', { canvas: api.canvas, timestamps: timestampsRef.current })
+    refreshCanvas()
+  }, [refreshCanvas])
+
+  const redo = useCallback(async () => {
+    const { state, entry } = redoStack(undoRef.current)
+    undoRef.current = state
+    if (!entry) return
+    await applyEntry(entry, 'redo', { canvas: api.canvas, timestamps: timestampsRef.current })
+    refreshCanvas()
+  }, [refreshCanvas])
+
+  // Spatial undo/redo (spec §13/§15). Bound HERE because the stack ref is private
+  // to CanvasStage — App can't reach it. CanvasStage only mounts on the canvas
+  // view (App.tsx), so the binding is implicitly canvas-scoped; no viewMode gate
+  // needed. The REST of the canvas key map + the esc cascade are Task 11's.
+  useHotkeys('mod+z', (e) => {
+    e.preventDefault()
+    void undo()
+  })
+  useHotkeys('shift+mod+z', (e) => {
+    e.preventDefault()
+    void redo()
+  })
+
+  // ---- Drag/nudge commits: turn the hook's moves into placeNote + an undo
+  // entry. A move's `from`/`to` are both `{x,y}`, so undo replays placeNote at
+  // the prior coords. `onCommitNudge` stamps `at` so the reducer coalesces a
+  // nudge burst into one undo entry (undo-stack COALESCE_MS).
+  const commitMoves = useCallback(
+    (moves: { noteId: string; from: Point; to: Point }[], coalesce: boolean) => {
+      const key = { canvasId: ROOT_CANVAS_ID, arrangementId: MANUAL_ARRANGEMENT_ID }
+      void api.canvas.moveNotes({
+        ...key,
+        moves: moves.map((m) => ({ ...m.to, noteId: m.noteId })),
+      })
+      recordOp({
+        op: 'move',
+        items: moves.map((m) => ({ noteId: m.noteId, from: m.from, to: m.to })),
+        ...(coalesce ? { at: Date.now() } : {}),
+      })
+      refreshCanvas()
+    },
+    [recordOp, refreshCanvas],
+  )
+  const onCommitMove = useCallback(
+    (moves: { noteId: string; from: Point; to: Point }[]) => commitMoves(moves, false),
+    [commitMoves],
+  )
+  const onCommitNudge = useCallback(
+    (moves: { noteId: string; from: Point; to: Point }[]) => commitMoves(moves, true),
+    [commitMoves],
+  )
+
+  // ---- Interaction hook (selection + drag/marquee/nudge). Reads placedRects +
+  // index live; commits flow back through the callbacks above.
+  const interactions = useCanvasInteractions({
+    cameraRef,
+    viewportRef,
+    placedRects,
+    index,
+    onCommitMove,
+    onCommitNudge,
+  })
+
+  /**
+   * Place a note at a world point + record the undo entry. `from` is `'shelf'`
+   * if the note was already shelved (a NULL-xy layout row exists), else
+   * `'absent'`; undo then reshelves or removes the row accordingly (§13). Used by
+   * the picker, the one-shot ghost, and (with `from:'absent'`) create-on-canvas.
+   */
+  const placeAt = useCallback(
+    (noteId: string, p: Point, from: Pos) => {
+      const key = { canvasId: ROOT_CANVAS_ID, arrangementId: MANUAL_ARRANGEMENT_ID }
+      void api.canvas.placeNote({ ...key, noteId, x: p.x, y: p.y })
+      recordOp({ op: 'place', items: [{ noteId, from, to: { x: p.x, y: p.y } }] })
+      refreshCanvas()
+    },
+    [recordOp, refreshCanvas],
+  )
+
+  /** True if `noteId` has a (shelved) layout row already — picker `from` choice. */
+  const isShelved = useCallback(
+    (noteId: string) => layouts.some((r) => r.note_id === noteId && r.x === null),
+    [layouts],
+  )
+
+  // ---- Camera helpers for jump-to-card (picker ▦ jump, recent, ▦ chips). Pans
+  // to center the card and flashes its ring. `ringFlashId` paints a transient
+  // accent ring (selection treatment, reused) cleared after a short timeout.
+  const [ringFlashId, setRingFlashId] = useState<string | null>(null)
+  const ringTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flashRing = useCallback((noteId: string) => {
+    if (ringTimerRef.current) clearTimeout(ringTimerRef.current)
+    setRingFlashId(noteId)
+    ringTimerRef.current = setTimeout(() => setRingFlashId(null), 900)
+  }, [])
+  useEffect(() => () => void (ringTimerRef.current && clearTimeout(ringTimerRef.current)), [])
+
+  const jumpToCard = useCallback(
+    (noteId: string) => {
+      const rect = placedRects.get(noteId)
+      if (!rect) return
+      const { w, h } = viewportSize
+      setCamera((c) => centerCamera(rect, w, h, c.zoom))
+      flashRing(noteId)
+    },
+    [placedRects, viewportSize, setCamera, flashRing],
+  )
+
+  // ---- `/` picker state. `pickerAnchor` is the viewport-relative SCREEN point
+  // where the picker floats (= the intended drop point). Task 11 binds `/` to
+  // open it; here we own the mount + pick/jump/close wiring.
+  const [pickerAnchor, setPickerAnchor] = useState<{ x: number; y: number } | null>(null)
+  const placedNoteIds = useMemo(() => new Set(placedRects.keys()), [placedRects])
+
+  const onPick = useCallback(
+    (noteId: string, opts: { keepOpen: boolean }) => {
+      const camera = cameraRef.current
+      const anchor = pickerAnchor
+      if (!camera || !anchor) return
+      const world = screenToWorld(camera, anchor)
+      placeAt(noteId, world, isShelved(noteId) ? 'shelf' : 'absent')
+      if (opts.keepOpen) setPickerAnchor({ x: anchor.x + 24, y: anchor.y + 24 })
+      else setPickerAnchor(null)
+    },
+    [pickerAnchor, placeAt, isShelved],
+  )
+
+  // ---- One-shot ghost (spec §6, receiving side). App sets the `placing` prop;
+  // we track the live cursor world point so the ghost follows it, and commit on
+  // a click. `ghostWorld` is updated by a pointermove listener while `placing`.
+  const [ghostWorld, setGhostWorld] = useState<Point | null>(null)
+  useEffect(() => {
+    const viewport = viewportRef.current
+    if (!placing || !viewport) {
+      setGhostWorld(null)
+      return
+    }
+    const onMove = (e: PointerEvent) => {
+      const camera = cameraRef.current
+      if (!camera) return
+      const rect = viewport.getBoundingClientRect()
+      setGhostWorld(screenToWorld(camera, { x: e.clientX - rect.left, y: e.clientY - rect.top }))
+    }
+    const onClick = (e: MouseEvent) => {
+      const camera = cameraRef.current
+      if (!camera) return
+      const rect = viewport.getBoundingClientRect()
+      const world = screenToWorld(camera, { x: e.clientX - rect.left, y: e.clientY - rect.top })
+      placeAt(placing.noteId, world, 'absent')
+      flashRing(placing.noteId)
+      onPlacingDone?.()
+    }
+    viewport.addEventListener('pointermove', onMove)
+    viewport.addEventListener('click', onClick)
+    return () => {
+      viewport.removeEventListener('pointermove', onMove)
+      viewport.removeEventListener('click', onClick)
+    }
+  }, [placing, placeAt, flashRing, onPlacingDone])
+
+  // ---- Create-on-canvas (spec §7). Double-click the empty surface opens a
+  // floating create-mode Composer at the double-clicked world point; ↵ creates +
+  // places in one transaction (single timestamp — api.canvas.createNoteAt).
+  const [createAt, setCreateAt] = useState<Point | null>(null)
+  const createMut = useMutation({
+    mutationFn: (input: { body: string; type: NoteType; x: number; y: number }) =>
+      api.canvas.createNoteAt({
+        canvasId: ROOT_CANVAS_ID,
+        arrangementId: MANUAL_ARRANGEMENT_ID,
+        body: input.body,
+        type: input.type,
+        x: input.x,
+        y: input.y,
+      }),
+    onSuccess: (note, vars) => {
+      void queryClient.invalidateQueries({ queryKey: ['notes'] })
+      void queryClient.invalidateQueries({ queryKey: ['note'] })
+      refreshCanvas()
+      // The note stays in the feed on undo — only the layout row is removed (§13),
+      // so the create place op records `from:'absent'`.
+      recordOp({
+        op: 'place',
+        items: [{ noteId: note.id, from: 'absent', to: { x: vars.x, y: vars.y } }],
+      })
+      setCreateAt(null)
+    },
+  })
+
+  /** Double-click on the EMPTY world surface → open the create composer there. */
+  const onSurfaceDoubleClick = useCallback(
+    (e: React.MouseEvent) => {
+      const viewport = viewportRef.current
+      const camera = cameraRef.current
+      if (!viewport || !camera) return
+      const rect = viewport.getBoundingClientRect()
+      const w = screenToWorld(camera, { x: e.clientX - rect.left, y: e.clientY - rect.top })
+      // Only the EMPTY surface creates — a double-click over a card begins that
+      // card's in-place edit (NoteCard's own dblclick), so skip create there.
+      if (index.search({ minX: w.x, minY: w.y, maxX: w.x, maxY: w.y }).length > 0) return
+      setCreateAt(w)
+    },
+    [index],
+  )
+
+  // ---- Pointer-down dispatch on the world surface (spec §8). A pointerdown over
+  // a card begins a (group) drag; over empty surface it begins a marquee. We hit-
+  // test the shared `index` at the pointer's world point rather than wiring a
+  // per-card handler — that keeps NoteCard's DOM (and the keep-alive structural
+  // test) untouched. Space/middle-drag pan is owned by useCanvasCamera and takes
+  // precedence (it preventDefaults the space gesture before this fires).
+  const onWorldPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      const viewport = viewportRef.current
+      const camera = cameraRef.current
+      // While one-shot placing, the surface is the drop target — the DOM `click`
+      // listener commits the placement; no marquee/drag should begin.
+      if (e.button !== 0 || !viewport || !camera || placing) return
+      const rect = viewport.getBoundingClientRect()
+      const w = screenToWorld(camera, { x: e.clientX - rect.left, y: e.clientY - rect.top })
+      const hit = index.search({ minX: w.x, minY: w.y, maxX: w.x, maxY: w.y })
+      if (hit.length > 0) interactions.onCardPointerDown(e, hit[hit.length - 1] as string)
+      else interactions.onSurfacePointerDown(e)
+    },
+    [index, interactions, placing],
+  )
+
+  // ---- Selection-bar verbs (spec §8). `selectedIds` comes from the hook.
+  const { selectedIds, clearSelection } = interactions
+  const dragOffset = interactions.dragOffset
+  const marquee = interactions.marquee
+
+  /** Remove the selected layout rows (notes stay in the feed). Undoable (§13). */
+  const onRemove = useCallback(() => {
+    const ids = [...selectedIds]
+    if (ids.length === 0) return
+    // Capture full row data FIRST so undo can restoreLayouts with timestamps.
+    const items: UndoEntry['items'] = []
+    for (const id of ids) {
+      const row = layouts.find((r) => r.note_id === id)
+      if (!row || row.x === null || row.y === null) continue
+      timestampsRef.current.set(id, { createdAt: row.created_at, placedAt: row.placed_at })
+      items.push({ noteId: id, from: { x: row.x, y: row.y }, to: 'absent' })
+    }
+    if (items.length === 0) return
+    const key = { canvasId: ROOT_CANVAS_ID, arrangementId: MANUAL_ARRANGEMENT_ID }
+    void api.canvas.removeNotes({ ...key, noteIds: items.map((i) => i.noteId) })
+    recordOp({ op: 'remove', items })
+    clearSelection()
+    refreshCanvas()
+  }, [selectedIds, layouts, recordOp, clearSelection, refreshCanvas])
+
+  /** Delete the selected notes everywhere (confirm-gated, NOT undoable — §13). */
+  const onDeleteRequest = useCallback(() => {
+    const ids = [...selectedIds]
+    if (ids.length === 0) return
+    const ok = window.confirm(
+      `delete ${ids.length} note(s) everywhere? this cannot be undone here.`,
+    )
+    if (!ok) return
+    for (const id of ids) void api.notes.delete(id)
+    clearSelection()
+  }, [selectedIds, clearSelection])
 
   // ---- Visible ids: cards intersecting the inflated viewport rect. Reads the
   // freshly-built in-render index, so it reflects this render's layout + heights.
@@ -479,6 +858,27 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
     [editingId, placedLayouts],
   )
 
+  // Selection-bar anchor: a few px above the selection's bounding box, in
+  // viewport SCREEN coords (the bar lives in untransformed overlay space). Null
+  // when nothing is selected. Recomputed as the camera or selection changes so
+  // the bar tracks the cards. Hidden mid-drag to avoid jitter (offset is
+  // transient until drop).
+  const selectionBarPos = useMemo(() => {
+    if (selectedIds.size === 0 || dragOffset) return null
+    let minX = Number.POSITIVE_INFINITY
+    let minY = Number.POSITIVE_INFINITY
+    for (const id of selectedIds) {
+      const r = placedRects.get(id)
+      if (!r) continue
+      minX = Math.min(minX, r.x)
+      minY = Math.min(minY, r.y)
+    }
+    if (!Number.isFinite(minX)) return null
+    const sx = (minX - camera.x) * camera.zoom
+    const sy = (minY - camera.y) * camera.zoom
+    return { x: sx, y: sy - 44 }
+  }, [selectedIds, placedRects, camera, dragOffset])
+
   return (
     // tabIndex makes the viewport focusable so canvas-scoped hotkeys can check
     // focus (Task 6+). The world transform composes a translate (negated, in
@@ -511,6 +911,7 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
             width={viewportSize.w}
             height={viewportSize.h}
           />
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: the world is a spatial surface; pointer/dblclick drive marquee+drag+create — keyboard is the canvas-scoped hotkey map (Task 11), not per-element handlers */}
           <div
             style={{
               position: 'absolute',
@@ -522,23 +923,93 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
                 ` scale(${camera.zoom})`,
             }}
             data-canvas-world
+            onPointerDown={onWorldPointerDown}
+            onDoubleClick={onSurfaceDoubleClick}
           >
-            {cardsToRender.map((r) => (
-              <NoteCard
-                key={r.note_id}
-                noteId={r.note_id}
-                x={r.x as number}
-                y={r.y as number}
-                keptAlive={keepAliveIds.has(r.note_id) && !visibleIds.has(r.note_id)}
-                isMoving={isMoving}
-                onMeasured={handleMeasured}
-                onWikilinkClick={onWikilinkClick}
-                resolveSlug={resolveSlug}
-                onBeginEdit={handleBeginEdit}
-                editing={editingId === r.note_id}
-                selected={false}
+            {cardsToRender.map((r) => {
+              // While dragging, selected cards follow the live offset transiently
+              // (the move is persisted only on drop — spec §8). ringFlashId reuses
+              // the selection treatment to flash a jumped-to card (spec §4/§5/§9).
+              const isSel = selectedIds.has(r.note_id)
+              const dx = isSel && dragOffset ? dragOffset.dx : 0
+              const dy = isSel && dragOffset ? dragOffset.dy : 0
+              return (
+                <NoteCard
+                  key={r.note_id}
+                  noteId={r.note_id}
+                  x={(r.x as number) + dx}
+                  y={(r.y as number) + dy}
+                  keptAlive={keepAliveIds.has(r.note_id) && !visibleIds.has(r.note_id)}
+                  isMoving={isMoving}
+                  onMeasured={handleMeasured}
+                  onWikilinkClick={onWikilinkClick}
+                  resolveSlug={resolveSlug}
+                  onBeginEdit={handleBeginEdit}
+                  editing={editingId === r.note_id}
+                  selected={isSel || ringFlashId === r.note_id}
+                />
+              )
+            })}
+            {/* Marquee rubber-band (quiet) — world coords, drawn while selecting. */}
+            {marquee && (
+              <div
+                data-canvas-marquee
+                aria-hidden="true"
+                style={{
+                  position: 'absolute',
+                  left: marquee.minX,
+                  top: marquee.minY,
+                  width: marquee.maxX - marquee.minX,
+                  height: marquee.maxY - marquee.minY,
+                  border: '1px solid var(--accent)',
+                  background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
+                  pointerEvents: 'none',
+                }}
               />
-            ))}
+            )}
+            {/* One-shot ghost (spec §6): real-size card preview following the cursor. */}
+            {placing && ghostWorld && (
+              <div
+                data-canvas-ghost
+                aria-hidden="true"
+                style={{
+                  position: 'absolute',
+                  transform: `translate(${ghostWorld.x}px, ${ghostWorld.y}px)`,
+                  width: CARD_WIDTH,
+                  minHeight: DEFAULT_CARD_HEIGHT,
+                  background: '#FFFFFF',
+                  border: '1px dashed var(--accent)',
+                  borderRadius: 'var(--r-3)',
+                  boxShadow: 'var(--shadow-2)',
+                  opacity: 0.7,
+                  padding: '12px 14px 10px',
+                  pointerEvents: 'none',
+                }}
+              >
+                {placing.title}
+              </div>
+            )}
+            {/* Create-on-canvas (spec §7): floating create-mode Composer at the
+                double-clicked world point. ↵ creates+places (single timestamp). */}
+            {createAt && (
+              <div
+                data-canvas-create
+                style={{
+                  position: 'absolute',
+                  transform: `translate(${createAt.x}px, ${createAt.y}px)`,
+                  width: CARD_WIDTH,
+                }}
+              >
+                <Composer
+                  initialBody=""
+                  initialMode="claim"
+                  onSubmit={({ body, type }) =>
+                    createMut.mutate({ body, type, x: createAt.x, y: createAt.y })
+                  }
+                  onCancel={() => setCreateAt(null)}
+                />
+              </div>
+            )}
             {/* In-place editor: a floating Composer over the hidden card, in the
                 same world coordinates so it pans/zooms with the canvas (spec §3). */}
             {editingId !== null && editingRow !== null && (
@@ -557,6 +1028,59 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
               />
             )}
           </div>
+          {/* One-shot placement banner (spec §6) — top-center, viewport space. */}
+          {placing && (
+            <div
+              data-canvas-placing-banner
+              style={{
+                position: 'absolute',
+                top: 12,
+                left: '50%',
+                transform: 'translateX(-50%)',
+                background: 'var(--bg-1)',
+                border: '1px solid var(--border-0)',
+                borderRadius: 8,
+                padding: '6px 12px',
+                fontSize: 12,
+                fontFamily: 'var(--font-sans)',
+                color: 'var(--fg-1)',
+                boxShadow: 'var(--shadow-1)',
+                pointerEvents: 'none',
+              }}
+            >
+              {`placing "${placing.title}" — click to drop · esc to cancel`}
+            </div>
+          )}
+          {/* Selection bar (spec §8) — floating quiet bar, viewport space. */}
+          {selectionBarPos && (
+            <div
+              style={{
+                position: 'absolute',
+                left: selectionBarPos.x,
+                top: selectionBarPos.y,
+                pointerEvents: 'none',
+              }}
+            >
+              <CanvasSelectionBar
+                count={selectedIds.size}
+                onRemove={onRemove}
+                onDeleteRequest={onDeleteRequest}
+              />
+            </div>
+          )}
+          {/* `/` picker (spec §5) — floats at the cursor screen point. */}
+          {pickerAnchor && (
+            <Picker
+              anchor={pickerAnchor}
+              placedNoteIds={placedNoteIds}
+              onPick={onPick}
+              onJump={(id) => {
+                jumpToCard(id)
+                setPickerAnchor(null)
+              }}
+              onClose={() => setPickerAnchor(null)}
+            />
+          )}
         </>
       )}
     </div>

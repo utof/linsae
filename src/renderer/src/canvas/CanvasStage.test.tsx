@@ -13,8 +13,9 @@ import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
-import { CanvasStage } from './CanvasStage'
+import { applyEntry, CanvasStage, type LayoutTimestamps } from './CanvasStage'
 import { setCanvasDevLod } from './dev-lod'
+import type { UndoEntry } from './undo-stack'
 
 let mockApi: MockApi
 
@@ -768,5 +769,119 @@ describe('CanvasStage', () => {
     })
     expect(screen.queryByText(DUP)).toBeNull()
     expect(mockApi.notes.update).toHaveBeenCalledTimes(2)
+  })
+
+  // ---- Task 8: interactions, create-on-canvas, one-shot ghost, undo ----------
+
+  it('(q) double-click the empty world → create Composer; submit → createNoteAt', async () => {
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([])
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(container.querySelector('[data-canvas-world]')).not.toBeNull()
+    })
+    const surface = container.querySelector('[data-canvas-world]') as HTMLElement
+    fireEvent.dblClick(surface)
+    // A create-mode Composer textarea appears (no card was double-clicked).
+    const ta = await screen.findByLabelText('write a note')
+    fireEvent.change(ta, { target: { value: 'New canvas note' } })
+    fireEvent.keyDown(ta, { key: 'Enter' })
+    await waitFor(() => {
+      expect(mockApi.canvas.createNoteAt).toHaveBeenCalled()
+    })
+    // happy-dom getBoundingClientRect is all-zero, so the double-click world point
+    // is the camera origin (0,0); assert the body + that x/y are finite numbers
+    // (not the exact coords, which the harness can't supply).
+    expect(mockApi.canvas.createNoteAt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        canvasId: 'root',
+        arrangementId: 'manual',
+        body: 'New canvas note',
+        x: expect.any(Number),
+        y: expect.any(Number),
+      }),
+    )
+  })
+
+  it('(r) placing prop renders the one-shot banner; a click commits via placeNote', async () => {
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([])
+    const onPlacingDone = vi.fn()
+    const { container } = renderWithProviders(
+      <CanvasStage
+        {...noopProps}
+        placing={{ noteId: 'n1', title: 'my note' }}
+        onPlacingDone={onPlacingDone}
+      />,
+    )
+    // (b) the banner text renders.
+    await waitFor(() => {
+      expect(screen.getByText(/placing "my note"/)).toBeTruthy()
+    })
+    // A click on the viewport commits the one-shot placement (placeNote + done).
+    const viewport = container.querySelector('[data-canvas-viewport]') as HTMLElement
+    fireEvent.click(viewport)
+    await waitFor(() => {
+      expect(mockApi.canvas.placeNote).toHaveBeenCalled()
+    })
+    expect(mockApi.canvas.placeNote).toHaveBeenCalledWith(
+      expect.objectContaining({ canvasId: 'root', arrangementId: 'manual', noteId: 'n1' }),
+    )
+    expect(onPlacingDone).toHaveBeenCalled()
+  })
+
+  it('(s) applyEntry: remove→undo restores via restoreLayouts with preserved timestamps', async () => {
+    // The crux headless assertion (Step 6d). `applyEntry` is EXPORTED so this
+    // round-trip needs no pointer-driven selection: build a `remove` entry (a card
+    // at (40,60) → 'absent'), stash its timestamps, and undo it. Undoing a remove
+    // must call restoreLayouts (NOT placeNote) with the prior position AND the
+    // ORIGINAL createdAt/placedAt — re-stamping would corrupt the §2 recency rule.
+    const canvas = {
+      placeNote: vi.fn(async () => undefined),
+      moveNotes: vi.fn(async () => undefined),
+      unplaceNotes: vi.fn(async () => undefined),
+      restoreLayouts: vi.fn(async () => undefined),
+      removeNotes: vi.fn(async () => undefined),
+    }
+    const timestamps: LayoutTimestamps = new Map([['n1', { createdAt: 111, placedAt: 222 }]])
+    const entry: UndoEntry = {
+      op: 'remove',
+      items: [{ noteId: 'n1', from: { x: 40, y: 60 }, to: 'absent' }],
+    }
+    // Forward (redo): reaching 'absent' removes the row.
+    await applyEntry(entry, 'redo', { canvas, timestamps })
+    expect(canvas.removeNotes).toHaveBeenCalledWith(expect.objectContaining({ noteIds: ['n1'] }))
+    // Backward (undo): restore the row with the prior pos + preserved timestamps.
+    await applyEntry(entry, 'undo', { canvas, timestamps })
+    expect(canvas.placeNote).not.toHaveBeenCalled()
+    expect(canvas.restoreLayouts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        canvasId: 'root',
+        arrangementId: 'manual',
+        rows: [{ noteId: 'n1', x: 40, y: 60, createdAt: 111, placedAt: 222 }],
+      }),
+    )
+  })
+
+  it('(t) applyEntry: place-from-shelf undo reshelves via unplaceNotes', async () => {
+    // A `place` op whose `from` is 'shelf' (the picker placed a shelved note):
+    // undo must reshelf it (unplaceNotes), redo must re-place it (placeNote).
+    const canvas = {
+      placeNote: vi.fn(async () => undefined),
+      moveNotes: vi.fn(async () => undefined),
+      unplaceNotes: vi.fn(async () => undefined),
+      restoreLayouts: vi.fn(async () => undefined),
+      removeNotes: vi.fn(async () => undefined),
+    }
+    const entry: UndoEntry = {
+      op: 'place',
+      items: [{ noteId: 'n2', from: 'shelf', to: { x: 10, y: 20 } }],
+    }
+    await applyEntry(entry, 'undo', { canvas, timestamps: new Map() })
+    expect(canvas.unplaceNotes).toHaveBeenCalledWith(expect.objectContaining({ noteIds: ['n2'] }))
+    await applyEntry(entry, 'redo', { canvas, timestamps: new Map() })
+    expect(canvas.placeNote).toHaveBeenCalledWith(
+      expect.objectContaining({ noteId: 'n2', x: 10, y: 20 }),
+    )
   })
 })
