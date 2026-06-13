@@ -46,8 +46,10 @@ import {
   type Point,
   screenToWorld,
   visibleWorldRect,
+  worldToScreen,
 } from './camera'
 import { setCanvasDevLod, useCanvasDevLod } from './dev-lod'
+import { EdgeTargetPicker } from './EdgeTargetPicker'
 import { arrowhead, edgeSegment } from './edge-geometry'
 import { edgeKind, TYPE_PILL_MIN_ZOOM } from './edge-style'
 import {
@@ -1730,6 +1732,50 @@ export function CanvasStage({
               onClose={() => setPickerAnchor(null)}
             />
           )}
+          {/* Edge-target picker (spec §4) — drop an edge into empty space → fuzzy
+              place-or-create + connect. Anchored at the drop world point. */}
+          {edgeTargetPicker &&
+            (() => {
+              const { dropWorld, fromNoteId: src, labeled } = edgeTargetPicker
+              // Connect src→target: labeled routes through the inline label field
+              // at the drop point (↵ commits the type, esc cancels the whole edge —
+              // decision 3); plain creates a 'link' edge immediately.
+              const connectTo = (targetId: string) => {
+                if (labeled) {
+                  setPendingEdgeLabel({
+                    fromNoteId: src,
+                    toNoteId: targetId,
+                    worldAnchor: dropWorld,
+                  })
+                } else {
+                  createEdgeMut.mutate({ fromNoteId: src, toNoteId: targetId, edgeType: 'link' })
+                }
+              }
+              return (
+                <EdgeTargetPicker
+                  anchor={worldToScreen(camera, dropWorld)}
+                  placedNoteIds={placedNoteIds}
+                  onConnectExisting={(id) => {
+                    connectTo(id)
+                    setEdgeTargetPicker(null)
+                  }}
+                  onPlaceAndConnect={(id) => {
+                    placeAt(id, dropWorld, isShelved(id) ? 'shelf' : 'absent')
+                    connectTo(id)
+                    setEdgeTargetPicker(null)
+                  }}
+                  onCreateAndConnect={(body) => {
+                    // mutateAsync so the new note's id chains into connectTo — the
+                    // shared createMut.onSuccess can't do a per-call createEdge.
+                    void createMut
+                      .mutateAsync({ body, type: 'claim', x: dropWorld.x, y: dropWorld.y })
+                      .then((note) => connectTo(note.id))
+                    setEdgeTargetPicker(null)
+                  }}
+                  onClose={() => setEdgeTargetPicker(null)}
+                />
+              )
+            })()}
           {/* Zero state (spec §14): centered in the viewport, shown when no cards
               are placed. Follows the camera (viewport-space, not world-space). */}
           <div
