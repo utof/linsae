@@ -85,6 +85,9 @@ export function arrowhead(s: Segment, size: number): Arrowhead {
  *     read-only on the canvas and never selectable (decision 6, drawn-only);
  *   - edges whose endpoints aren't BOTH placed (`rectByNoteId` miss): a dangling
  *     edge draws nothing, so it isn't selectable either (spec §11/§1).
+ * On a distance tie the LATER edge in `edges` wins (the `d <= bestDist` compare),
+ * matching the draw z-order (last-painted = topmost), so the topmost edge under
+ * the cursor is the one selected.
  * Pure (no canvas/DOM) so the hit-test math is unit-testable; the pointer→select
  * choreography is smoke-tested (#131).
  * @see docs/specs/v0.4.1-canvas-edges.md §5

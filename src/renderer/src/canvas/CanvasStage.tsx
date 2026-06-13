@@ -567,7 +567,12 @@ export function CanvasStage({
           }
 
           // Reset per-edge state so styling doesn't bleed into the next edge.
+          // lineWidth is also re-set at the top of every iteration, but reset it
+          // here too so the selected-edge 2/zoom width is self-contained — if the
+          // top-of-loop set ever moves into a branch, the thicker line still can't
+          // bleed onto the next edge (no pixel test would catch that regression).
           ctx.globalAlpha = 1
+          ctx.lineWidth = 1 / drawCamera.zoom
           ctx.setLineDash([])
         }
       },
