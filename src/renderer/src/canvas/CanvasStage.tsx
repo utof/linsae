@@ -53,7 +53,10 @@ const KEEP_ALIVE_SIZE = 32
 
 /**
  * Default card height in world px before the first ResizeObserver measurement
- * (spec §11: 140 px placeholder height for spatial index seeding).
+ * (spec §11: 140 px placeholder height for spatial index seeding). The 1-viewport
+ * cull inflation (§3) is what makes this low seed tolerable — a tall, never-
+ * measured card straddling the cull boundary is the bounded edge case.
+ * @issue utof/linsae#109
  */
 const DEFAULT_CARD_HEIGHT = 140
 
@@ -115,6 +118,8 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
   )
 
   // ---- Measured-height cache, keyed by note id; mutated by handleMeasured.
+  // Not pruned on unplace: bounded by note count, and a stale height only shifts
+  // the cull rect within the 1-viewport inflation margin (§3), so it's tolerated.
   const heightCacheRef = useRef(new Map<string, number>())
 
   // Bumped by handleMeasured when a card's measured height genuinely changes, so
@@ -169,30 +174,38 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
 
   // ---- Keep-alive: LRU queue of up to KEEP_ALIVE_SIZE recently-exited cards.
   //
-  // Exit-tracking runs DURING render so a card stays mounted on the render it
-  // exits (a post-render effect would unmount it for one render first). The
-  // computation is pure and idempotent under StrictMode double-invocation:
-  // pass 2 reads `prevVisibleRef` already set to `visibleIds` by pass 1, finds
-  // no exits, and re-filtering the already-filtered queue is a fixed point — so
-  // both passes commit the same queue and return the same Set.
-  const keepAliveQueueRef = useRef<string[]>([])
-  const prevVisibleRef = useRef(new Set<string>())
-  const keepAliveIds = useMemo(() => {
+  // Exit-tracking runs DURING render via the setState-during-render pattern (React
+  // docs: "storing information from previous renders") so a card is in the keep-
+  // alive set on the very render it exits — never unmounted-then-remounted. We use
+  // `useState` (not refs) for `prevVisible` and the queue because both are part of
+  // the render's transactional output: if React abandons this render (concurrent
+  // bailout, Suspense replay, interrupted startTransition — plausible once Plan 3
+  // wraps the canvas in Motion transitions), the queued state updates are discarded
+  // with it. A ref write would persist past an abandoned render, advancing
+  // `prevVisible` to a `visibleIds` that never hit the DOM → next commit
+  // mis-classifies exits. The `prevVisible !== visibleIds` guard is the sole
+  // trigger and prevents an infinite loop: after `setPrevVisible(visibleIds)` the
+  // retry render sees `prevVisible === visibleIds` (visibleIds is a stable useMemo
+  // ref across the retry) → guard false → no further setState.
+  // @see https://react.dev/reference/react/useState#storing-information-from-previous-renders
+  const [prevVisible, setPrevVisible] = useState<Set<string>>(() => new Set())
+  const [keepAliveQueue, setKeepAliveQueue] = useState<string[]>([])
+  if (prevVisible !== visibleIds) {
     const placedIds = new Set(placedLayouts.map((r) => r.note_id))
-    // Newly exited: visible in the previous render, not visible now.
-    const exited = [...prevVisibleRef.current].filter((id) => !visibleIds.has(id))
+    // Newly exited: visible in the previous (committed) render, not visible now.
+    const exited = [...prevVisible].filter((id) => !visibleIds.has(id))
     // Most-recent-first, dedup, drop now-visible / unplaced, cap at budget.
     const next: string[] = []
     const seen = new Set<string>()
-    for (const id of [...exited, ...keepAliveQueueRef.current]) {
+    for (const id of [...exited, ...keepAliveQueue]) {
       const keep = !seen.has(id) && !visibleIds.has(id) && placedIds.has(id)
       seen.add(id)
       if (keep) next.push(id)
     }
-    keepAliveQueueRef.current = next.slice(0, KEEP_ALIVE_SIZE)
-    prevVisibleRef.current = visibleIds
-    return new Set(keepAliveQueueRef.current)
-  }, [visibleIds, placedLayouts])
+    setPrevVisible(visibleIds)
+    setKeepAliveQueue(next.slice(0, KEEP_ALIVE_SIZE))
+  }
+  const keepAliveIds = useMemo(() => new Set(keepAliveQueue), [keepAliveQueue])
 
   // ---- Cards to render: visible ∪ keep-alive, sorted by placed_at ascending
   const cardsToRender = useMemo(() => {
