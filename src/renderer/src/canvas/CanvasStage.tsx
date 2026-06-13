@@ -255,8 +255,11 @@ const DOT_SCREEN_RADIUS = 3
  * drawn edge (spec §6 "tiny mid-segment pill"). Sizes everything via `/camera.zoom`
  * so the pill stays visually constant across zoom (like the hairline strokes).
  * `fill` is the canvas-bg token (`--bg-0`), `text` the secondary token (`--fg-2`),
- * both pre-resolved by the caller so getComputedStyle is never called per-edge.
- * Caller gates the call on `camera.zoom >= TYPE_PILL_MIN_ZOOM`.
+ * `fontFamily` the resolved `--font-sans` value — all pre-resolved by the caller so
+ * getComputedStyle is never called per-edge (and so the Canvas 2D `font` setter gets
+ * a real family, not a CSS var() it can't expand). Caller gates the call on
+ * `camera.zoom >= TYPE_PILL_MIN_ZOOM`. Saves/restores ctx so it's hermetic — the
+ * text-state mutations (font/textAlign/textBaseline) never leak to the next draw.
  */
 function drawTypePill(
   ctx: CanvasRenderingContext2D,
@@ -266,13 +269,15 @@ function drawTypePill(
   camera: Camera,
   fill: string,
   textColor: string,
+  fontFamily: string,
 ): void {
+  ctx.save()
   const z = camera.zoom
   const fontPx = 11 / z // screen-constant 11px label
   const padX = 5 / z
   const h = 16 / z
   const r = 4 / z // corner radius
-  ctx.font = `${fontPx}px var(--font-sans)`
+  ctx.font = `${fontPx}px ${fontFamily}`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
   const w = ctx.measureText(text).width + padX + padX
@@ -286,6 +291,7 @@ function drawTypePill(
   ctx.globalAlpha = 1
   ctx.fillStyle = textColor
   ctx.fillText(text, x, y)
+  ctx.restore()
 }
 
 /**
@@ -431,7 +437,12 @@ export function CanvasStage({
    * lazily on first draw, same rationale as {@link edgeColorRef} (getComputedStyle is
    * a layout read; tolerate empty values in test envs via the fallbacks).
    */
-  const edgeDrawnColorRef = useRef<{ accent: string; pillBg: string; pillFg: string } | null>(null)
+  const edgeDrawnColorRef = useRef<{
+    accent: string
+    pillBg: string
+    pillFg: string
+    font: string
+  } | null>(null)
 
   /**
    * UnderlayLayer that draws resolved note edges in world coordinates. Rebuilt
@@ -461,6 +472,10 @@ export function CanvasStage({
             accent: root.getPropertyValue('--accent').trim() || '#0D99FF',
             pillBg: root.getPropertyValue('--bg-0').trim() || '#FFFFFF',
             pillFg: root.getPropertyValue('--fg-2').trim() || '#757575',
+            // Resolve the family token here: the Canvas 2D `font` setter does NOT
+            // expand CSS var() — an unparseable string is silently ignored and the
+            // pill would fall back to 10px sans-serif (wrong size + measureText off).
+            font: root.getPropertyValue('--font-sans').trim() || 'system-ui, sans-serif',
           }
         }
 
@@ -523,6 +538,7 @@ export function CanvasStage({
                 drawCamera,
                 drawn.pillBg,
                 drawn.pillFg,
+                drawn.font,
               )
             }
           }
