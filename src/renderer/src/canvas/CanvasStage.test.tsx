@@ -102,6 +102,31 @@ describe('CanvasStage', () => {
     })
   })
 
+  it('space keydown is prevented on buttons but not in text fields', async () => {
+    // Held-space arms pan; without preventDefault a focused button (e.g. the
+    // feed|canvas segment) would fire its space-activation on keyup.
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 10, camera_y: 0, zoom: 1 })
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(world(container).style.transform).toBe('translate(-10px, 0px) scale(1)')
+    })
+
+    const button = document.createElement('button')
+    document.body.appendChild(button)
+    const onButton = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })
+    button.dispatchEvent(onButton)
+    expect(onButton.defaultPrevented).toBe(true)
+
+    const textarea = document.createElement('textarea')
+    document.body.appendChild(textarea)
+    const inField = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })
+    textarea.dispatchEvent(inField)
+    expect(inField.defaultPrevented).toBe(false)
+
+    button.remove()
+    textarea.remove()
+  })
+
   it('remount within the same QueryClient reflects the flushed camera, not boot', async () => {
     // getState resolves to the BOOT camera; a wheel-zoom then flush writes through
     // the cache. A second mount (staleTime Infinity → no refetch) must read the

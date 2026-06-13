@@ -186,6 +186,11 @@ export function useCanvasCamera(
       if (e.key !== ' ') return
       const t = e.target as HTMLElement | null
       if (t && FORM_TAGS.has(t.tagName)) return
+      // Suppress space's default for non-text targets: with focus on a button
+      // (e.g. the feed|canvas segment), held-space pan would otherwise fire the
+      // button's space-activation on keyup (preventing keydown default
+      // suppresses button space-activation in Chromium).
+      e.preventDefault()
       spaceDownRef.current = true
       setSpaceArmed(true)
     }
