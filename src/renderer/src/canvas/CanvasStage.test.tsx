@@ -376,6 +376,72 @@ describe('CanvasStage', () => {
     }
   })
 
+  // ---- Task 7: CanvasUnderlay wiring tests ----------------------------------
+
+  it('(f) underlay canvas element exists when ready', async () => {
+    // happy-dom has no real 2D raster; we assert wiring (element present in the
+    // DOM), not pixels. The underlay must mount under the ready gate alongside
+    // the world container, positioned BEFORE it so cards sit on top.
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([])
+    mockApi.canvas.edges.mockResolvedValue([])
+
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+
+    await waitFor(() => {
+      // World container must be present (ready gate lifted).
+      expect(container.querySelector('[data-canvas-world]')).not.toBeNull()
+    })
+
+    // The underlay <canvas> must also be present.
+    const underlayCanvas = container.querySelector('canvas')
+    expect(underlayCanvas).not.toBeNull()
+  })
+
+  it('(g) api.canvas.edges is called with ROOT_CANVAS_ID and MANUAL_ARRANGEMENT_ID', async () => {
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([])
+    mockApi.canvas.edges.mockResolvedValue([])
+
+    renderWithProviders(<CanvasStage {...noopProps} />)
+
+    await waitFor(() => {
+      // Edges query must have been issued with BOTH key constants.
+      expect(mockApi.canvas.edges).toHaveBeenCalledWith({
+        canvasId: 'root',
+        arrangementId: 'manual',
+      })
+    })
+  })
+
+  it('(h) dangling edge (unplaced endpoint) does not crash; null-context mount is clean', async () => {
+    // Two placed rows + one edge whose "to" note is not placed (dangling).
+    // The component must mount and unmount without throwing.
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([
+      row('note-a', 0, 0, 1000),
+      row('note-b', 500, 0, 2000),
+    ])
+    mockApi.canvas.edges.mockResolvedValue([
+      // Valid edge between the two placed notes.
+      { fromNoteId: 'note-a', toNoteId: 'note-b', edgeType: 'reference' },
+      // Dangling: 'ghost-note' has no placed layout row.
+      { fromNoteId: 'note-a', toNoteId: 'ghost-note', edgeType: 'comment-on' },
+    ])
+
+    // No throw on mount or unmount (dangling edge is silently skipped).
+    const { unmount } = renderWithProviders(<CanvasStage {...noopProps} />)
+
+    await waitFor(() => {
+      expect(mockApi.canvas.edges).toHaveBeenCalled()
+    })
+
+    // Verify the underlay element exists (getContext('2d') returns null in
+    // happy-dom — the no-op path must not throw).
+    // unmount to exercise RAF cleanup.
+    expect(() => unmount()).not.toThrow()
+  })
+
   it('index built from real x/y: a card at the origin renders on first paint (no measure-time teleport)', async () => {
     // Regression guard for Bug 1 (measure-time origin teleport). The bug needed a
     // real ResizeObserver firing handleMeasured with setCard(0,0); happy-dom never

@@ -33,8 +33,12 @@ import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MANUAL_ARRANGEMENT_ID, ROOT_CANVAS_ID } from '../../../shared/canvas'
 import { api } from '../lib/api'
+import type { UnderlayLayer } from './CanvasUnderlay'
+import { CanvasUnderlay } from './CanvasUnderlay'
 import { visibleWorldRect } from './camera'
+import { edgeSegment } from './edge-geometry'
 import { NoteCard } from './NoteCard'
+import type { WorldRect } from './spatial-index'
 import { CardSpatialIndex } from './spatial-index'
 import { useCanvasCamera } from './useCanvasCamera'
 
@@ -117,6 +121,13 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
     [layouts],
   )
 
+  // ---- Edge data: resolved links between placed notes (read-only, spec §11)
+  const { data: edges = EMPTY } = useQuery({
+    queryKey: ['canvas-edges', ROOT_CANVAS_ID],
+    queryFn: () =>
+      api.canvas.edges({ canvasId: ROOT_CANVAS_ID, arrangementId: MANUAL_ARRANGEMENT_ID }),
+  })
+
   // ---- Measured-height cache, keyed by note id; mutated by handleMeasured.
   // Not pruned on unplace: bounded by note count, and a stale height only shifts
   // the cull rect within the 1-viewport inflation margin (§3), so it's tolerated.
@@ -125,6 +136,92 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
   // Bumped by handleMeasured when a card's measured height genuinely changes, so
   // the index memo (which reads the height cache, invisible to biome) re-runs.
   const [cullEpoch, setCullEpoch] = useState(0)
+
+  /**
+   * Cached CSS token for edge stroke colour (`--fg-3`), resolved once on first
+   * draw. A ref (not state) so it doesn't trigger a re-render when resolved.
+   * Why lazy: `getComputedStyle` is a layout read; deferring it to the draw call
+   * avoids any pre-paint cost and tolerates test envs where the value is empty.
+   */
+  const edgeColorRef = useRef<string | null>(null)
+
+  /**
+   * UnderlayLayer that draws resolved note edges in world coordinates. Rebuilt
+   * on [edges, placedLayouts, cullEpoch] so a new array reference marks the
+   * underlay dirty via the `layers` identity change (spec §3 dirty-flag cadence).
+   * Reading placedLayouts + heightCacheRef here uses the SAME source as culling —
+   * Plan 3 drag will only need to mark dirty per frame, no separate rect source.
+   *
+   * Why cullEpoch is a dep: heightCacheRef is a stable ref (biome can't see it),
+   * so cullEpoch gates rebuilds when a measured height changes.
+   */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cullEpoch gates height-cache reads (heightCacheRef is a stable ref)
+  const edgesLayer: UnderlayLayer = useMemo(() => {
+    // Build a noteId → WorldRect map from the SAME height-cache/layout source
+    // as the culling index, so both always agree on card rects.
+    const rectByNoteId = new Map<string, WorldRect>()
+    for (const r of placedLayouts) {
+      rectByNoteId.set(r.note_id, {
+        x: r.x as number,
+        y: r.y as number,
+        w: CARD_WIDTH,
+        h: heightCacheRef.current.get(r.note_id) ?? DEFAULT_CARD_HEIGHT,
+      })
+    }
+
+    return {
+      draw(ctx: CanvasRenderingContext2D, camera): void {
+        if (edges.length === 0) return
+
+        // Resolve the colour token lazily on first draw (getComputedStyle is a
+        // layout read — defer to draw time so it's never called pre-paint).
+        if (edgeColorRef.current === null) {
+          edgeColorRef.current =
+            getComputedStyle(document.documentElement).getPropertyValue('--fg-3').trim() ||
+            'rgba(0,0,0,0.25)'
+        }
+
+        const color = edgeColorRef.current
+
+        for (const edge of edges) {
+          const fromRect = rectByNoteId.get(edge.fromNoteId)
+          const toRect = rectByNoteId.get(edge.toNoteId)
+          // Skip edges where either endpoint is unplaced or absent (spec §11).
+          if (!fromRect || !toRect) continue
+
+          const seg = edgeSegment(fromRect, toRect)
+          // edgeSegment returns null for self-edges and overlapping cards.
+          if (!seg) continue
+
+          ctx.beginPath()
+          ctx.strokeStyle = color
+          ctx.lineWidth = 1 / camera.zoom // screen-constant hairline
+          ctx.globalAlpha = 0.25
+
+          if (edge.edgeType === 'comment-on') {
+            ctx.setLineDash([6 / camera.zoom, 4 / camera.zoom])
+          } else {
+            // 'reference' and any future types: solid line.
+            ctx.setLineDash([])
+          }
+
+          ctx.moveTo(seg.x1, seg.y1)
+          ctx.lineTo(seg.x2, seg.y2)
+          ctx.stroke()
+
+          // Reset per-edge state so strokes don't bleed into each other.
+          ctx.globalAlpha = 1
+          ctx.setLineDash([])
+        }
+      },
+    }
+  }, [edges, placedLayouts, cullEpoch]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * Underlay layers array. Identity changes when edgesLayer is rebuilt, which
+   * triggers the underlay's dirty-mark effect (spec §3 cadence).
+   */
+  const underlayLayers: UnderlayLayer[] = useMemo(() => [edgesLayer], [edgesLayer])
 
   /**
    * Spatial index built DURING render from the placed layouts' real x/y and the
@@ -238,33 +335,42 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
       }}
     >
       {ready && (
-        <div
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            transformOrigin: '0 0',
-            transform:
-              `translate(${-camera.x * camera.zoom}px, ${-camera.y * camera.zoom}px)` +
-              ` scale(${camera.zoom})`,
-          }}
-          data-canvas-world
-        >
-          {cardsToRender.map((r) => (
-            <NoteCard
-              key={r.note_id}
-              noteId={r.note_id}
-              x={r.x as number}
-              y={r.y as number}
-              keptAlive={keepAliveIds.has(r.note_id) && !visibleIds.has(r.note_id)}
-              isMoving={isMoving}
-              onMeasured={handleMeasured}
-              onWikilinkClick={onWikilinkClick}
-              resolveSlug={resolveSlug}
-              onBeginEdit={() => {}}
-            />
-          ))}
-        </div>
+        <>
+          {/* Underlay canvas: painted first so cards sit on top (z-order = DOM order). */}
+          <CanvasUnderlay
+            camera={camera}
+            layers={underlayLayers}
+            width={viewportSize.w}
+            height={viewportSize.h}
+          />
+          <div
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              transformOrigin: '0 0',
+              transform:
+                `translate(${-camera.x * camera.zoom}px, ${-camera.y * camera.zoom}px)` +
+                ` scale(${camera.zoom})`,
+            }}
+            data-canvas-world
+          >
+            {cardsToRender.map((r) => (
+              <NoteCard
+                key={r.note_id}
+                noteId={r.note_id}
+                x={r.x as number}
+                y={r.y as number}
+                keptAlive={keepAliveIds.has(r.note_id) && !visibleIds.has(r.note_id)}
+                isMoving={isMoving}
+                onMeasured={handleMeasured}
+                onWikilinkClick={onWikilinkClick}
+                resolveSlug={resolveSlug}
+                onBeginEdit={() => {}}
+              />
+            ))}
+          </div>
+        </>
       )}
     </div>
   )
