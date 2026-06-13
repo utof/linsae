@@ -1,4 +1,4 @@
-import { Link2, Pen, Trash2 } from 'lucide-react'
+import { Inbox, LayoutGrid, Link2, Pen, Trash2 } from 'lucide-react'
 import { type MouseEvent, type ReactNode, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 
@@ -75,6 +75,12 @@ export interface NoteContextMenuProps {
    * (you annotate inside the thread, not on the card).
    */
   onEdit?: () => void
+  /** Add to the shelf, stay in the feed (§4). Omitted when already placed. */
+  onShelf?: () => void
+  /** One-shot placement: switches to canvas (the "…" honesty, §6). Omitted when placed. */
+  onPlaceOnCanvas?: () => void
+  /** Jump to the existing card (§9). Provided ONLY when the note is placed; replaces the two above. */
+  onJumpToCard?: () => void
 }
 
 /**
@@ -243,11 +249,53 @@ export function NoteContextMenu({
   onCopyLink,
   onDelete,
   onClose,
+  onShelf,
+  onPlaceOnCanvas,
+  onJumpToCard,
 }: NoteContextMenuProps) {
+  // Canvas verbs (§4/§9): a placed note offers a single "on canvas" jump verb
+  // (mnemonic `o`); an unplaced note offers "→ shelf" (`s`) + "place on canvas…"
+  // (`p`, the ellipsis = honesty that it switches views). Mnemonics stay unique
+  // against the existing edit/copy/delete (`e`/`c`/`d`).
+  const canvasItems: ContextMenuItem[] = onJumpToCard
+    ? [
+        {
+          key: 'jump',
+          label: 'on canvas',
+          icon: <LayoutGrid size={14} />,
+          onClick: onJumpToCard,
+          mnemonic: 'o',
+        },
+      ]
+    : [
+        ...(onShelf
+          ? [
+              {
+                key: 'shelf',
+                label: '→ shelf',
+                icon: <Inbox size={14} />,
+                onClick: onShelf,
+                mnemonic: 's',
+              },
+            ]
+          : []),
+        ...(onPlaceOnCanvas
+          ? [
+              {
+                key: 'place',
+                label: 'place on canvas…',
+                icon: <LayoutGrid size={14} />,
+                onClick: onPlaceOnCanvas,
+                mnemonic: 'p',
+              },
+            ]
+          : []),
+      ]
   const items: ContextMenuItem[] = [
     ...(onEdit
       ? [{ key: 'edit', label: 'Edit', icon: <Pen size={14} />, onClick: onEdit, mnemonic: 'e' }]
       : []),
+    ...canvasItems,
     {
       key: 'copy-link',
       label: 'Copy link',

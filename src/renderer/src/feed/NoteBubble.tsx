@@ -1,4 +1,4 @@
-import { ChevronDown, Link2, Pen, Trash2 } from 'lucide-react'
+import { ChevronDown, LayoutGrid, Link2, Pen, Trash2 } from 'lucide-react'
 import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { useClock24 } from '../lib/clock-pref'
@@ -47,6 +47,19 @@ interface Props {
    * (Feed intercepts them in capture phase), so per-note affordances would
    * be dead controls. */
   selecting?: boolean
+  /**
+   * True when this note has a placed card on the canvas (§9). Drives the ▦
+   * trace: placed → an inline ▦ jump chip + the "on canvas" menu verb; unplaced
+   * → the "▦+" hover affordance + the "→ shelf" / "place on canvas…" menu verbs.
+   * Defaults false so feed callers that don't track placement render unchanged.
+   */
+  placed?: boolean
+  /** Add this note to the shelf, stay in the feed (§4). Bound to note.id here. */
+  onShelf?: (id: string) => void
+  /** One-shot placement that switches to the canvas (§6). Bound to note.id here. */
+  onPlaceOnCanvas?: (id: string) => void
+  /** Jump to the existing card on the canvas (§9). Bound to note.id here. */
+  onJumpToCard?: (id: string) => void
 }
 
 /**
@@ -89,6 +102,10 @@ export function NoteBubble({
   onCopyLink,
   onOpenThread,
   selecting = false,
+  placed = false,
+  onShelf,
+  onPlaceOnCanvas,
+  onJumpToCard,
 }: Props) {
   const [hover, setHover] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
@@ -106,6 +123,12 @@ export function NoteBubble({
   const handleEdit = () => onEdit(note.id)
   const handleDelete = () => onDelete(note.id)
   const handleCopyLink = () => onCopyLink(note.id)
+  // Canvas-trace callbacks, bound to this bubble's id in the body (NOT a
+  // per-`.map()` closure) so the React Compiler keeps NoteBubble's props stable
+  // across feed scroll. `undefined` when the parent didn't supply the verb.
+  const handleShelf = onShelf ? () => onShelf(note.id) : undefined
+  const handlePlaceOnCanvas = onPlaceOnCanvas ? () => onPlaceOnCanvas(note.id) : undefined
+  const handleJumpToCard = onJumpToCard ? () => onJumpToCard(note.id) : undefined
 
   const handleContextMenu = (e: MouseEvent) => {
     e.preventDefault()
@@ -176,6 +199,37 @@ export function NoteBubble({
     },
     [],
   )
+
+  // ▦ "on canvas" jump chip — rendered inline in the time row when the note is
+  // placed (§9 D2). Clickable (pointerEvents auto even inside the time row's
+  // pointerEvents:none wrapper); stopPropagation so it doesn't also focus the
+  // bubble. `null` when unplaced — the hover "▦+" affordance covers that case.
+  const placedChip =
+    placed && handleJumpToCard ? (
+      <button
+        type="button"
+        title="on canvas — jump to card"
+        aria-label="on canvas"
+        onClick={(e) => {
+          e.stopPropagation()
+          handleJumpToCard()
+        }}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          border: 0,
+          background: 'transparent',
+          color: 'var(--type-source)',
+          cursor: 'pointer',
+          padding: 0,
+          pointerEvents: 'auto',
+          fontSize: 11,
+          lineHeight: 1,
+        }}
+      >
+        <LayoutGrid size={11} />
+      </button>
+    ) : null
 
   // Source-kind branch: render the MediaFeedNoteContainer card instead of a
   // standard text bubble. Checked here (after all hooks) so the Rules of Hooks
@@ -315,6 +369,7 @@ export function NoteBubble({
             {expanded ? 'collapse' : `expand (${wordCount.toLocaleString()} words)`}
           </button>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            {placedChip}
             {note.updated_at > note.created_at && (
               <span
                 role="img"
@@ -354,6 +409,7 @@ export function NoteBubble({
             pointerEvents: 'none',
           }}
         >
+          {placedChip}
           {note.updated_at > note.created_at && (
             <span
               role="img"
@@ -388,6 +444,33 @@ export function NoteBubble({
             boxShadow: 'var(--shadow-1)',
           }}
         >
+          {/* "▦+" add-to-shelf affordance (§4) — only when unplaced; once placed
+             the inline ▦ jump chip in the time row replaces it. */}
+          {!placed && handleShelf && (
+            <button
+              type="button"
+              title="add to shelf"
+              aria-label="add to shelf"
+              onClick={handleShelf}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                border: 0,
+                background: 'transparent',
+                cursor: 'pointer',
+                padding: 4,
+                position: 'relative',
+              }}
+            >
+              <LayoutGrid size={14} />
+              <span
+                aria-hidden="true"
+                style={{ fontSize: 9, fontWeight: 700, marginLeft: 1, lineHeight: 1 }}
+              >
+                +
+              </span>
+            </button>
+          )}
           <button
             type="button"
             title="edit"
@@ -435,6 +518,18 @@ export function NoteBubble({
           onCopyLink={handleCopyLink}
           onDelete={handleDelete}
           onClose={() => setContextMenu(null)}
+          // Placed → a single "on canvas" jump verb; unplaced → "→ shelf" +
+          // "place on canvas…" (§4/§9). undefined verbs are simply omitted by
+          // NoteContextMenu, so feed callers that don't track placement keep the
+          // original edit/copy/delete menu.
+          {...(placed
+            ? handleJumpToCard
+              ? { onJumpToCard: handleJumpToCard }
+              : {}
+            : {
+                ...(handleShelf ? { onShelf: handleShelf } : {}),
+                ...(handlePlaceOnCanvas ? { onPlaceOnCanvas: handlePlaceOnCanvas } : {}),
+              })}
         />
       )}
     </div>

@@ -34,24 +34,7 @@ import { useState } from 'react'
 import type { NoteType } from '../../../shared/types'
 import { api } from '../lib/api'
 import { noteTitle } from '../lib/note-title'
-
-// ── Type glyphs ──────────────────────────────────────────────────────────────
-// Small unicode chars that signal note type at a glance. Colours mirror the v21
-// design-system token palette (--type-claim, --type-question, --type-source).
-// Why these chars: ● (filled circle) = neutral claim; ? = open question; ◆ =
-// sourced locator. Single-char, monospace-safe, no icon dep.
-
-const TYPE_GLYPH: Record<NoteType, string> = {
-  claim: '●',
-  question: '?',
-  source: '◆',
-}
-
-const TYPE_COLOR: Record<NoteType, string> = {
-  claim: 'var(--type-claim)',
-  question: 'var(--type-question)',
-  source: 'var(--type-source)',
-}
+import { NOTE_TYPE_COLOR, NOTE_TYPE_GLYPH } from '../lib/note-type-glyph'
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
@@ -198,13 +181,13 @@ export function Picker({ anchor, placedNoteIds, onPick, onJump, onClose }: Picke
                     aria-hidden="true"
                     style={{
                       fontSize: 10,
-                      color: TYPE_COLOR[type] ?? 'var(--fg-3)',
+                      color: NOTE_TYPE_COLOR[type] ?? 'var(--fg-3)',
                       flexShrink: 0,
                       width: 12,
                       textAlign: 'center',
                     }}
                   >
-                    {TYPE_GLYPH[type] ?? '●'}
+                    {NOTE_TYPE_GLYPH[type] ?? '●'}
                   </span>
                   {/* Title */}
                   <span

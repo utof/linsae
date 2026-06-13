@@ -26,6 +26,18 @@ interface Props {
   /** Called when the user opens the thread panel for a source note. */
   onOpenThread?: (id: string) => void
   /**
+   * Ids of notes that currently have a placed card on the canvas (§9). Drives
+   * each bubble's ▦ trace. Defaults to an empty set so callers that don't track
+   * canvas placement render unchanged. App provides the real set (Task 10).
+   */
+  placedNoteIds?: ReadonlySet<string>
+  /** Add a note to the shelf, stay in the feed (§4). Threaded to NoteBubble by id. */
+  onShelf?: (id: string) => void
+  /** One-shot placement that switches to the canvas (§6). Threaded to NoteBubble by id. */
+  onPlaceOnCanvas?: (id: string) => void
+  /** Jump to a note's existing card on the canvas (§9). Threaded to NoteBubble by id. */
+  onJumpToCard?: (id: string) => void
+  /**
    * Optional ref to the inner scroller element. Merged into the existing internal
    * scroller setup inside `handleScrollerRef`, never as a second JSX ref, so the
    * memoized-callback identity (ADR 0004) is preserved.
@@ -43,6 +55,10 @@ interface Props {
    */
   sendInFlight?: boolean
 }
+
+/** Stable empty set so the default `placedNoteIds` keeps a frozen identity
+ * across renders (no new `Set` per render → no needless reconcile). */
+const EMPTY_PLACED: ReadonlySet<string> = new Set()
 
 /** Returns a new Set with `id` toggled — immutable so React sees a new ref. */
 function toggleSet(prev: ReadonlySet<string>, id: string): ReadonlySet<string> {
@@ -203,6 +219,10 @@ export function Feed({
   onDelete,
   onCopyLink,
   onOpenThread,
+  placedNoteIds = EMPTY_PLACED,
+  onShelf,
+  onPlaceOnCanvas,
+  onJumpToCard,
   scrollerRef,
   sendInFlight = false,
 }: Props) {
@@ -883,6 +903,12 @@ export function Feed({
                     onCopyLink={onCopyLink}
                     {...(onOpenThread ? { onOpenThread } : {})}
                     selecting={selectionMode}
+                    // Canvas ▦ traces — stable id-callbacks bound in NoteBubble's
+                    // body (ADR 0006). `placed` flips the bubble's affordance set.
+                    placed={placedNoteIds.has(note.id)}
+                    {...(onShelf ? { onShelf } : {})}
+                    {...(onPlaceOnCanvas ? { onPlaceOnCanvas } : {})}
+                    {...(onJumpToCard ? { onJumpToCard } : {})}
                   />
                   {selectionMode && (
                     <button
