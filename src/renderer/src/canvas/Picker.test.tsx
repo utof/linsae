@@ -114,6 +114,20 @@ describe('Picker', () => {
     expect(screen.queryByText('Placed thing')).not.toBeInTheDocument()
   })
 
+  it('shows the hint (not all rows) for a whitespace-only query (trim gate)', async () => {
+    // Regression: `" "` has length 1, but fuzzyMatch trims and returns ALL
+    // candidates → a raw `query.length>0` gate would dump every note and hide
+    // the hint. The trim-aware `hasQuery` gate keeps the hint up.
+    renderPicker()
+    await waitForNotes()
+    const input = screen.getByRole('combobox')
+    fireEvent.change(input, { target: { value: ' ' } })
+    await waitFor(() => expect(screen.getByText('type to search…')).toBeInTheDocument())
+    expect(screen.queryByText('claude shannon')).not.toBeInTheDocument()
+    expect(screen.queryByText('Placed thing')).not.toBeInTheDocument()
+    expect(screen.queryByText('Random other')).not.toBeInTheDocument()
+  })
+
   it('hides stale rows when the query is cleared to empty', async () => {
     // Gating the row map on query.length>0 must hide the rows so the
     // "type to search" empty state stands alone (and ⇧↵'s clear-query path,

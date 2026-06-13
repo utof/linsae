@@ -129,6 +129,11 @@ export function Picker({ anchor, placedNoteIds, onPick, onJump, onClose }: Picke
   // id→note map resolves each fuzzy row back to its full note for the type glyph.
   const noteById = useMemo(() => new Map(notes.map((n) => [n.id, n])), [notes])
   const results = useMemo(() => fuzzyMatch(query, candidates), [query, candidates])
+  // Gate rows/hint on TRIMMED length to agree with fuzzyMatch (fuzzy.ts:49 trims):
+  // a whitespace-only query (`" "`) has length>0 but fuzzyMatch returns ALL
+  // candidates, so a raw `query.length` gate would dump every note + hide the
+  // hint. `hasQuery` keeps the hint up until there's a non-blank query.
+  const hasQuery = query.trim().length > 0
 
   // cmdk auto-highlights the first rendered item and emits its value through
   // `onValueChange` (and again on arrow-key navigation), so `highlighted` always
@@ -200,17 +205,17 @@ export function Picker({ anchor, placedNoteIds, onPick, onJump, onClose }: Picke
             padding: 4,
           }}
         >
-          {query.length === 0 && (
+          {!hasQuery && (
             <Command.Empty style={{ padding: '8px 12px', color: 'var(--fg-3)', fontSize: 12 }}>
               type to search…
             </Command.Empty>
           )}
-          {query.length > 0 && results.length === 0 && (
+          {hasQuery && results.length === 0 && (
             <Command.Empty style={{ padding: '8px 12px', color: 'var(--fg-3)', fontSize: 12 }}>
               no matches.
             </Command.Empty>
           )}
-          {query.length > 0 &&
+          {hasQuery &&
             results.map((hit) => {
               const placed = placedNoteIds.has(hit.id)
               const type = noteById.get(hit.id)?.type as NoteType | undefined
