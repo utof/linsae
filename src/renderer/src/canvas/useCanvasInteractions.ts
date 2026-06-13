@@ -97,16 +97,29 @@ interface DragSession {
   ids: string[]
 }
 
+/**
+ * Drag-slop in SCREEN px: a marquee pointer must travel at least this far from
+ * its down point before it counts as a rubber-band. Below it the gesture is a
+ * bare click (empty surface → clear selection). Screen-space (not world) so the
+ * threshold is zoom-independent — jitter is a physical pointer phenomenon.
+ * Why: a few px of pointer jitter between down and up otherwise opens a tiny
+ * marquee that REPLACES (shrinks) the selection instead of clearing it (#132).
+ * @issue utof/linsae#132
+ */
+const DRAG_SLOP_PX = 4
+
 /** Live bookkeeping for a marquee rubber-band; held in a ref. */
 interface MarqueeSession {
   pointerId: number
   /** World point where the band began. */
   startWorld: Point
+  /** Screen point (viewport-relative client) where the band began — slop origin (#132). */
+  startScreen: Point
   /** Selection BEFORE the marquee (for additive ⇧/⌘ union). */
   base: ReadonlySet<string>
   /** True when ⇧/⌘ was held at marquee start (union, not replace). */
   additive: boolean
-  /** Set on the first pointer-move: distinguishes a rubber-band from a bare click. */
+  /** Set once the pointer passes DRAG_SLOP_PX: a rubber-band, not a bare/jittery click. */
   moved: boolean
 }
 
@@ -299,6 +312,7 @@ export function useCanvasInteractions(args: {
       marqueeRef.current = {
         pointerId: e.pointerId,
         startWorld: start,
+        startScreen: { x: e.clientX, y: e.clientY },
         base: selectedRef.current,
         // Additive is shift||meta now — ctrl is reserved for edges (decision 2).
         additive: e.shiftKey || e.metaKey,
@@ -349,6 +363,14 @@ export function useCanvasInteractions(args: {
       }
       const mq = marqueeRef.current
       if (mq && mq.pointerId === e.pointerId) {
+        // Drag-slop gate (#132): ignore sub-threshold jitter so the gesture stays
+        // a click (empty-surface clear) instead of a tiny replace-marquee. Once
+        // past slop it latches `moved` and the live rubber-band hit-test runs.
+        if (
+          !mq.moved &&
+          Math.hypot(e.clientX - mq.startScreen.x, e.clientY - mq.startScreen.y) < DRAG_SLOP_PX
+        )
+          return
         mq.moved = true
         const now = clientToWorld(camera, viewport, e.clientX, e.clientY)
         const box = marqueeRect(mq.startWorld, now)

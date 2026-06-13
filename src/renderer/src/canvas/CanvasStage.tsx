@@ -737,7 +737,7 @@ export function CanvasStage({
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['notes'] })
       void queryClient.invalidateQueries({ queryKey: ['note'] })
-      void queryClient.invalidateQueries({ queryKey: ['canvas-edges'] })
+      void queryClient.invalidateQueries({ queryKey: ['canvas-edges', ROOT_CANVAS_ID] })
       setEditError(null)
       setEditingId(null)
     },
@@ -758,7 +758,7 @@ export function CanvasStage({
   /** Invalidate the canvas queries after any layout write so the surface refreshes. */
   const refreshCanvas = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ['canvas-layouts', ROOT_CANVAS_ID] })
-    void queryClient.invalidateQueries({ queryKey: ['canvas-edges'] })
+    void queryClient.invalidateQueries({ queryKey: ['canvas-edges', ROOT_CANVAS_ID] })
     // The recent popover (§14) reads ['canvas-recent', root] via an always-mounted
     // observer under global staleTime:Infinity, so it never auto-refetches —
     // place/move/remove/undo all flow through here, so invalidate it too or the
@@ -986,12 +986,16 @@ export function CanvasStage({
   const liveRubberBandLayer = useMemo<UnderlayLayer | null>(() => {
     const st: EdgeDragState | null = interactions.edgeDragState
     if (!st) return null
+    // Resolve the accent token once per drag gesture (memo re-runs each frame
+    // because edgeDragState changes). On the first-ever edge drag the ref is
+    // still null, so we read getComputedStyle here — in the memo body — rather
+    // than inside draw(), avoiding the layout read on every pointer-move frame.
+    const accent =
+      edgeDrawnColorRef.current?.accent ||
+      getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() ||
+      '#0D99FF'
     return {
       draw(ctx, cam): void {
-        const accent =
-          edgeDrawnColorRef.current?.accent ||
-          getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() ||
-          '#0D99FF'
         // Snap the head to the target card's center when hovering one.
         const target = st.targetCardId ? placedRects.get(st.targetCardId) : undefined
         const head = target

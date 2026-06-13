@@ -91,8 +91,11 @@ export const NoteCard = memo(function NoteCard({
 }: NoteCardProps) {
   const queryClient = useQueryClient()
 
-  // Hover state drives the quiet connect-handle reveal (spec §3). Local state (not
-  // CSS :hover) so the handle is testable + the dot can be conditionally mounted.
+  // Hover state drives the quiet connect-handle reveal (spec §3). Local state
+  // rather than CSS :hover because the repo convention is inline styles with
+  // v21 CSS-variable tokens (globals.css has no component-level :hover rules),
+  // so a pure-CSS approach would require new stylesheet infrastructure.
+  // Re-render cost is negligible: one card at a time, Markdown is memoized.
   const [hovered, setHovered] = useState(false)
 
   /**
