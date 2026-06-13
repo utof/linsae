@@ -732,4 +732,41 @@ describe('CanvasStage', () => {
       expect(screen.queryByText('Dot tier body')).toBeNull()
     })
   })
+
+  it('(p) a save error surfaces inline, keeps the editor open, then a retry clears it', async () => {
+    // Fix guard: before the fix `commitEdit` had no onError and the Composer got
+    // no error/onClearError, so a rejected api.notes.update was SWALLOWED — the
+    // error text never appeared and (since onSuccess never ran) the editor stayed
+    // open but with no feedback. This test pins feed parity (App.tsx inline error).
+    const DUP = 'A note titled "Dup" already exists'
+    // First attempt rejects (duplicate-slug from save-note.ts), second resolves.
+    mockApi.notes.update
+      .mockRejectedValueOnce(new Error(DUP))
+      .mockResolvedValueOnce(note('e-note', 'e', 'Renamed body'))
+    await mountSingleCard('Original body')
+    fireEvent.doubleClick(screen.getByText('Original body'))
+    const ta = (await screen.findByLabelText('write a note')) as HTMLTextAreaElement
+
+    // Submit a body that collides → the mutation rejects.
+    fireEvent.keyDown(ta, { key: 'Enter' })
+
+    // (a) the error message appears in the Composer's error UI.
+    await waitFor(() => {
+      expect(screen.getByText(DUP)).toBeTruthy()
+    })
+    // (b) editor stays open with the user's text preserved (not unmounted/reset).
+    expect(screen.getByLabelText('write a note')).toBe(ta)
+    expect(ta.value).toBe('Original body')
+
+    // Edit the body (clears the error via onClearError) and resubmit → resolves.
+    fireEvent.change(ta, { target: { value: 'Renamed body' } })
+    fireEvent.keyDown(ta, { key: 'Enter' })
+
+    // (c) the successful update clears the error AND closes the editor.
+    await waitFor(() => {
+      expect(screen.queryByLabelText('write a note')).toBeNull()
+    })
+    expect(screen.queryByText(DUP)).toBeNull()
+    expect(mockApi.notes.update).toHaveBeenCalledTimes(2)
+  })
 })

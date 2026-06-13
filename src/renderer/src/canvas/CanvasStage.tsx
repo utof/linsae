@@ -142,6 +142,22 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
   // its ResizeObserver measure persists) and a Composer renders over it.
   const [editingId, setEditingId] = useState<string | null>(null)
 
+  // User-facing error from the last in-place save (e.g. duplicate-slug — see
+  // src/main/save-note.ts). Mirrors App.tsx's `submitError`: the canvas edit uses
+  // the SAME floating Composer (spec §3), so it must surface failures inline
+  // rather than swallowing them. Threaded into Composer as `error`; cleared on
+  // the next keystroke (`onClearError`), on cancel, and when the edited card
+  // changes (the effect below) so a stale error never bleeds into a new edit.
+  const [editError, setEditError] = useState<string | null>(null)
+
+  // Clear any stale save-error when the edited card changes (or edit mode exits),
+  // so opening a different card never shows a prior card's failure. Mirrors
+  // App.tsx's submitError reset on composer-context change.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: setEditError is stable
+  useEffect(() => {
+    setEditError(null)
+  }, [editingId])
+
   // ---- Viewport size tracking (for culling rect)
   const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 })
   useEffect(() => {
@@ -386,7 +402,10 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
    * with the note's existing type round-tripped (the §7 `?`-promotion is
    * creation-mode-only — Plan 3). On success invalidate the feed (`['notes']`),
    * the per-note caches (`['note']` prefix), and the canvas edges (a body change
-   * can add/remove a wikilink), then leave edit mode.
+   * can add/remove a wikilink), clear any error, then leave edit mode. On error
+   * (e.g. duplicate-slug from save-note.ts) surface the message inline via the
+   * Composer's error UI and KEEP the editor open with the user's text intact —
+   * feed parity (App.tsx updateMut `onError`).
    */
   const commitEdit = useMutation({
     mutationFn: ({ id, body, type }: { id: string; body: string; type: NoteType }) =>
@@ -395,8 +414,10 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
       void queryClient.invalidateQueries({ queryKey: ['notes'] })
       void queryClient.invalidateQueries({ queryKey: ['note'] })
       void queryClient.invalidateQueries({ queryKey: ['canvas-edges'] })
+      setEditError(null)
       setEditingId(null)
     },
+    onError: (err) => setEditError(err instanceof Error ? err.message : String(err)),
   })
 
   // ---- Visible ids: cards intersecting the inflated viewport rect. Reads the
@@ -525,8 +546,13 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
                 noteId={editingId}
                 x={editingRow.x as number}
                 y={editingRow.y as number}
+                error={editError}
+                onClearError={() => setEditError(null)}
                 onCommit={(body, type) => commitEdit.mutate({ id: editingId, body, type })}
-                onCancel={() => setEditingId(null)}
+                onCancel={() => {
+                  setEditError(null)
+                  setEditingId(null)
+                }}
               />
             )}
           </div>
@@ -553,12 +579,18 @@ function CardEditor({
   noteId,
   x,
   y,
+  error,
+  onClearError,
   onCommit,
   onCancel,
 }: {
   noteId: string
   x: number
   y: number
+  /** Inline save-error message (e.g. duplicate-slug); null when no error. */
+  error: string | null
+  /** Drop the error on the next keystroke (feed parity — App.tsx). */
+  onClearError: () => void
   onCommit: (body: string, type: NoteType) => void
   onCancel: () => void
 }): React.JSX.Element | null {
@@ -581,6 +613,8 @@ function CardEditor({
         initialBody={note.body}
         initialMode={note.type}
         editMode
+        error={error}
+        onClearError={onClearError}
         onSubmit={({ body, type }) => onCommit(body, type)}
         onCancel={onCancel}
       />
