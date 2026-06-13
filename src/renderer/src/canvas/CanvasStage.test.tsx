@@ -1265,6 +1265,127 @@ describe('CanvasStage', () => {
     })
   })
 
+  // ---- Bug B4 (§14 G2 centroid pill): the "↖ back to your notes" pill must
+  // appear when ≥1 card is placed but ZERO cards intersect the TRUE viewport.
+  // Pre-fix it gated on the inflate=1 cull set (visibleIds), so the pill only
+  // surfaced after a full extra viewport of pan past the nearest card. The fix
+  // gates on trueVisibleIds (visibleWorldRect inflate=0). These tests force a
+  // real viewport size via getBoundingClientRect (happy-dom returns zeros, which
+  // would collapse BOTH the cull and the true rect to the same degenerate point
+  // — indistinguishable). vi.restoreAllMocks in afterEach (above) clears the spy.
+
+  /** A real, non-zero viewport rect so visibleWorldRect doesn't degenerate. */
+  function stubViewportRect(w: number, h: number): void {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: w,
+      bottom: h,
+      width: w,
+      height: h,
+      toJSON: () => ({}),
+    } as DOMRect)
+  }
+
+  it('(ii) B4: pill is ABSENT when a card lies in the cull margin but OUTSIDE the true viewport (pre-fix), PRESENT post-fix', async () => {
+    // Viewport 800x600 at camera (0,0,1): true viewport = {0..800, 0..600};
+    // cull rect (inflate=1) = {-800..1600, -600..1200}. A card at (1000,800)
+    // (rect {1000..1360, 800..940}) is INSIDE the cull rect but OUTSIDE the true
+    // viewport — exactly the regime spec §14 means by "zero cards intersect the
+    // viewport". Pre-fix the pill gated on the cull set → card counted visible →
+    // pill hidden. Post-fix it gates on the true-viewport set → pill shown.
+    stubViewportRect(800, 600)
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([row('off', 1000, 800, 1000)])
+    mockApi.notes.get.mockResolvedValue(note('off', 'off', 'Off-screen card body'))
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(container.querySelector('[data-canvas-world]')).not.toBeNull()
+    })
+    // The pill must be present: the only card is outside the true viewport.
+    await waitFor(() => {
+      expect(container.querySelector('[data-canvas-centroid-arrow]')).not.toBeNull()
+    })
+  })
+
+  it('(jj) B4: pill is ABSENT when a card DOES intersect the true viewport', async () => {
+    // Card at (100,100) — rect {100..460, 100..240} — sits well inside the true
+    // viewport {0..800,0..600}, so the pill must NOT appear (the user can see it).
+    stubViewportRect(800, 600)
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([row('on', 100, 100, 1000)])
+    mockApi.notes.get.mockResolvedValue(note('on', 'on', 'On-screen card body'))
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(screen.queryByText('On-screen card body')).toBeTruthy()
+    })
+    expect(container.querySelector('[data-canvas-centroid-arrow]')).toBeNull()
+  })
+
+  it('(kk) B4: pill is ABSENT when zero cards are placed (empty canvas → zero state, not the pill)', async () => {
+    stubViewportRect(800, 600)
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([])
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(container.querySelector('[data-canvas-world]')).not.toBeNull()
+    })
+    expect(container.querySelector('[data-canvas-centroid-arrow]')).toBeNull()
+  })
+
+  // ---- Bug #119 (drag-commit snap-back flash): the timing flash itself is not
+  // observable in happy-dom (no real rAF/layout), but the fix is an optimistic
+  // query-cache write in commitMoves. We assert the cache holds the new x/y
+  // SYNCHRONOUSLY after a drag-commit (pointer-up), before any refetch lands —
+  // which is what stops the one-frame render at the stale pre-drag position. The
+  // definitive flash check is the Plan-4 perf-harness --smoke #119 gate.
+
+  it('(ll) #119: a drag-commit optimistically writes the new x/y into the layout cache', async () => {
+    // Card at the origin; select it (pointerdown at (0,0) hit-tests world (0,0)),
+    // drag to (120,80), release. happy-dom getBoundingClientRect is all-zero and
+    // zoom is 1, so client deltas map 1:1 to world deltas → the card moves to
+    // (120,80). After pointer-up the layout cache row must ALREADY carry the new
+    // coords (the optimistic write), not the stale (0,0).
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([row('drag', 0, 0, 1000)])
+    mockApi.notes.get.mockResolvedValue(note('drag', 'drag', 'Drag me'))
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { container } = render(
+      <QueryClientProvider client={qc}>
+        <CanvasStage {...noopProps} />
+      </QueryClientProvider>,
+    )
+    await waitFor(() => {
+      expect(screen.queryByText('Drag me')).toBeTruthy()
+    })
+    const surface = container.querySelector('[data-canvas-world]') as HTMLElement
+    // pointerdown on the card (selects + starts drag), move, then release.
+    // The commit (commitMoves) runs SYNCHRONOUSLY inside the pointerup handler,
+    // so we assert the cache immediately after — before refreshCanvas()'s async
+    // invalidation can refetch (and, in this mock, clobber back to the stale
+    // mock data; real IPC would return the moved coords). The synchronous-write
+    // window is exactly what spans the dragOffset-clear frame and kills the flash.
+    fireEvent.pointerDown(surface, { button: 0, pointerId: 1, clientX: 0, clientY: 0 })
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 120, clientY: 80 })
+    fireEvent.pointerUp(surface, { button: 0, pointerId: 1, clientX: 120, clientY: 80 })
+    // The IPC move fired with the new coords...
+    expect(mockApi.canvas.moveNotes).toHaveBeenCalledWith(
+      expect.objectContaining({ moves: [{ x: 120, y: 80, noteId: 'drag' }] }),
+    )
+    // ...AND the optimistic cache write already moved the row to (120,80), so a
+    // render after dragOffset clears never paints the stale origin position.
+    const cached = qc.getQueryData(['canvas-layouts', 'root']) as Array<{
+      note_id: string
+      x: number | null
+      y: number | null
+    }>
+    const moved = cached.find((r) => r.note_id === 'drag')
+    expect(moved?.x).toBe(120)
+    expect(moved?.y).toBe(80)
+  })
+
   it('(hh) B3 no-regression: a real marquee drag over a visible card still selects it', async () => {
     // Guard the threshold fix does not break a genuine rubber-band. A drag well
     // past the movement threshold over the origin card must select it live on

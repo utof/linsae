@@ -32,6 +32,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
+import type { CanvasLayoutRow } from '../../../shared/canvas'
 import { MANUAL_ARRANGEMENT_ID, ROOT_CANVAS_ID } from '../../../shared/canvas'
 import type { Note, NoteType } from '../../../shared/types'
 import { Composer } from '../composer/Composer'
@@ -663,6 +664,22 @@ export function CanvasStage({
   const commitMoves = useCallback(
     (moves: { noteId: string; from: Point; to: Point }[], coalesce: boolean) => {
       const key = { canvasId: ROOT_CANVAS_ID, arrangementId: MANUAL_ARRANGEMENT_ID }
+      // Optimistically write the new x/y into the layout cache BEFORE the async
+      // moveNotes refetch lands (#119). useCanvasInteractions clears dragOffset
+      // synchronously on pointer-up, so without this the card would render one
+      // frame at its STALE (pre-drag) placedRects position — a visible snap-
+      // back→forward flash — until the invalidation refetch arrives. The IPC
+      // write below + refreshCanvas() invalidation still run; the server stays
+      // the source of truth (this just bridges the gap). Recency timestamps are
+      // untouched (a move doesn't restamp placed_at). The §13 undo entry already
+      // holds from/to, so this does NOT double-apply.
+      const moved = new Map(moves.map((m) => [m.noteId, m.to]))
+      queryClient.setQueryData<CanvasLayoutRow[]>(['canvas-layouts', ROOT_CANVAS_ID], (prev) =>
+        prev?.map((r) => {
+          const to = moved.get(r.note_id)
+          return to ? { ...r, x: to.x, y: to.y } : r
+        }),
+      )
       void api.canvas.moveNotes({
         ...key,
         moves: moves.map((m) => ({ ...m.to, noteId: m.noteId })),
@@ -674,7 +691,7 @@ export function CanvasStage({
       })
       refreshCanvas()
     },
-    [recordOp, refreshCanvas],
+    [recordOp, refreshCanvas, queryClient],
   )
   const onCommitMove = useCallback(
     (moves: { noteId: string; from: Point; to: Point }[]) => commitMoves(moves, false),
@@ -1136,6 +1153,18 @@ export function CanvasStage({
   // listeners read it at event time (post-commit), never mid-render.
   visibleIdsRef.current = visibleIds
 
+  // ---- Cards intersecting the TRUE (uninflated) viewport. Unlike visibleIds
+  // (the inflate=1 cull set, one full viewport margin per side — spec §3), this
+  // is the inflate=0 rect: exactly the cards the user can actually see. The §14
+  // G2 centroid pill keys off THIS set so it appears the instant zero cards
+  // intersect the viewport — not only once the user pans a whole extra viewport
+  // beyond the nearest card (which the cull set would require). Cheap: a second
+  // rbush point/rect query on the same in-render index.
+  const trueVisibleIds = useMemo(() => {
+    const { w, h } = viewportSize
+    return new Set(index.search(visibleWorldRect(camera, w, h, 0)))
+  }, [index, camera, viewportSize])
+
   // ---- Keep-alive: LRU queue of up to KEEP_ALIVE_SIZE recently-exited cards.
   //
   // Exit-tracking runs DURING render via the setState-during-render pattern (React
@@ -1437,7 +1466,7 @@ export function CanvasStage({
               from the viewport center to the centroid world point. */}
           <CentroidArrow
             placedLayouts={placedLayouts}
-            visibleIds={visibleIds}
+            visibleIds={trueVisibleIds}
             placedRects={placedRects}
             camera={camera}
             viewportSize={viewportSize}
@@ -1536,13 +1565,19 @@ function CentroidArrow({
   onFit,
 }: {
   placedLayouts: { note_id: string }[]
+  /**
+   * Cards intersecting the TRUE (uninflated) viewport — NOT the inflate=1 cull
+   * set. Passed `trueVisibleIds` so the pill appears the instant zero cards are
+   * on screen (spec §14: "zero cards intersect the viewport"), rather than only
+   * after a full extra viewport of pan past the nearest card.
+   */
   visibleIds: Set<string>
   placedRects: Map<string, WorldRect>
   camera: Camera
   viewportSize: { w: number; h: number }
   onFit: () => void
 }): React.JSX.Element | null {
-  // Only show when cards exist but none are visible in the viewport.
+  // Only show when cards exist but none intersect the (true) viewport.
   if (placedLayouts.length === 0 || visibleIds.size > 0) return null
 
   const c = centroid([...placedRects.values()])
