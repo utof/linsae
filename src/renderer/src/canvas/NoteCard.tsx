@@ -53,6 +53,12 @@ export interface NoteCardProps {
    * @see src/renderer/src/feed/NoteBubble.tsx (focused rail anti-jiggle)
    */
   selected: boolean
+  /**
+   * pointerdown on the hover-reveal connect handle → start an edge-draw from this
+   * card (spec §3 decision 2). Optional so tests / non-canvas mounts can omit it.
+   * @see docs/specs/v0.4.1-canvas-edges.md §3
+   */
+  onConnectHandleDown?: (e: React.PointerEvent, noteId: string) => void
 }
 
 /** Width of every canvas card in world px (spec §3). */
@@ -81,8 +87,13 @@ export const NoteCard = memo(function NoteCard({
   onBeginEdit,
   editing,
   selected,
+  onConnectHandleDown,
 }: NoteCardProps) {
   const queryClient = useQueryClient()
+
+  // Hover state drives the quiet connect-handle reveal (spec §3). Local state (not
+  // CSS :hover) so the handle is testable + the dot can be conditionally mounted.
+  const [hovered, setHovered] = useState(false)
 
   /**
    * Fetch the note. Seeds from the list cache as a placeholder so the card
@@ -146,6 +157,8 @@ export const NoteCard = memo(function NoteCard({
       ref={shellRef}
       data-note-id={noteId}
       onDoubleClick={() => onBeginEdit(noteId)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         display: keptAlive ? 'none' : undefined,
         // editing → keep mounted (ResizeObserver height persists) but invisible;
@@ -164,6 +177,36 @@ export const NoteCard = memo(function NoteCard({
         padding: '12px 14px 10px',
       }}
     >
+      {/* Connect handle (spec §3 decision 2): a quiet accent dot at the card's
+          right-middle edge. Hidden (opacity 0) until card hover; pointerdown
+          starts an edge-draw from this card. stopPropagation keeps it from also
+          reaching the world surface's move/marquee router. Rendered only when a
+          handler is wired (canvas mounts pass it; tests/feed omit it). */}
+      {onConnectHandleDown && (
+        <div
+          data-connect-handle
+          aria-hidden="true"
+          onPointerDown={(e) => {
+            e.stopPropagation()
+            onConnectHandleDown(e, noteId)
+          }}
+          style={{
+            position: 'absolute',
+            right: -5,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            width: 10,
+            height: 10,
+            borderRadius: '50%',
+            background: 'var(--accent)',
+            border: '2px solid #FFFFFF',
+            boxShadow: 'var(--shadow-1)',
+            cursor: 'crosshair',
+            opacity: hovered ? 1 : 0,
+            transition: 'opacity var(--motion-fast, 120ms) ease',
+          }}
+        />
+      )}
       {!note ? (
         // Loading skeleton before any data (list cache miss + fetch in-flight)
         <Placeholder title="…" />
