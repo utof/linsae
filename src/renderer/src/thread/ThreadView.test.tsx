@@ -18,6 +18,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
+import { serializeScene } from '../ink/svg'
 
 // Mock usePlayer so tests never touch the player singleton / iframe.
 // `seekTo` is a shared spy and `currentTime` is read from a mutable holder so
@@ -269,11 +270,18 @@ describe('ThreadView follow-scroll + click-to-seek', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Capture → pending chip → post comment-note + attachToNote
+// Capture → editor → pending chip → post comment-note + attachToNote (v0.2.5).
+// UPDATED from v0.2.0: ⌘⇧C now OPENS THE EDITOR on the captured frame; Done
+// produces the pending chip. These tests are updated (not deleted) for that step.
 // ---------------------------------------------------------------------------
 
 describe('ThreadView capture flow', () => {
-  it('captures a frame, shows a pending chip, posts a comment-note anchored to the capture-t, then attaches', async () => {
+  /** Drive the editor's Done button (the capture editor's primary chrome btn). */
+  function clickDone() {
+    fireEvent.click(screen.getByRole('button', { name: /^done$/i }))
+  }
+
+  it('captures → opens editor → Done → pending chip → posts comment-note + attaches', async () => {
     mockApi.youtube.capture.mockResolvedValue({
       id: 'att1',
       path: '/store/2026/05/sha.png',
@@ -282,10 +290,10 @@ describe('ThreadView capture flow', () => {
       height: 270,
       devicePixelRatio: 1,
     })
+    mockApi.youtube.saveOverlay.mockResolvedValue({ overlayPath: null })
     mockApi.notes.create.mockResolvedValue({ ...SOURCE_NOTE, id: 'n1', type: 'claim' })
 
     renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
-    // Wait for the source note to resolve so videoId/slug are populated.
     await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
 
     // (1) Camera button → capture called with the rect + videoId + t=42
@@ -297,15 +305,22 @@ describe('ThreadView capture flow', () => {
       t: 42,
     })
 
-    // (2) the pending thumbnail chip appears with the derived _media URL
+    // (2) the editor opens on the captured frame (NOT the chip yet — v0.2.5)
+    await waitFor(() => expect(screen.getByTestId('annotate-editor')).toBeInTheDocument())
+    expect(screen.queryByRole('img', { name: /^captured frame$/i })).toBeNull()
+
+    // (3) Done (empty scene) → editor closes → the pending chip appears with the
+    //     base frame (AnnotatedFrame, /_media/<sha>). v0.2.0 parity: no overlay.
+    clickDone()
+    await waitFor(() => expect(screen.queryByTestId('annotate-editor')).toBeNull())
     await waitFor(() =>
-      expect(screen.getByRole('img', { name: /frame/i })).toHaveAttribute(
+      expect(screen.getByRole('img', { name: /captured frame/i })).toHaveAttribute(
         'src',
         '/_media/2026/05/sha.png',
       ),
     )
 
-    // (3) type a caption + submit → notes.create with capture-t + commentOn slug
+    // (4) type a caption + submit → notes.create with capture-t + commentOn slug
     //     + source_kind, THEN attachToNote('att1','n1') in that order.
     const textarea = screen.getByRole('textbox')
     fireEvent.change(textarea, { target: { value: 'look here' } })
@@ -324,16 +339,15 @@ describe('ThreadView capture flow', () => {
       attachmentId: 'att1',
       noteId: 'n1',
     })
-    // create resolves before attach is invoked
     const createOrder = mockApi.notes.create.mock.invocationCallOrder[0] ?? Infinity
     const attachOrder = mockApi.attachments.attachToNote.mock.invocationCallOrder[0] ?? -Infinity
     expect(createOrder).toBeLessThan(attachOrder)
 
-    // (4) after success the pending chip is gone
-    await waitFor(() => expect(screen.queryByRole('img', { name: /frame/i })).toBeNull())
+    // (5) after success the pending chip is gone
+    await waitFor(() => expect(screen.queryByRole('img', { name: /captured frame/i })).toBeNull())
   })
 
-  it('⌘⇧C hotkey fires capture when no form tag is focused', async () => {
+  it('⌘⇧C hotkey fires capture (and opens the editor) when no form tag is focused', async () => {
     mockApi.youtube.capture.mockResolvedValue({
       id: 'att2',
       path: '/store/2026/05/x.png',
@@ -346,10 +360,223 @@ describe('ThreadView capture flow', () => {
     await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
 
     // activeElement is body (no form tag) → enableOnFormTags omitted means the
-    // hook is enabled here.
+    // hook is enabled here. Fire both the meta (mac) and ctrl (win/linux) forms.
     fireEvent.keyDown(document.body, { key: 'c', code: 'KeyC', metaKey: true, shiftKey: true })
     fireEvent.keyDown(document.body, { key: 'c', code: 'KeyC', ctrlKey: true, shiftKey: true })
     await waitFor(() => expect(mockApi.youtube.capture).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByTestId('annotate-editor')).toBeInTheDocument())
+  })
+
+  it('C3: two ⌘⇧C before the capture promise resolves → exactly ONE capture (async guard)', async () => {
+    // The re-entrancy guard must hold across the await gap: editorOpen only flips
+    // true after capture resolves, so a second hotkey in that window must be
+    // blocked by an in-flight ref — otherwise a duplicate orphan row leaks.
+    let resolveCapture: (v: {
+      id: string
+      path: string
+      sha256: string
+      width: number
+      height: number
+      devicePixelRatio: number
+    }) => void = () => {}
+    mockApi.youtube.capture.mockImplementation(
+      () =>
+        new Promise((res) => {
+          resolveCapture = res
+        }),
+    )
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    // First click → capture is issued (and never resolves yet). Wait for it.
+    fireEvent.click(screen.getByLabelText('capture frame'))
+    await waitFor(() => expect(mockApi.youtube.capture).toHaveBeenCalledOnce())
+
+    // A SECOND click while the first capture is still in flight must be a no-op
+    // (the in-flight ref guards across the await gap, before editorOpen flips).
+    fireEvent.click(screen.getByLabelText('capture frame'))
+    // Let any (incorrect) second capture's await chain run.
+    await new Promise((r) => setTimeout(r, 30))
+    expect(mockApi.youtube.capture).toHaveBeenCalledOnce()
+
+    // Resolve the first capture → editor opens; still exactly one capture.
+    resolveCapture({
+      id: 'att-once',
+      path: '/store/2026/05/once.png',
+      sha256: 'once',
+      width: 480,
+      height: 270,
+      devicePixelRatio: 1,
+    })
+    await waitFor(() => expect(screen.getByTestId('annotate-editor')).toBeInTheDocument())
+    expect(mockApi.youtube.capture).toHaveBeenCalledOnce()
+  })
+
+  it('⌘⇧C while the editor is already open is a no-op (re-entrancy guard)', async () => {
+    mockApi.youtube.capture.mockResolvedValue({
+      id: 'att-guard',
+      path: '/store/2026/05/g.png',
+      sha256: 'g',
+      width: 480,
+      height: 270,
+      devicePixelRatio: 1,
+    })
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    // First capture opens the editor.
+    fireEvent.click(screen.getByLabelText('capture frame'))
+    await waitFor(() => expect(screen.getByTestId('annotate-editor')).toBeInTheDocument())
+    expect(mockApi.youtube.capture).toHaveBeenCalledOnce()
+
+    // A second ⌘⇧C while the editor is open must NOT capture again (both forms).
+    fireEvent.keyDown(document.body, { key: 'c', code: 'KeyC', metaKey: true, shiftKey: true })
+    fireEvent.keyDown(document.body, { key: 'c', code: 'KeyC', ctrlKey: true, shiftKey: true })
+    // Give any async capture a tick; the guard means no second call.
+    await new Promise((r) => setTimeout(r, 30))
+    expect(mockApi.youtube.capture).toHaveBeenCalledOnce()
+  })
+
+  it('Done with a NON-empty scene → chip frame carries the saved overlay_path', async () => {
+    mockApi.youtube.capture.mockResolvedValue({
+      id: 'att-drawn',
+      path: '/store/2026/05/d.png',
+      sha256: 'd',
+      width: 480,
+      height: 270,
+      devicePixelRatio: 1,
+    })
+    mockApi.youtube.saveOverlay.mockResolvedValue({ overlayPath: '/store/2026/05/att-drawn.svg' })
+    // The chip's AnnotatedFrame will fetch the overlay sidecar — return a parseable scene.
+    const svg = serializeScene({ width: 480, height: 270, elements: [] })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(svg, { status: 200 }))
+
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByLabelText('capture frame'))
+    await waitFor(() => expect(screen.getByTestId('annotate-editor')).toBeInTheDocument())
+
+    // Draw a stroke, then Done.
+    const svgEl = document.querySelector('svg[aria-label="Annotation overlay"]') as Element
+    fireEvent.pointerDown(svgEl, {
+      clientX: 10,
+      clientY: 10,
+      pointerType: 'mouse',
+      pressure: 0.5,
+      buttons: 1,
+    })
+    fireEvent.pointerMove(svgEl, {
+      clientX: 20,
+      clientY: 22,
+      pointerType: 'mouse',
+      pressure: 0.5,
+      buttons: 1,
+    })
+    fireEvent.pointerMove(svgEl, {
+      clientX: 40,
+      clientY: 50,
+      pointerType: 'mouse',
+      pressure: 0.5,
+      buttons: 1,
+    })
+    fireEvent.pointerUp(svgEl, { clientX: 40, clientY: 50, pointerType: 'mouse', pressure: 0.5 })
+    clickDone()
+
+    // saveOverlay was called with a real SVG (non-empty scene).
+    await waitFor(() => expect(mockApi.youtube.saveOverlay).toHaveBeenCalled())
+    expect(typeof mockApi.youtube.saveOverlay.mock.calls[0]?.[0].svg).toBe('string')
+    // The chip appears (base frame from the synthesized attachment).
+    await waitFor(() =>
+      expect(screen.getByRole('img', { name: /captured frame/i })).toHaveAttribute(
+        'src',
+        '/_media/2026/05/d.png',
+      ),
+    )
+  })
+
+  it('Esc → Discard (never posted) calls attachments.remove and shows no chip', async () => {
+    mockApi.youtube.capture.mockResolvedValue({
+      id: 'att-disc',
+      path: '/store/2026/05/disc.png',
+      sha256: 'disc',
+      width: 480,
+      height: 270,
+      devicePixelRatio: 1,
+    })
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByLabelText('capture frame'))
+    await waitFor(() => expect(screen.getByTestId('annotate-editor')).toBeInTheDocument())
+
+    // Esc → discard/keep-orphan prompt → Discard.
+    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.click(screen.getByRole('button', { name: /^discard$/i }))
+
+    await waitFor(() => expect(mockApi.attachments.remove).toHaveBeenCalledWith({ id: 'att-disc' }))
+    // No chip after discard.
+    await waitFor(() => expect(screen.queryByTestId('annotate-editor')).toBeNull())
+    expect(screen.queryByRole('img', { name: /captured frame/i })).toBeNull()
+  })
+
+  it('Esc → Keep (non-empty) saves the scene and leaves an orphan — NO chip staged', async () => {
+    // Spec §Key flows: Keep saves the drawing (so it is not lost) then LEAVES the
+    // orphan row for the future orphan tray — it does NOT stage the pending chip
+    // (that is what Done does). The capture row already exists (note_id:null) and
+    // simply persists: not removed, not staged.
+    mockApi.youtube.capture.mockResolvedValue({
+      id: 'att-keep',
+      path: '/store/2026/05/keep.png',
+      sha256: 'keep',
+      width: 480,
+      height: 270,
+      devicePixelRatio: 1,
+    })
+    mockApi.youtube.saveOverlay.mockResolvedValue({ overlayPath: '/store/2026/05/att-keep.svg' })
+
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByLabelText('capture frame'))
+    await waitFor(() => expect(screen.getByTestId('annotate-editor')).toBeInTheDocument())
+
+    // Draw, then Esc → Keep as orphan.
+    const svgEl = document.querySelector('svg[aria-label="Annotation overlay"]') as Element
+    fireEvent.pointerDown(svgEl, {
+      clientX: 10,
+      clientY: 10,
+      pointerType: 'mouse',
+      pressure: 0.5,
+      buttons: 1,
+    })
+    fireEvent.pointerMove(svgEl, {
+      clientX: 20,
+      clientY: 22,
+      pointerType: 'mouse',
+      pressure: 0.5,
+      buttons: 1,
+    })
+    fireEvent.pointerMove(svgEl, {
+      clientX: 40,
+      clientY: 50,
+      pointerType: 'mouse',
+      pressure: 0.5,
+      buttons: 1,
+    })
+    fireEvent.pointerUp(svgEl, { clientX: 40, clientY: 50, pointerType: 'mouse', pressure: 0.5 })
+    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.click(screen.getByRole('button', { name: /keep as orphan/i }))
+
+    // (a) the drawing was saved (non-empty scene → serialized svg)
+    await waitFor(() => expect(mockApi.youtube.saveOverlay).toHaveBeenCalled())
+    expect(typeof mockApi.youtube.saveOverlay.mock.calls[0]?.[0].svg).toBe('string')
+    // editor closes
+    await waitFor(() => expect(screen.queryByTestId('annotate-editor')).toBeNull())
+    // (b) NO pending chip is staged in the composer (contrast Done) ...
+    expect(screen.queryByRole('img', { name: /captured frame/i })).toBeNull()
+    // ... and the orphan attachment was NOT removed (contrast Discard).
+    expect(mockApi.attachments.remove).not.toHaveBeenCalled()
   })
 
   it('⌘⇧C hotkey does NOT fire while the composer textarea is focused (enableOnFormTags omitted)', async () => {
@@ -365,16 +592,54 @@ describe('ThreadView capture flow', () => {
     expect(mockApi.youtube.capture).not.toHaveBeenCalled()
   })
 
-  it('is a no-op when getMediaRect() returns null (no crash, no capture call)', async () => {
+  it('is a no-op when getMediaRect() returns null (no crash, no capture call, no editor)', async () => {
     getMediaRect.mockReturnValue(null)
     renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
     await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
 
     fireEvent.click(screen.getByLabelText('capture frame'))
 
-    // No capture, no pending chip.
+    // No capture, no editor, no pending chip.
     expect(mockApi.youtube.capture).not.toHaveBeenCalled()
-    expect(screen.queryByRole('img', { name: /frame/i })).toBeNull()
+    expect(screen.queryByTestId('annotate-editor')).toBeNull()
+    expect(screen.queryByRole('img', { name: /captured frame/i })).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Reopen a posted screenshot (T4.2): hover-pencil on a Rail frame opens the
+// editor modal for that attachment.
+// ---------------------------------------------------------------------------
+
+describe('ThreadView reopen flow', () => {
+  const SCREENSHOT = {
+    id: 'att-r1',
+    note_id: 'note-a',
+    kind: 'screenshot' as const,
+    base_sha256: 'sha',
+    base_path: '/store/2026/05/sha.png',
+    overlay_path: null,
+    video_id: 'abc',
+    time_seconds: 10,
+    width_px: 1920,
+    height_px: 1080,
+    device_pixel_ratio: 1,
+    created_at: 200,
+    deleted_at: null,
+  }
+
+  it('clicking the frame pencil opens the annotation editor modal', async () => {
+    mockApi.links.commentsOf.mockResolvedValue([{ note: NOTE_A, attachment: SCREENSHOT }])
+
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('annotated-frame-reopen')).toBeInTheDocument())
+
+    // No editor modal until the pencil is clicked.
+    expect(screen.queryByTestId('annotate-editor')).toBeNull()
+    fireEvent.click(screen.getByTestId('annotated-frame-reopen'))
+
+    // ReopenEditor resolves the (null) overlay then mounts AnnotateEditor.
+    await waitFor(() => expect(screen.getByTestId('annotate-editor')).toBeInTheDocument())
   })
 })
 
@@ -419,14 +684,17 @@ describe('ThreadView FIX 2 — post guard when note not loaded', () => {
       height: 270,
       devicePixelRatio: 1,
     })
+    mockApi.youtube.saveOverlay.mockResolvedValue({ overlayPath: null })
 
     renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
     // Wait for render to settle (title won't appear since videoSource has no title).
     await waitFor(() => expect(screen.getByLabelText('back')).toBeInTheDocument())
 
-    // Trigger capture to get a pending frame, then try to post.
+    // Trigger capture → editor opens → Done (empty) → pending chip, then try to post.
     fireEvent.click(screen.getByLabelText('capture frame'))
-    await waitFor(() => expect(mockApi.youtube.capture).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByTestId('annotate-editor')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: /^done$/i }))
+    await waitFor(() => expect(screen.queryByTestId('annotate-editor')).toBeNull())
 
     // Type a caption and submit.
     const textarea = screen.getByRole('textbox')

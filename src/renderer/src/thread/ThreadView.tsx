@@ -9,10 +9,12 @@ import {
   useState,
 } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
+import type { Attachment } from '../../../shared/types'
+import { AnnotateEditor } from '../annotate/AnnotateEditor'
+import { ReopenEditor } from '../annotate/ReopenEditor'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { ScrollDatePill } from '../feed/DatePills'
 import { api } from '../lib/api'
-import { mediaUrlFromPath } from '../lib/media-url'
 import { getPlayer, setPlayerInteractive } from '../yt/playerSingleton'
 import { usePlayer } from '../yt/usePlayer'
 import { JumpPill } from './JumpPill'
@@ -330,44 +332,133 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => () => clearTimeout(flashTimerRef.current), [])
 
-  // ── capture → pending frame → post comment-note (spec §298–315) ────────────
+  // ── capture → editor → pending frame → post comment-note (spec §Capture-time) ─
   // A single pending frame per composer; capturing again REPLACES it. The chip
-  // (and post anchor) use the captured moment's `t`, not the live playhead.
+  // (and post anchor) use the captured moment's `t`, not the live playhead. The
+  // pending frame now carries the synthesized Attachment so the chip can render
+  // the (possibly annotated) frame via AnnotatedFrame (v0.2.5).
   const queryClient = useQueryClient()
-  const [pendingFrame, setPendingFrame] = useState<{
-    attachmentId: string
-    thumbnailUrl: string
-    t: number
-  } | null>(null)
+  const [pendingFrame, setPendingFrame] = useState<{ attachment: Attachment; t: number } | null>(
+    null,
+  )
   // Surfaces the last failed post (e.g. duplicate-slug) in the composer, mirroring
   // the feed's inline error UX. Cleared on the next keystroke via onClearError.
   const [postError, setPostError] = useState<string | null>(null)
 
-  // ⌘⇧C / camera button: screenshot the live webview rect at the current time.
-  // No-op when no player is mounted (getMediaRect → null). On failure (e.g. the
-  // main-process 0-area guard, #34) we leave pendingFrame untouched so no junk
-  // chip appears. Why enableOnFormTags is OMITTED: the hotkey must NOT fire while
-  // the composer textarea is focused (contrast App.tsx's mod+k which opts in).
+  // ── reopen-a-posted-screenshot (T4.2) ──────────────────────────────────────
+  // When set, the ReopenEditor modal is mounted for this attachment (hover-pencil
+  // on a Rail frame). Done invalidates ['thread', noteId] so the Rail re-reads the
+  // new overlay_path (B-4). null = closed.
+  const [reopenAttachment, setReopenAttachment] = useState<Attachment | null>(null)
+
+  // ── capture-time editor (T4.3) ──────────────────────────────────────────────
+  // After ⌘⇧C captures an orphan frame, the editor opens on the synthesized
+  // Attachment (escMode='orphan'). Done → pending chip; Esc → discard/keep-orphan.
+  // null = no capture editor open. A capture/reopen editor being open makes ⌘⇧C a
+  // no-op (re-entrancy guard). `t` is the captured moment for the eventual chip.
+  const [captureFrame, setCaptureFrame] = useState<{ attachment: Attachment; t: number } | null>(
+    null,
+  )
+  const editorOpen = captureFrame !== null || reopenAttachment !== null
+  // C3: the editorOpen flag only flips true AFTER the capture awaits resolve, so a
+  // second ⌘⇧C (or OS key auto-repeat) in that window would slip past the guard and
+  // fire a duplicate youtube.capture → a leaked orphan row + PNG. This ref is set
+  // synchronously BEFORE the first await and cleared in finally, closing that gap.
+  const captureInFlightRef = useRef(false)
+
+  // ⌘⇧C / camera button: screenshot the live webview rect at the current time,
+  // then OPEN THE EDITOR on the captured frame (v0.2.5 — the editor opens before
+  // the pending chip). No-op when no player is mounted (getMediaRect → null), an
+  // editor is already open, OR a capture is already in flight (re-entrancy guard).
+  // On failure (e.g. the main-process 0-area guard, #34) we leave state untouched
+  // so no junk appears. Why enableOnFormTags is OMITTED: the hotkey must NOT fire
+  // while the composer textarea is focused (contrast App.tsx's mod+k which opts in).
   // @issue utof/linsae#34
   const onCapture = async () => {
+    // Re-entrancy guard: ignore while an editor is open OR a capture is in flight.
+    if (editorOpen || captureInFlightRef.current) return
     const player = getPlayer()
     const rect = player.getMediaRect()
     if (!rect) return
+    captureInFlightRef.current = true
     try {
       const t = await player.getCurrentTime()
-      const att = await api.youtube.capture(
-        { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      // getBoundingClientRect is in CSS px, but the main process's capturePage
+      // expects DIP, and on fractional-scaled desktops window.devicePixelRatio
+      // (CSS→physical) diverges from the OS scaleFactor screen reports (dpr=1.31
+      // while scaleFactor=1 → capturePage grabbed only the top-left slice, #?).
+      // Send PHYSICAL px (CSS × dpr); main divides by scaleFactor → DIP. When
+      // dpr == scaleFactor (normal/retina) this is identity (CSS px, as before).
+      const dpr = window.devicePixelRatio || 1
+      const res = await api.youtube.capture(
+        { x: rect.x * dpr, y: rect.y * dpr, width: rect.width * dpr, height: rect.height * dpr },
         videoId,
         t,
       )
-      setPendingFrame({ attachmentId: att.id, thumbnailUrl: mediaUrlFromPath(att.path), t })
+      // B-2: synthesize the Attachment from the capture result + known fields —
+      // youtube.capture returns PersistCaptureResult, NOT an Attachment, and
+      // there is no attachments.get read IPC. overlay_path starts null (set by
+      // the editor's Done if drawn).
+      // M5: `created_at` here is the renderer clock at capture time and DRIFTS from
+      // the DB row's created_at (set in persistCapture). It exists only to satisfy
+      // the Attachment shape for the chip/editor render; do NOT treat it as the
+      // authoritative row timestamp — re-read from the DB if that's ever needed.
+      const attachment: Attachment = {
+        id: res.id,
+        note_id: null,
+        kind: 'screenshot',
+        base_sha256: res.sha256,
+        base_path: res.path,
+        overlay_path: null,
+        video_id: videoId,
+        time_seconds: t,
+        width_px: res.width,
+        height_px: res.height,
+        device_pixel_ratio: res.devicePixelRatio,
+        created_at: Date.now(),
+        deleted_at: null,
+      }
+      // Open the editor on the new frame (replaces any prior pending chip on Done).
+      setCaptureFrame({ attachment, t })
     } catch (err) {
       console.error('frame capture failed', err)
+    } finally {
+      captureInFlightRef.current = false
     }
   }
   useHotkeys('mod+shift+c', () => {
     void onCapture()
   })
+
+  // The editor reports the freshly-written overlay_path via onSaved (just before
+  // onClose(true)); stash it so onClose can synthesize the chip's Attachment with
+  // the new sidecar (B-2). A ref because onSaved fires synchronously before close.
+  const savedOverlayPathRef = useRef<string | null>(null)
+
+  // Capture editor finished. Done(saved) → set the pending chip to the (possibly
+  // annotated) frame so the chip's AnnotatedFrame shows the drawing. Cancel /
+  // Discard / empty-Keep → no chip.
+  const onCaptureEditorClose = useCallback(
+    (saved: boolean) => {
+      const frame = captureFrame
+      const overlayPath = savedOverlayPathRef.current
+      savedOverlayPathRef.current = null
+      setCaptureFrame(null)
+      if (saved && frame) {
+        setPendingFrame({
+          attachment: { ...frame.attachment, overlay_path: overlayPath },
+          t: frame.t,
+        })
+      }
+    },
+    [captureFrame],
+  )
+
+  // Esc → Discard on the capture editor: soft-delete the orphan row + sidecar.
+  const onCaptureDiscard = useCallback(() => {
+    const frame = captureFrame
+    if (frame) void api.attachments.remove(frame.attachment.id)
+  }, [captureFrame])
 
   // Post a comment-note anchored to the captured `t` (capture-t wins over the
   // live chip when a frame is pending). The comment-on edge points at the video
@@ -391,7 +482,7 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
         source_locator: { media: 'youtube', video_id: videoId, t: tAnchor },
         commentOn: note.slug,
       })
-      if (frame) await api.attachments.attachToNote(frame.attachmentId, created.id)
+      if (frame) await api.attachments.attachToNote(frame.attachment.id, created.id)
       return created
     },
     onSuccess: () => {
@@ -493,6 +584,7 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
               mode={sortMode}
               playheadT={currentTime}
               flashClusterIdx={flashClusterIdx}
+              onReopenAttachment={setReopenAttachment}
               onSeekNote={(t) => {
                 // Explicit seek ONLY — dot/time click. Seeking is never wired from
                 // scroll, so scrolling the list cannot move playback.
@@ -603,9 +695,7 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
             duration={duration}
             error={postError}
             onClearError={() => setPostError(null)}
-            pendingFrame={
-              pendingFrame ? { thumbnailUrl: pendingFrame.thumbnailUrl, t: pendingFrame.t } : null
-            }
+            pendingFrame={pendingFrame}
             onCapture={() => {
               void onCapture()
             }}
@@ -762,6 +852,34 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
           />
           {notesPane}
         </div>
+      )}
+
+      {/* Reopen-a-posted-screenshot editor (T4.2). ReopenEditor fetches the
+          saved scene then mounts AnnotateEditor; Done invalidates the commentsOf
+          query so the Rail re-reads the new overlay_path (B-4). */}
+      {reopenAttachment && (
+        <ReopenEditor
+          attachment={reopenAttachment}
+          noteId={noteId}
+          onClose={() => setReopenAttachment(null)}
+        />
+      )}
+
+      {/* Capture-time editor (T4.3): opens on ⌘⇧C's freshly-captured orphan
+          frame. escMode='orphan' → Esc shows discard/keep-orphan. Done → pending
+          chip; onSaved stashes the new overlay_path so the chip renders the
+          drawing. onDiscardOrphan soft-deletes the orphan + sidecar. */}
+      {captureFrame && (
+        <AnnotateEditor
+          attachment={captureFrame.attachment}
+          initialScene={null}
+          escMode="orphan"
+          onSaved={(overlayPath) => {
+            savedOverlayPathRef.current = overlayPath
+          }}
+          onDiscardOrphan={onCaptureDiscard}
+          onClose={onCaptureEditorClose}
+        />
       )}
     </div>
   )

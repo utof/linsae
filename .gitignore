@@ -35,3 +35,4 @@ scripts/.wave-shots/
 !/CLAUDE.md
 !/docs/**/*.md
 !/adrs/**/*.md
+.superpowers/

@@ -192,6 +192,73 @@ describe('Rail (video mode)', () => {
     const img = screen.getByRole('img')
     expect(img.getAttribute('src')).toBe('/_media/2026/05/sha.png')
   })
+
+  it('threads onReopenAttachment to the frame pencil and calls it with the attachment', () => {
+    const attachment: Attachment = {
+      id: 'att-r',
+      note_id: 'shot',
+      kind: 'screenshot',
+      base_sha256: 'sha',
+      base_path: '/store/2026/05/sha.png',
+      overlay_path: null,
+      video_id: 'v',
+      time_seconds: 30,
+      width_px: 1920,
+      height_px: 1080,
+      device_pixel_ratio: 2,
+      created_at: 900,
+      deleted_at: null,
+    }
+    const onReopenAttachment = vi.fn()
+    const shotItem = item('shot', 30, attachment)
+    const shotClusters = clusterByPause([shotItem] as never) as unknown as typeof clusters
+    renderWithProviders(
+      <Rail
+        clusters={shotClusters}
+        anchorless={[]}
+        sorted={[shotItem]}
+        mode="video"
+        playheadT={0}
+        onSeekNote={vi.fn()}
+        onReopenAttachment={onReopenAttachment}
+      />,
+    )
+    // The pencil affordance is present (onReopen wired) and passes the attachment.
+    fireEvent.click(screen.getByTestId('annotated-frame-reopen'))
+    expect(onReopenAttachment).toHaveBeenCalledOnce()
+    expect(onReopenAttachment).toHaveBeenCalledWith(attachment)
+  })
+
+  it('omits the pencil affordance when onReopenAttachment is not supplied', () => {
+    const attachment: Attachment = {
+      id: 'att-noedit',
+      note_id: 'shot',
+      kind: 'screenshot',
+      base_sha256: 'sha',
+      base_path: '/store/2026/05/sha.png',
+      overlay_path: null,
+      video_id: 'v',
+      time_seconds: 30,
+      width_px: 1920,
+      height_px: 1080,
+      device_pixel_ratio: 2,
+      created_at: 900,
+      deleted_at: null,
+    }
+    const shotItem = item('shot', 30, attachment)
+    const shotClusters = clusterByPause([shotItem] as never) as unknown as typeof clusters
+    renderWithProviders(
+      <Rail
+        clusters={shotClusters}
+        anchorless={[]}
+        sorted={[shotItem]}
+        mode="video"
+        playheadT={0}
+        onSeekNote={vi.fn()}
+      />,
+    )
+    expect(screen.queryByTestId('annotated-frame-reopen')).toBeNull()
+  })
 })
 
 describe('Rail (capture mode)', () => {

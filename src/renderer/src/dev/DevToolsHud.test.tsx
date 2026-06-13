@@ -44,9 +44,22 @@ describe('DevToolsHud — opens via defaultOpen prop', () => {
 })
 
 describe('DevToolsHud — one row per overlay key', () => {
-  it('renders exactly 4 checkboxes when open', () => {
+  it('renders 6 checkboxes when open (4 overlays + 2 LOD toggles)', () => {
+    // 4 overlay toggles (fps/boot/wave/reveal) + the LOD section's
+    // "unclamp zoom" + "synthetic 10k dots" checkboxes (Task 8 Step 2).
     renderWithProviders(<DevToolsHud defaultOpen />)
-    expect(screen.getAllByRole('checkbox')).toHaveLength(4)
+    expect(screen.getAllByRole('checkbox')).toHaveLength(6)
+  })
+
+  it('renders the LOD section: force-tier buttons + its two toggles', () => {
+    renderWithProviders(<DevToolsHud defaultOpen />)
+    // Three force-tier buttons (auto/card/dot).
+    expect(screen.getByRole('button', { name: 'auto' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'card' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'dot' })).toBeTruthy()
+    // Its two checkboxes' labels.
+    expect(screen.getByText(/unclamp zoom/i)).toBeTruthy()
+    expect(screen.getByText(/synthetic 10k dots/i)).toBeTruthy()
   })
 
   it('renders all four overlay labels', () => {

@@ -11,6 +11,7 @@
 
 import type Database from 'better-sqlite3'
 import type { NotesDir } from '../files/notes-dir'
+import { registerCanvasIpc } from './canvas'
 import { registerMediaIpc } from './media'
 import { registerNotesIpc } from './notes'
 import { registerSystemIpc } from './system'
@@ -45,6 +46,7 @@ export function registerAllIpc(
   attachmentsDir: string,
 ): void {
   registerNotesIpc(db, nd)
+  registerCanvasIpc(db, nd)
   registerSystemIpc(notesDir, logsDir, reconcileSkipped)
   registerMediaIpc(db, attachmentsDir)
   registerYoutubeAuthIpc()

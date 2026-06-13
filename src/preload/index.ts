@@ -21,11 +21,24 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import type { z } from 'zod'
+import type { CanvasCamera, CanvasEdge, CanvasLayoutRow, RecentEntry } from '../shared/canvas'
 import type { Attachment, Note, SearchHit } from '../shared/types'
 import type {
+  AttachmentRemoveInputSchema,
   AttachmentsListInputSchema,
   AttachToNoteInputSchema,
   BacklinksInputSchema,
+  CanvasCreateNoteAtInputSchema,
+  CanvasEdgesInputSchema,
+  CanvasGetStateInputSchema,
+  CanvasListLayoutsInputSchema,
+  CanvasMoveNotesInputSchema,
+  CanvasNoteIdsInputSchema,
+  CanvasPlaceNoteInputSchema,
+  CanvasRecentInputSchema,
+  CanvasRestoreLayoutsInputSchema,
+  CanvasSetStateInputSchema,
+  CanvasShelveNoteInputSchema,
   CaptureInputSchema,
   CommentsOfInputSchema,
   FetchOEmbedInputSchema,
@@ -34,6 +47,7 @@ import type {
   NotesListInputSchema,
   NotesUpdateInputSchema,
   ResolveInputSchema,
+  SaveOverlayInputSchema,
   SearchRunInputSchema,
   VideoSourcesGetInputSchema,
   VideoSourcesUpsertInputSchema,
@@ -66,6 +80,32 @@ const api = {
     ): Promise<Array<{ note: Note; attachment: Attachment | null }>> =>
       ipcRenderer.invoke('links:commentsOf', i),
   },
+  canvas: {
+    listLayouts: (i: z.input<typeof CanvasListLayoutsInputSchema>): Promise<CanvasLayoutRow[]> =>
+      ipcRenderer.invoke('canvas:listLayouts', i),
+    edges: (i: z.input<typeof CanvasEdgesInputSchema>): Promise<CanvasEdge[]> =>
+      ipcRenderer.invoke('canvas:edges', i),
+    shelveNote: (i: z.input<typeof CanvasShelveNoteInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('canvas:shelveNote', i),
+    placeNote: (i: z.input<typeof CanvasPlaceNoteInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('canvas:placeNote', i),
+    moveNotes: (i: z.input<typeof CanvasMoveNotesInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('canvas:moveNotes', i),
+    unplaceNotes: (i: z.input<typeof CanvasNoteIdsInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('canvas:unplaceNotes', i),
+    restoreLayouts: (i: z.input<typeof CanvasRestoreLayoutsInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('canvas:restoreLayouts', i),
+    removeNotes: (i: z.input<typeof CanvasNoteIdsInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('canvas:removeNotes', i),
+    getState: (i: z.input<typeof CanvasGetStateInputSchema>): Promise<CanvasCamera> =>
+      ipcRenderer.invoke('canvas:getState', i),
+    setState: (i: z.input<typeof CanvasSetStateInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('canvas:setState', i),
+    recentOnCanvas: (i: z.input<typeof CanvasRecentInputSchema>): Promise<RecentEntry[]> =>
+      ipcRenderer.invoke('canvas:recentOnCanvas', i),
+    createNoteAt: (i: z.input<typeof CanvasCreateNoteAtInputSchema>): Promise<Note> =>
+      ipcRenderer.invoke('canvas:createNoteAt', i),
+  },
   youtube: {
     capture: (
       i: z.input<typeof CaptureInputSchema>,
@@ -91,12 +131,28 @@ const api = {
     importCookies: (): Promise<
       { canceled: true } | { canceled: false; ok: number; fail: number }
     > => ipcRenderer.invoke('youtube:importCookies'),
+    /**
+     * Write or clear the SVG annotation sidecar for a screenshot attachment.
+     * `svg: null` clears the overlay (deletes the sidecar, nulls overlay_path).
+     * Throws if the attachment id is unknown or soft-deleted.
+     * @see docs/specs/v0.2.5-screenshot-annotation.md §IPC contract (saveOverlay)
+     */
+    saveOverlay: (
+      i: z.input<typeof SaveOverlayInputSchema>,
+    ): Promise<{ overlayPath: string | null }> => ipcRenderer.invoke('youtube:saveOverlay', i),
   },
   attachments: {
     list: (i: z.input<typeof AttachmentsListInputSchema>): Promise<Attachment[]> =>
       ipcRenderer.invoke('attachments:list', i),
     attachToNote: (i: z.input<typeof AttachToNoteInputSchema>): Promise<void> =>
       ipcRenderer.invoke('attachments:attachToNote', i),
+    /**
+     * Soft-delete an orphan attachment and remove its SVG sidecar (if any).
+     * PNG bytes on disk are preserved; reclamation is a separate future concern.
+     * @see docs/specs/v0.2.5-screenshot-annotation.md §IPC contract (attachments.remove)
+     */
+    remove: (i: z.input<typeof AttachmentRemoveInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('attachments:remove', i),
   },
   videoSources: {
     upsert: (i: z.input<typeof VideoSourcesUpsertInputSchema>): Promise<void> =>
@@ -125,6 +181,13 @@ const api = {
       close: (): Promise<{ ok: true }> => ipcRenderer.invoke('system:windowClose'),
     },
   },
+  // Harness flag (spec §3 / §17): true ONLY when the Playwright perf harness
+  // launched the app with LINSAE_HARNESS=1 (scripts/canvas-perf-harness.mjs).
+  // In normal prod use the env var is unset → false → the renderer never
+  // attaches window.__canvasHarness. Read at preload load (process.env is
+  // available in the preload context; the renderer itself is isolated).
+  // @see docs/specs/v0.4-canvas-mvp.md §3 §17
+  isHarness: process.env.LINSAE_HARNESS === '1',
 }
 
 contextBridge.exposeInMainWorld('api', api)

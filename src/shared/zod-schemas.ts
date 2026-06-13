@@ -207,3 +207,116 @@ export const VideoSourcesGetInputSchema = z.object({ videoId: z.string().min(1) 
  * @issue utof/linsae#36
  */
 export const CommentsOfInputSchema = z.object({ noteId: z.string().min(1) })
+
+/**
+ * `youtube:saveOverlay` input — write or clear the SVG sidecar for a screenshot.
+ *
+ * Why `startsWith('<svg')`: rejects non-SVG payloads at the boundary (a plain
+ * string accepted by `z.string()` could be anything; the check is a cheap guard
+ * against accidentally sending JSON or other text). `max(512_000)` caps sidecar
+ * size at ~0.5 MB — generous for screen annotation but protects against runaway
+ * serialization. `svg: null` is the "clear overlay" sentinel.
+ *
+ * Why `attachmentId` not `id`: mirrors `AttachToNoteInputSchema` which uses
+ * `attachmentId` to distinguish from a note id at call sites.
+ *
+ * @see docs/specs/v0.2.5-screenshot-annotation.md §IPC contract
+ */
+export const SaveOverlayInputSchema = z.object({
+  attachmentId: z.string(),
+  svg: z.string().startsWith('<svg').max(512_000).nullable(),
+})
+
+/**
+ * `attachments:remove` input — soft-delete an orphan attachment and its sidecar.
+ *
+ * Why: the single Discard entry point for a never-posted screenshot
+ * (capture-time Esc → Discard).
+ *
+ * @see docs/specs/v0.2.5-screenshot-annotation.md §IPC contract
+ */
+export const AttachmentRemoveInputSchema = z.object({ id: z.string() })
+
+/**
+ * Shared canvas key — every canvas channel except getState/setState carries the
+ * opaque (canvasId, arrangementId) pair (vision principles 3-4). Spread into the
+ * schemas below so the pair is defined exactly once. Not a schema itself.
+ * @see docs/specs/v0.4-canvas-mvp.md §2
+ */
+const CanvasKey = {
+  canvasId: z.string().min(1),
+  arrangementId: z.string().min(1),
+}
+
+/** canvas:listLayouts input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasListLayoutsInputSchema = z.object({ ...CanvasKey })
+
+/** canvas:edges input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasEdgesInputSchema = z.object({ ...CanvasKey })
+
+/** canvas:shelveNote input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasShelveNoteInputSchema = z.object({ ...CanvasKey, noteId: z.string().min(1) })
+
+/** canvas:placeNote input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasPlaceNoteInputSchema = z.object({
+  ...CanvasKey,
+  noteId: z.string().min(1),
+  x: z.number().finite(),
+  y: z.number().finite(),
+})
+
+/** canvas:moveNotes input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasMoveNotesInputSchema = z.object({
+  ...CanvasKey,
+  moves: z
+    .array(z.object({ noteId: z.string().min(1), x: z.number().finite(), y: z.number().finite() }))
+    .min(1),
+})
+
+/** canvas:unplaceNotes / canvas:removeNotes input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasNoteIdsInputSchema = z.object({
+  ...CanvasKey,
+  noteIds: z.array(z.string().min(1)).min(1),
+})
+
+/** canvas:restoreLayouts input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasRestoreLayoutsInputSchema = z.object({
+  ...CanvasKey,
+  rows: z
+    .array(
+      z.object({
+        noteId: z.string().min(1),
+        x: z.number().finite().nullable(),
+        y: z.number().finite().nullable(),
+        createdAt: z.number().int(),
+        placedAt: z.number().int().nullable(),
+      }),
+    )
+    .min(1),
+})
+
+/** canvas:getState input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasGetStateInputSchema = z.object({ canvasId: z.string().min(1) })
+
+/** canvas:setState input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasSetStateInputSchema = z.object({
+  canvasId: z.string().min(1),
+  camera_x: z.number().finite(),
+  camera_y: z.number().finite(),
+  zoom: z.number().finite().positive(),
+})
+
+/** canvas:recentOnCanvas input. @see docs/specs/v0.4-canvas-mvp.md §2 */
+export const CanvasRecentInputSchema = z.object({
+  ...CanvasKey,
+  limit: z.number().int().min(1).max(50).default(8),
+})
+
+/** canvas:createNoteAt input (spec §7 single-timestamp create-on-canvas). */
+export const CanvasCreateNoteAtInputSchema = z.object({
+  ...CanvasKey,
+  body: z.string().min(1),
+  type: NoteTypeSchema.default('claim'),
+  x: z.number().finite(),
+  y: z.number().finite(),
+})

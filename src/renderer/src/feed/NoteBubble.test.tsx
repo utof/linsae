@@ -759,3 +759,72 @@ describe('NoteBubble selecting mode', () => {
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
 })
+
+describe('NoteBubble canvas ▦ traces (§4/§9)', () => {
+  it('unplaced bubble shows the "▦+" hover affordance + shelf/place menu verbs', () => {
+    const onShelf = vi.fn()
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        placed={false}
+        onShelf={onShelf}
+        onPlaceOnCanvas={vi.fn()}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    // Hover affordance: "add to shelf" → onShelf bound to the note id.
+    fireEvent.mouseEnter(screen.getByText('hello'))
+    const shelfBtn = screen.getByRole('button', { name: /add to shelf/i })
+    fireEvent.click(shelfBtn)
+    expect(onShelf).toHaveBeenCalledWith('n1')
+    // Context menu offers the two unplaced verbs and NOT the jump verb.
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    expect(screen.getByRole('menuitem', { name: '→ shelf' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'place on canvas…' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'on canvas' })).not.toBeInTheDocument()
+  })
+
+  it('placed bubble shows the ▦ jump chip + the "on canvas" jump menu verb', () => {
+    const onJumpToCard = vi.fn()
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        placed={true}
+        onJumpToCard={onJumpToCard}
+        onShelf={vi.fn()}
+        onPlaceOnCanvas={vi.fn()}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    // Inline ▦ jump chip (aria-label "on canvas") → onJumpToCard bound to id.
+    const chip = screen.getByRole('button', { name: 'on canvas' })
+    fireEvent.click(chip)
+    expect(onJumpToCard).toHaveBeenCalledWith('n1')
+    // No "▦+" affordance while placed (the chip replaces it).
+    fireEvent.mouseEnter(screen.getByText('hello'))
+    expect(screen.queryByRole('button', { name: /add to shelf/i })).not.toBeInTheDocument()
+    // Context menu offers the single jump verb, NOT the unplaced pair.
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.contextMenu(bubble)
+    expect(screen.getByRole('menuitem', { name: 'on canvas' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: '→ shelf' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'place on canvas…' })).not.toBeInTheDocument()
+  })
+})

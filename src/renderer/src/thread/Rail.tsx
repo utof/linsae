@@ -30,11 +30,11 @@
 import { PinOff } from 'lucide-react'
 import { Fragment } from 'react'
 import type { Attachment, Note } from '../../../shared/types'
+import { AnnotatedFrame } from '../annotate/AnnotatedFrame'
 import { DayDivider } from '../feed/DatePills'
 import { useClock24 } from '../lib/clock-pref'
 import { dayKey, formatDayLabel } from '../lib/day'
 import { Markdown } from '../lib/markdown'
-import { mediaUrlFromPath } from '../lib/media-url'
 import { formatClock } from '../lib/time'
 import { formatTimeOnly } from '../lib/wallclock'
 import { activeClusterIndex, logGapHeight } from './rail-layout'
@@ -45,8 +45,6 @@ import { activeClusterIndex, logGapHeight } from './rail-layout'
 // ThreadView; Rail draws into the gutter to its LEFT via negative offsets.
 const RAIL = -20
 const DOTC = RAIL + 1
-// The only blessed hardcoded color in this area is the dark media frame.
-const MEDIA_BG = '#1c1c1e'
 
 /**
  * A thread item as produced by `useThreadNotes`. Structural shape — Rail does
@@ -85,6 +83,13 @@ export interface RailProps {
    * on follow-scroll / click-to-seek, cleared after a short timeout). `-1` = none.
    */
   flashClusterIdx?: number
+  /**
+   * When supplied, each posted screenshot frame shows a hover pencil that calls
+   * this with the frame's attachment so the caller opens the annotation editor
+   * (T4 reopen flow). Omit → no edit affordance (read-only overlays only).
+   * @see docs/specs/v0.2.5-screenshot-annotation.md §"Reopen a posted screenshot"
+   */
+  onReopenAttachment?: (attachment: Attachment) => void
 }
 
 /** A neutral note bubble: screenshot frame (if any) fills the bubble, body below. */
@@ -92,11 +97,14 @@ function NoteBubble({
   item,
   active,
   dataDay,
+  onReopenAttachment,
 }: {
   item: RailItem
   active: boolean
   /** Day label (capture mode only) — read by ThreadView's floating date pill. */
   dataDay?: string
+  /** Threaded from RailProps; opens the editor for this frame's attachment. */
+  onReopenAttachment?: (attachment: Attachment) => void
 }) {
   const clock24 = useClock24()
   return (
@@ -115,21 +123,20 @@ function NoteBubble({
       }}
     >
       {item.attachment && (
-        <div
-          style={{
-            marginBottom: item.note.body ? 8 : 0,
-            width: '100%',
-            aspectRatio: '16 / 9',
-            overflow: 'hidden',
-            borderRadius: 'var(--r-3)',
-            background: MEDIA_BG,
-          }}
-        >
-          <img
-            src={mediaUrlFromPath(item.attachment.base_path)}
-            alt="captured frame"
-            style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
-          />
+        // AnnotatedFrame renders base img + optional inert overlay (SceneSvg).
+        // T4: when onReopenAttachment is supplied, the hover pencil opens the
+        // editor for this frame (the reopen flow). exactOptionalPropertyTypes —
+        // capture the non-null attachment in a const so the closure is typed.
+        <div style={{ marginBottom: item.note.body ? 8 : 0 }}>
+          {(() => {
+            const att = item.attachment
+            return (
+              <AnnotatedFrame
+                attachment={att}
+                {...(onReopenAttachment && { onReopen: () => onReopenAttachment(att) })}
+              />
+            )
+          })()}
         </div>
       )}
       {item.note.body && (
@@ -166,12 +173,14 @@ function ClusterRow({
   active,
   flash,
   onSeek,
+  onReopenAttachment,
 }: {
   cluster: RailCluster
   index: number
   active: boolean
   flash: boolean
   onSeek: (t: number) => void
+  onReopenAttachment?: (attachment: Attachment) => void
 }) {
   return (
     <div
@@ -236,7 +245,12 @@ function ClusterRow({
       />
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {cluster.notes.map((it) => (
-          <NoteBubble key={it.id} item={it} active={active} />
+          <NoteBubble
+            key={it.id}
+            item={it}
+            active={active}
+            {...(onReopenAttachment && { onReopenAttachment })}
+          />
         ))}
       </div>
     </div>
@@ -339,7 +353,11 @@ export function Rail({
   playheadT,
   onSeekNote,
   flashClusterIdx = -1,
+  onReopenAttachment,
 }: RailProps) {
+  // exactOptionalPropertyTypes: only spread the handler when defined so child
+  // props stay `(fn) | absent` rather than `| undefined`.
+  const reopenProp = onReopenAttachment ? { onReopenAttachment } : {}
   if (mode === 'capture') {
     // Capture order is chronological by creation, so the feed's Telegram-style day
     // dividers fit here. They make NO sense in video-time order (which has no date
@@ -353,7 +371,7 @@ export function Rail({
           return (
             <Fragment key={it.id}>
               {newDay && <DayDivider label={label} />}
-              <NoteBubble item={it} active={false} dataDay={label} />
+              <NoteBubble item={it} active={false} dataDay={label} {...reopenProp} />
             </Fragment>
           )
         })}
@@ -389,6 +407,7 @@ export function Rail({
               active={i === activeIdx}
               flash={i === flashClusterIdx}
               onSeek={onSeekNote}
+              {...reopenProp}
             />
             {i === activeIdx && <Playhead t={playheadT} />}
           </div>
@@ -416,7 +435,7 @@ export function Rail({
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {anchorless.map((it) => (
-              <NoteBubble key={it.id} item={it} active={false} />
+              <NoteBubble key={it.id} item={it} active={false} {...reopenProp} />
             ))}
           </div>
         </div>

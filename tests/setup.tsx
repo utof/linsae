@@ -69,16 +69,35 @@ export interface MockApi {
   youtube: {
     capture: ReturnType<typeof vi.fn>
     fetchOEmbed: ReturnType<typeof vi.fn>
+    /** saveOverlay mock — added in v0.2.5. @see docs/specs/v0.2.5-screenshot-annotation.md */
+    saveOverlay: ReturnType<typeof vi.fn>
   }
   /** Attachments IPC mocks — added in v0.2. @see src/preload/index.ts */
   attachments: {
     list: ReturnType<typeof vi.fn>
     attachToNote: ReturnType<typeof vi.fn>
+    /** remove mock — added in v0.2.5. @see docs/specs/v0.2.5-screenshot-annotation.md */
+    remove: ReturnType<typeof vi.fn>
   }
   /** VideoSources IPC mocks — added in v0.2. @see src/preload/index.ts */
   videoSources: {
     upsert: ReturnType<typeof vi.fn>
     get: ReturnType<typeof vi.fn>
+  }
+  /** Canvas IPC mocks — added in v0.4. @see src/preload/index.ts */
+  canvas: {
+    listLayouts: ReturnType<typeof vi.fn>
+    edges: ReturnType<typeof vi.fn>
+    shelveNote: ReturnType<typeof vi.fn>
+    placeNote: ReturnType<typeof vi.fn>
+    moveNotes: ReturnType<typeof vi.fn>
+    unplaceNotes: ReturnType<typeof vi.fn>
+    restoreLayouts: ReturnType<typeof vi.fn>
+    removeNotes: ReturnType<typeof vi.fn>
+    getState: ReturnType<typeof vi.fn>
+    setState: ReturnType<typeof vi.fn>
+    recentOnCanvas: ReturnType<typeof vi.fn>
+    createNoteAt: ReturnType<typeof vi.fn>
   }
   system: {
     revealNotesFolder: ReturnType<typeof vi.fn>
@@ -90,6 +109,8 @@ export interface MockApi {
       close: ReturnType<typeof vi.fn>
     }
   }
+  /** Harness flag — added in v0.4; stable `false` so the bridge stays detached. */
+  isHarness: boolean
 }
 
 /**
@@ -124,14 +145,40 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
         devicePixelRatio: 1,
       })),
       fetchOEmbed: vi.fn(async () => null),
+      saveOverlay: vi.fn(
+        async (): Promise<{ overlayPath: string | null }> => ({ overlayPath: null }),
+      ),
     },
     attachments: {
       list: vi.fn(async (): Promise<Attachment[]> => []),
       attachToNote: vi.fn(async (): Promise<void> => undefined),
+      remove: vi.fn(async (): Promise<void> => undefined),
     },
     videoSources: {
       upsert: vi.fn(async (): Promise<void> => undefined),
       get: vi.fn(async () => null),
+    },
+    canvas: {
+      listLayouts: vi.fn(async () => []),
+      edges: vi.fn(async () => []),
+      shelveNote: vi.fn(async () => undefined),
+      placeNote: vi.fn(async () => undefined),
+      moveNotes: vi.fn(async () => undefined),
+      unplaceNotes: vi.fn(async () => undefined),
+      restoreLayouts: vi.fn(async () => undefined),
+      removeNotes: vi.fn(async () => undefined),
+      getState: vi.fn(async () => ({ camera_x: 0, camera_y: 0, zoom: 1 })),
+      setState: vi.fn(async () => undefined),
+      recentOnCanvas: vi.fn(async () => []),
+      createNoteAt: vi.fn(async () => ({
+        id: 'created-1',
+        slug: 'created-1',
+        body: '',
+        type: 'claim',
+        created_at: 0,
+        updated_at: 0,
+        deleted_at: null,
+      })),
     },
     system: {
       revealNotesFolder: vi.fn(async () => ({ ok: true })),
@@ -143,6 +190,7 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
         close: vi.fn(async () => ({ ok: true })),
       },
     },
+    isHarness: false,
     ...overrides,
   }
   ;(globalThis as unknown as { window: { api: MockApi } }).window ||= {} as { api: MockApi }

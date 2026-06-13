@@ -148,6 +148,17 @@ describe('saveNote', () => {
     })
   })
 
+  it('softDelete purges the note layout rows across canvases (spec v0.4 §1)', () => {
+    const n = saveNote(db, nd, { mode: 'create', body: 'on canvas', type: 'claim' })
+    db.prepare(
+      `INSERT INTO node_layouts (canvas_id, arrangement_id, note_id, x, y, created_at, placed_at, updated_at)
+       VALUES ('root', 'manual', ?, 1, 2, 1, 1, 1)`,
+    ).run(n.id)
+    saveNote(db, nd, { mode: 'softDelete', id: n.id })
+    const count = db.prepare(`SELECT COUNT(*) AS c FROM node_layouts WHERE note_id = ?`).get(n.id)
+    expect(count).toEqual({ c: 0 })
+  })
+
   it('creates a comment-on edge to the video-note when commentOn is given', () => {
     // a video-note to comment on
     const video = saveNote(db, nd, {
