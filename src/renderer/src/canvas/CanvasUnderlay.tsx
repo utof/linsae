@@ -121,6 +121,11 @@ export function CanvasUnderlay({
       if (canvas.width !== bsW) canvas.width = bsW
       if (canvas.height !== bsH) canvas.height = bsH
 
+      // Why: identity before clear — clearRect respects the current transform
+      // matrix; the previous frame left it at the camera matrix, so clearing
+      // under identity is required to wipe the whole backing store (happy-dom
+      // can't catch this — getContext returns null there).
+      ctx.setTransform(1, 0, 0, 1, 0, 0)
       ctx.clearRect(0, 0, canvas.width, canvas.height)
 
       // Camera+dpr transform: world coords → backing-store pixels.

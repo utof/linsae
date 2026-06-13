@@ -170,7 +170,9 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
     }
 
     return {
-      draw(ctx: CanvasRenderingContext2D, camera): void {
+      // drawCamera (not the render-closure camera): the hairline math uses the
+      // draw-time camera the underlay loop passes in, so zoom is current.
+      draw(ctx: CanvasRenderingContext2D, drawCamera): void {
         if (edges.length === 0) return
 
         // Resolve the colour token lazily on first draw (getComputedStyle is a
@@ -195,11 +197,11 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
 
           ctx.beginPath()
           ctx.strokeStyle = color
-          ctx.lineWidth = 1 / camera.zoom // screen-constant hairline
+          ctx.lineWidth = 1 / drawCamera.zoom // screen-constant hairline
           ctx.globalAlpha = 0.25
 
           if (edge.edgeType === 'comment-on') {
-            ctx.setLineDash([6 / camera.zoom, 4 / camera.zoom])
+            ctx.setLineDash([6 / drawCamera.zoom, 4 / drawCamera.zoom])
           } else {
             // 'reference' and any future types: solid line.
             ctx.setLineDash([])
@@ -215,7 +217,7 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
         }
       },
     }
-  }, [edges, placedLayouts, cullEpoch]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [edges, placedLayouts, cullEpoch])
 
   /**
    * Underlay layers array. Identity changes when edgesLayer is rebuilt, which

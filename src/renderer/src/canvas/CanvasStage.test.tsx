@@ -10,7 +10,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { StrictMode } from 'react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
 import { CanvasStage } from './CanvasStage'
@@ -440,6 +440,175 @@ describe('CanvasStage', () => {
     // happy-dom — the no-op path must not throw).
     // unmount to exercise RAF cleanup.
     expect(() => unmount()).not.toThrow()
+  })
+
+  /**
+   * A recording 2D context fake. Captures an ordered call log of the draw-path
+   * methods plus settable-prop writes so a test can assert ordering and which
+   * primitives fired per edge. happy-dom returns null from getContext('2d'), so
+   * the real underlay draw path never runs there — this fake makes it run.
+   */
+  type LogEntry = { op: string; args: unknown[] }
+  function makeRecordingCtx(): { ctx: CanvasRenderingContext2D; log: LogEntry[] } {
+    const log: LogEntry[] = []
+    const rec =
+      (op: string) =>
+      (...args: unknown[]): void => {
+        log.push({ op, args })
+      }
+    const ctx = {
+      setTransform: rec('setTransform'),
+      clearRect: rec('clearRect'),
+      beginPath: rec('beginPath'),
+      moveTo: rec('moveTo'),
+      lineTo: rec('lineTo'),
+      stroke: rec('stroke'),
+      save: rec('save'),
+      restore: rec('restore'),
+      setLineDash: rec('setLineDash'),
+      set globalAlpha(v: number) {
+        log.push({ op: 'set:globalAlpha', args: [v] })
+      },
+      set lineWidth(v: number) {
+        log.push({ op: 'set:lineWidth', args: [v] })
+      },
+      set strokeStyle(v: string) {
+        log.push({ op: 'set:strokeStyle', args: [v] })
+      },
+    } as unknown as CanvasRenderingContext2D
+    return { ctx, log }
+  }
+
+  /**
+   * Drives the underlay's rAF loop synchronously. requestAnimationFrame is
+   * stubbed to enqueue callbacks; flush() runs the queue a bounded number of
+   * times so the dirty frame executes and the test TERMINATES (the loop
+   * reschedules itself, so an unbounded synchronous flush would spin forever).
+   */
+  function installRafHarness() {
+    const queue: FrameRequestCallback[] = []
+    const rafSpy = vi
+      .spyOn(globalThis, 'requestAnimationFrame')
+      .mockImplementation((cb: FrameRequestCallback) => {
+        queue.push(cb)
+        return queue.length
+      })
+    const cancelSpy = vi.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => {})
+    const flush = (frames: number): void => {
+      for (let i = 0; i < frames; i++) {
+        const cb = queue.shift()
+        if (!cb) return
+        cb(performance.now())
+      }
+    }
+    return { flush, rafSpy, cancelSpy }
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('(i) regression: clearRect runs under identity, not the camera matrix (no ghosting on pan)', async () => {
+    // happy-dom returns null from getContext('2d'), so the draw path is invisible
+    // there. We stub a recording 2D context + a synchronous rAF harness so the
+    // underlay loop actually executes, then assert the per-frame transform order.
+    //
+    // PRE-FIX (clearRect before setTransform-to-camera): the clearRect call is
+    // immediately preceded by the camera setTransform (or, on frame 1, nothing) —
+    // it clears under the camera matrix. This test asserts clearRect is preceded
+    // by an IDENTITY setTransform(1,0,0,1,0,0), which FAILS on the pre-fix order.
+    const { ctx, log } = makeRecordingCtx()
+    const getCtxSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockReturnValue(ctx as unknown as RenderingContext)
+    const { flush } = installRafHarness()
+
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([row('a', 0, 0, 1000), row('b', 500, 0, 2000)])
+    mockApi.canvas.edges.mockResolvedValue([
+      { fromNoteId: 'a', toNoteId: 'b', edgeType: 'reference' },
+    ])
+
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    // Gate on the underlay canvas being mounted (requires ready AND the loop
+    // effect to have scheduled a frame via our stub). Then run the dirty frame.
+    await waitFor(() => {
+      expect(container.querySelector('canvas')).not.toBeNull()
+      flush(3)
+      expect(getCtxSpy).toHaveBeenCalledWith('2d')
+    })
+
+    const clearIdx = log.findIndex((e) => e.op === 'clearRect')
+    expect(clearIdx).toBeGreaterThanOrEqual(0)
+    // The op immediately BEFORE clearRect must be an identity setTransform.
+    const before = log[clearIdx - 1]
+    expect(before?.op).toBe('setTransform')
+    expect(before?.args).toEqual([1, 0, 0, 1, 0, 0]) // identity — the regression guard
+    container.remove()
+  })
+
+  it('(j) regression: dangling/null-segment edges produce no moveTo/lineTo in the draw loop', async () => {
+    // The skip branches (unplaced endpoint, edgeSegment null) are structurally
+    // present but never EXECUTE under happy-dom. With the draw path running, a
+    // valid edge must stroke (one moveTo/lineTo) while a dangling edge must not.
+    const { ctx, log } = makeRecordingCtx()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
+      ctx as unknown as RenderingContext,
+    )
+    const { flush } = installRafHarness()
+
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([row('a', 0, 0, 1000), row('b', 500, 0, 2000)])
+    mockApi.canvas.edges.mockResolvedValue([
+      { fromNoteId: 'a', toNoteId: 'b', edgeType: 'reference' }, // valid → strokes
+      { fromNoteId: 'a', toNoteId: 'ghost', edgeType: 'reference' }, // dangling → skipped
+      { fromNoteId: 'a', toNoteId: 'a', edgeType: 'reference' }, // self → edgeSegment null
+    ])
+
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(container.querySelector('canvas')).not.toBeNull()
+      flush(3)
+      expect(log.some((e) => e.op === 'clearRect')).toBe(true) // draw pass ran
+    })
+
+    // Exactly ONE edge drew: the valid a→b. Dangling + self-edge contributed none.
+    expect(log.filter((e) => e.op === 'moveTo')).toHaveLength(1)
+    expect(log.filter((e) => e.op === 'lineTo')).toHaveLength(1)
+    expect(log.filter((e) => e.op === 'stroke')).toHaveLength(1)
+    container.remove()
+  })
+
+  it('(k) regression: reference strokes solid, comment-on sets a non-empty dash', async () => {
+    const { ctx, log } = makeRecordingCtx()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
+      ctx as unknown as RenderingContext,
+    )
+    const { flush } = installRafHarness()
+
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([
+      row('a', 0, 0, 1000),
+      row('b', 500, 0, 2000),
+      row('c', 0, 500, 3000),
+    ])
+    mockApi.canvas.edges.mockResolvedValue([
+      { fromNoteId: 'a', toNoteId: 'b', edgeType: 'reference' },
+      { fromNoteId: 'a', toNoteId: 'c', edgeType: 'comment-on' },
+    ])
+
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(container.querySelector('canvas')).not.toBeNull()
+      flush(3)
+      expect(log.some((e) => e.op === 'stroke')).toBe(true) // both edges drew
+    })
+
+    // setLineDash([]) for solid (reference), and setLineDash([..,..]) for dashed.
+    const dashCalls = log.filter((e) => e.op === 'setLineDash').map((e) => e.args[0] as number[])
+    expect(dashCalls.some((d) => Array.isArray(d) && d.length === 0)).toBe(true) // solid branch
+    expect(dashCalls.some((d) => Array.isArray(d) && d.length > 0)).toBe(true) // dashed branch
+    container.remove()
   })
 
   it('index built from real x/y: a card at the origin renders on first paint (no measure-time teleport)', async () => {
