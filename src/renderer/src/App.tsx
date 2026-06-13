@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AnimatePresence, motion } from 'motion/react'
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { AnimatePresence, motion, type Transition, useReducedMotion } from 'motion/react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { MANUAL_ARRANGEMENT_ID, ROOT_CANVAS_ID } from '../../shared/canvas'
 import type { Note, NoteType } from '../../shared/types'
@@ -119,7 +119,6 @@ export function App() {
   // asks to jump. CanvasStage watches it (the camera lives there) and pans +
   // ring-flashes. The nonce lets a repeat jump to the SAME card re-fire.
   const [jumpTo, setJumpTo] = useState<{ id: string; nonce: number } | null>(null)
-  const setJumpToId = (id: string) => setJumpTo((j) => ({ id, nonce: (j?.nonce ?? 0) + 1 }))
   const [skipBannerDismissed, setSkipBannerDismissed] = useState(false)
   // threadNoteId: when non-null, the full-screen ThreadView replaces the feed+composer.
   // Mutual exclusivity: opening a thread clears focusedId so BacklinksPane doesn't
@@ -436,38 +435,64 @@ export function App() {
       void queryClient.invalidateQueries({ queryKey: ['canvas-layouts', ROOT_CANVAS_ID] }),
   })
   // → shelf: stay in the feed (no view switch); the status bar's unplaced
-  // indicator updates once the layouts query invalidates.
-  const onShelf = (id: string) => shelfMut.mutate(id)
+  // indicator updates once the layouts query invalidates. shelfMut is stable.
+  const onShelf = useCallback((id: string) => shelfMut.mutate(id), [shelfMut])
   // place on canvas…: enter one-shot mode + switch to canvas (the slide animates
   // the switch). Title derived via noteTitle for the placement banner.
-  const onPlaceOnCanvas = (id: string) => {
-    const note = notes.find((n) => n.id === id)
-    setPlacing({ noteId: id, title: note ? noteTitle(note) : id })
-    setViewMode('canvas')
-  }
+  const onPlaceOnCanvas = useCallback(
+    (id: string) => {
+      const note = notes.find((n) => n.id === id)
+      setPlacing({ noteId: id, title: note ? noteTitle(note) : id })
+      setViewMode('canvas')
+    },
+    [notes],
+  )
   // jump-to-card: switch to canvas + ask CanvasStage to pan + ring-flash the
-  // card. CanvasStage owns the camera, so App signals via a jump request the
-  // stage consumes (a small ref-less number bump would also work; a state ref is
-  // simplest and Task-11-friendly). Here we use a dedicated jump-id state.
-  const onJumpToCard = (id: string) => {
+  // card. CanvasStage owns the camera, so App signals via a jump request (a
+  // {id, nonce} bump) the stage consumes. Stable (only stable setters in scope).
+  const onJumpToCard = useCallback((id: string) => {
     setViewMode('canvas')
-    setJumpToId(id)
-  }
+    setJumpTo((j) => ({ id, nonce: (j?.nonce ?? 0) + 1 }))
+  }, [])
   // shelf row, unplaced, feed-direction (ShelfContext): scroll + flash the note
-  // in the feed via the existing focus path.
-  const onGotoNote = (id: string) => setFocusedId(id)
+  // in the feed via the existing focus path. Stable (setFocusedId is a setter).
+  const onGotoNote = useCallback((id: string) => setFocusedId(id), [])
   // begin a place-from-shelf ghost drag (canvas view only). The ghost/drop is
   // CanvasStage's interaction hook; App reuses the one-shot placing state.
-  const onBeginShelfDrag = (id: string) => {
-    const note = notes.find((n) => n.id === id)
-    setPlacing({ noteId: id, title: note ? noteTitle(note) : id })
-  }
+  const onBeginShelfDrag = useCallback(
+    (id: string) => {
+      const note = notes.find((n) => n.id === id)
+      setPlacing({ noteId: id, title: note ? noteTitle(note) : id })
+    },
+    [notes],
+  )
+
+  // Camera seam UP (M1): a STABLE handler for CanvasStage's onCameraChange so its
+  // [camera.zoom, onCameraChange] effect doesn't re-run on every App render. The
+  // prop documents a caller-stable contract; this honors it.
+  const handleCameraChange = useCallback((zoom: number) => setZoomPct(Math.round(zoom * 100)), [])
+
+  // ShelfContext value, memoized (M3) so shelf consumers don't re-render on every
+  // App render. All four entries are now referentially stable (the callbacks are
+  // useCallback-wrapped above; viewMode is the only changing dep).
+  const shelfContextValue = useMemo(
+    () => ({ view: viewMode, onGotoNote, onJumpToCard, onBeginShelfDrag }),
+    [viewMode, onGotoNote, onJumpToCard, onBeginShelfDrag],
+  )
+
+  // ADR-0019 guardrail: every animation respects prefers-reduced-motion. A
+  // zero-duration transition keeps the AnimatePresence swap semantics (mount/
+  // unmount on view change) but removes the slide motion. @see adrs/0019-motion.md
+  const reduceMotion = useReducedMotion()
+  const slideTransition: Transition = reduceMotion
+    ? { duration: 0 }
+    : { duration: 0.22, ease: 'easeInOut' }
 
   return (
     // ShelfContext provides the shelf pane (rendered inside the Dock) its
     // navigation surface (spec §4). The dock is window chrome — it coexists with
     // both views and reads `view` to branch its row-click behaviour.
-    <ShelfContext.Provider value={{ view: viewMode, onGotoNote, onJumpToCard, onBeginShelfDrag }}>
+    <ShelfContext.Provider value={shelfContextValue}>
       <div
         style={{
           display: 'flex',
@@ -581,7 +606,7 @@ export function App() {
                       initial={{ x: '100%' }}
                       animate={{ x: 0 }}
                       exit={{ x: '-100%' }}
-                      transition={{ duration: 0.22, ease: 'easeInOut' }}
+                      transition={slideTransition}
                       style={{
                         display: 'flex',
                         flexDirection: 'column',
@@ -595,7 +620,7 @@ export function App() {
                         resolveSlug={resolveSlug}
                         placing={placing}
                         onPlacingDone={() => setPlacing(null)}
-                        onCameraChange={(zoom) => setZoomPct(Math.round(zoom * 100))}
+                        onCameraChange={handleCameraChange}
                         fitSignal={fitSignal}
                         resetSignal={resetSignal}
                         jumpTo={jumpTo}
@@ -607,7 +632,7 @@ export function App() {
                       initial={{ x: '100%' }}
                       animate={{ x: 0 }}
                       exit={{ x: '-100%' }}
-                      transition={{ duration: 0.22, ease: 'easeInOut' }}
+                      transition={slideTransition}
                       style={{
                         display: 'flex',
                         flexDirection: 'column',
