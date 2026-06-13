@@ -55,10 +55,10 @@ export function createDrawnEdge(
   if ((RESERVED_EDGE_TYPES as readonly string[]).includes(type))
     throw new Error(`edgeType '${type}' is reserved`)
   db.transaction(() => {
+    if (i.fromNoteId === i.toNoteId) throw new Error('no self-edges')
     const fromSlug = liveSlug(db, i.fromNoteId)
     const toSlug = liveSlug(db, i.toNoteId)
     if (!fromSlug || !toSlug) throw new Error('both endpoints must be live notes')
-    if (i.fromNoteId === i.toNoteId) throw new Error('no self-edges')
     db.prepare(
       `INSERT OR IGNORE INTO links (from_note_id, to_slug, edge_type) VALUES (?, ?, ?)`,
     ).run(i.fromNoteId, toSlug, type)
