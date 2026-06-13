@@ -681,7 +681,9 @@ export function CanvasStage({
     }
     const onClick = (e: MouseEvent) => {
       const camera = cameraRef.current
-      if (!camera) return
+      // Only a primary (left) click commits — right/middle clicks during
+      // placement must not drop (parity with onWorldPointerDown's button guard).
+      if (e.button !== 0 || !camera) return
       const rect = viewport.getBoundingClientRect()
       const world = screenToWorld(camera, { x: e.clientX - rect.left, y: e.clientY - rect.top })
       placeAt(placing.noteId, world, 'absent')
@@ -977,6 +979,12 @@ export function CanvasStage({
                   transform: `translate(${ghostWorld.x}px, ${ghostWorld.y}px)`,
                   width: CARD_WIDTH,
                   minHeight: DEFAULT_CARD_HEIGHT,
+                  // Matches NoteCard's shell fill EXACTLY (NoteCard.tsx:156) so
+                  // the ghost reads as the card it previews. The white card fill
+                  // is a literal in this codebase (not a token): `--bg-0` is
+                  // semantically the CANVAS background, so reusing it here would
+                  // make the ghost blend into a themed canvas instead of standing
+                  // against it. @see src/renderer/src/canvas/NoteCard.tsx
                   background: '#FFFFFF',
                   border: '1px dashed var(--accent)',
                   borderRadius: 'var(--r-3)',
