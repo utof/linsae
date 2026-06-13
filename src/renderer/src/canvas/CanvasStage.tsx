@@ -48,7 +48,8 @@ import {
   visibleWorldRect,
 } from './camera'
 import { setCanvasDevLod, useCanvasDevLod } from './dev-lod'
-import { edgeSegment } from './edge-geometry'
+import { arrowhead, edgeSegment } from './edge-geometry'
+import { edgeKind, TYPE_PILL_MIN_ZOOM } from './edge-style'
 import {
   type CanvasHarnessBridge,
   installHarnessBridge,
@@ -250,6 +251,44 @@ function getSyntheticDots(): Float32Array {
 const DOT_SCREEN_RADIUS = 3
 
 /**
+ * Draw a quiet, screen-constant type-label pill centered at world (x, y) for a
+ * drawn edge (spec §6 "tiny mid-segment pill"). Sizes everything via `/camera.zoom`
+ * so the pill stays visually constant across zoom (like the hairline strokes).
+ * `fill` is the canvas-bg token (`--bg-0`), `text` the secondary token (`--fg-2`),
+ * both pre-resolved by the caller so getComputedStyle is never called per-edge.
+ * Caller gates the call on `camera.zoom >= TYPE_PILL_MIN_ZOOM`.
+ */
+function drawTypePill(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  camera: Camera,
+  fill: string,
+  textColor: string,
+): void {
+  const z = camera.zoom
+  const fontPx = 11 / z // screen-constant 11px label
+  const padX = 5 / z
+  const h = 16 / z
+  const r = 4 / z // corner radius
+  ctx.font = `${fontPx}px var(--font-sans)`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  const w = ctx.measureText(text).width + padX + padX
+  const left = x - w / 2
+  const top = y - h / 2
+  ctx.beginPath()
+  ctx.roundRect(left, top, w, h, r)
+  ctx.globalAlpha = 0.9 // quiet — let the underlying edge read through faintly
+  ctx.fillStyle = fill
+  ctx.fill()
+  ctx.globalAlpha = 1
+  ctx.fillStyle = textColor
+  ctx.fillText(text, x, y)
+}
+
+/**
  * Renders the canvas viewport for the root canvas. The viewport div always
  * mounts (gestures bind immediately, layout is stable), but the world
  * container is gated on the camera hook's `ready` flag — its first paint is
@@ -387,6 +426,14 @@ export function CanvasStage({
   const edgeColorRef = useRef<string | null>(null)
 
   /**
+   * Cached tokens for the DRAWN-edge styling (spec §6): `--accent` for the stroke +
+   * arrowhead, `--bg-0` for the type-pill fill, `--fg-2` for the pill text. Resolved
+   * lazily on first draw, same rationale as {@link edgeColorRef} (getComputedStyle is
+   * a layout read; tolerate empty values in test envs via the fallbacks).
+   */
+  const edgeDrawnColorRef = useRef<{ accent: string; pillBg: string; pillFg: string } | null>(null)
+
+  /**
    * UnderlayLayer that draws resolved note edges in world coordinates. Rebuilt
    * on [edges, placedRects] so a new array reference marks the underlay dirty via
    * the `layers` identity change (spec §3 dirty-flag cadence). Reads the shared
@@ -401,15 +448,24 @@ export function CanvasStage({
       draw(ctx: CanvasRenderingContext2D, drawCamera): void {
         if (edges.length === 0) return
 
-        // Resolve the colour token lazily on first draw (getComputedStyle is a
+        // Resolve the colour tokens lazily on first draw (getComputedStyle is a
         // layout read — defer to draw time so it's never called pre-paint).
         if (edgeColorRef.current === null) {
           edgeColorRef.current =
             getComputedStyle(document.documentElement).getPropertyValue('--fg-3').trim() ||
             'rgba(0,0,0,0.25)'
         }
+        if (edgeDrawnColorRef.current === null) {
+          const root = getComputedStyle(document.documentElement)
+          edgeDrawnColorRef.current = {
+            accent: root.getPropertyValue('--accent').trim() || '#0D99FF',
+            pillBg: root.getPropertyValue('--bg-0').trim() || '#FFFFFF',
+            pillFg: root.getPropertyValue('--fg-2').trim() || '#757575',
+          }
+        }
 
         const color = edgeColorRef.current
+        const drawn = edgeDrawnColorRef.current
 
         for (const edge of edges) {
           const fromRect = rectByNoteId.get(edge.fromNoteId)
@@ -421,15 +477,24 @@ export function CanvasStage({
           // edgeSegment returns null for self-edges and overlapping cards.
           if (!seg) continue
 
+          // kind-routed styling (spec §6): comment-on dashed-quiet, reference
+          // solid-quiet, drawn edges distinct (accent, full-ish alpha, directed).
+          const kind = edgeKind(edge.edgeType)
           ctx.beginPath()
-          ctx.strokeStyle = color
           ctx.lineWidth = 1 / drawCamera.zoom // screen-constant hairline
-          ctx.globalAlpha = 0.25
-
-          if (edge.edgeType === 'comment-on') {
+          if (kind === 'comment') {
+            ctx.strokeStyle = color // --fg-3, quiet
+            ctx.globalAlpha = 0.25
             ctx.setLineDash([6 / drawCamera.zoom, 4 / drawCamera.zoom])
+          } else if (kind === 'reference') {
+            ctx.strokeStyle = color
+            ctx.globalAlpha = 0.25
+            ctx.setLineDash([])
           } else {
-            // 'reference' and any future types: solid line.
+            // drawn edge: distinct + directed. Constant 0.7 alpha here — the
+            // selection highlight (alpha 1 + thicker line) is a Task-9 addition.
+            ctx.strokeStyle = drawn.accent
+            ctx.globalAlpha = 0.7
             ctx.setLineDash([])
           }
 
@@ -437,7 +502,32 @@ export function CanvasStage({
           ctx.lineTo(seg.x2, seg.y2)
           ctx.stroke()
 
-          // Reset per-edge state so strokes don't bleed into each other.
+          if (kind === 'drawn') {
+            const a = arrowhead(seg, 9 / drawCamera.zoom) // screen-constant barb
+            ctx.beginPath()
+            ctx.moveTo(a.tip.x, a.tip.y)
+            ctx.lineTo(a.left.x, a.left.y)
+            ctx.lineTo(a.right.x, a.right.y)
+            ctx.closePath()
+            ctx.fillStyle = drawn.accent
+            ctx.fill()
+            // Type-label pill: only for non-'link' (i.e. free-text typed) edges,
+            // and only when zoomed in past TYPE_PILL_MIN_ZOOM (spec §6 "hidden at
+            // small zoom"). The bare 'link' type carries no label worth showing.
+            if (edge.edgeType !== 'link' && drawCamera.zoom >= TYPE_PILL_MIN_ZOOM) {
+              drawTypePill(
+                ctx,
+                edge.edgeType,
+                (seg.x1 + seg.x2) / 2,
+                (seg.y1 + seg.y2) / 2,
+                drawCamera,
+                drawn.pillBg,
+                drawn.pillFg,
+              )
+            }
+          }
+
+          // Reset per-edge state so styling doesn't bleed into the next edge.
           ctx.globalAlpha = 1
           ctx.setLineDash([])
         }
