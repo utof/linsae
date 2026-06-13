@@ -9,7 +9,12 @@ export interface FuzzyResult {
   id: string
   title: string
   score: number
-  /** indices into the ORIGINAL title where query chars matched (for <mark>). */
+  /**
+   * Indices where query chars matched, for `<mark>` highlighting. Computed
+   * against the lowercased title, so they index the original title correctly
+   * unless case-folding shifts its length (rare — e.g. `'İ'`→`'i̇'`); such
+   * titles may mis-highlight. Accepted v1 limitation.
+   */
   matched: number[]
 }
 
