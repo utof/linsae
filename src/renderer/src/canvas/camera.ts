@@ -109,6 +109,10 @@ export function fitCamera(
   // Available screen space after padding; guard against zero.
   const availW = Math.max(1, viewportW - 2 * pad)
   const availH = Math.max(1, viewportH - 2 * pad)
+  // clampZoom's ZOOM_MIN (0.5) floor is intentional (spec §3): a board wider/taller
+  // than ~2x the viewport cannot fully fit on screen — fit stops zooming out at the
+  // title-tier threshold rather than leaving card tier. This is by design; do NOT
+  // relax the clamp to "make fit always frame everything".
   const zoom = clampZoom(Math.min(availW / Math.max(1, cw), availH / Math.max(1, ch)))
   const cx = (minX + maxX) / 2
   const cy = (minY + maxY) / 2
