@@ -1,15 +1,22 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { AnimatePresence, motion } from 'motion/react'
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
+import { MANUAL_ARRANGEMENT_ID, ROOT_CANVAS_ID } from '../../shared/canvas'
 import type { Note, NoteType } from '../../shared/types'
 import { BacklinksPane } from './backlinks/BacklinksPane'
 import { CanvasStage } from './canvas/CanvasStage'
+import { RecentPopover } from './canvas/RecentPopover'
+import { StatusBar } from './canvas/StatusBar'
 import { Composer } from './composer/Composer'
 import { setOverlay, toggleOverlay, useDevOverlay } from './dev/devOverlays'
 import { Feed } from './feed/Feed'
 import { api } from './lib/api'
+import { noteTitle } from './lib/note-title'
 import { parseYouTubeUrl } from './lib/parse-youtube-url'
 import { CommandPalette } from './palette/CommandPalette'
+import { Dock } from './panes/Dock'
+import { ShelfContext } from './panes/ShelfPane'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { ThreadView } from './thread/ThreadView'
 import { WindowFrame } from './topbar/WindowFrame'
@@ -87,9 +94,32 @@ export function App() {
   const revealOpen = useDevOverlay('reveal')
   const [draftBody, setDraftBody] = useState<string | null>(null)
   // viewMode toggles the non-thread <main> between the rolling feed+composer and
-  // the canvas stage. The toggle ships UNANIMATED (ADR 0019 — the §6 slide is
-  // Plan 3's). BacklinksPane stays outside both, working over either view.
+  // the canvas stage. The feed↔canvas swap animates via the §6 stage slide
+  // (AnimatePresence below) — only the two outer stage containers' x-transform
+  // moves; the feed's virtualized rows are untouched (ADR 0019 guardrail).
+  // BacklinksPane stays outside both, working over either view.
   const [viewMode, setViewMode] = useState<'feed' | 'canvas'>('feed')
+  // One-shot placement state (spec §6): set by the feed's "place on canvas…"
+  // verb; CanvasStage consumes it to show the ghost + banner, then calls
+  // onPlacingDone on commit/cancel. Carries the title for the banner copy.
+  const [placing, setPlacing] = useState<{ noteId: string; title: string } | null>(null)
+  // Left dock (shelf) open state — in-memory view-state, not persisted (§10).
+  const [dockOpen, setDockOpen] = useState(false)
+  // Recent-popover open state lives in App so the status-bar trigger and (Task
+  // 11) ⌘J can both toggle it; rendered above the status bar (spec §14).
+  const [recentOpen, setRecentOpen] = useState(false)
+  // Status-bar zoom readout (%). CanvasStage reports its live zoom UP via
+  // onCameraChange (the camera itself never leaves CanvasStage — Task 10 seam).
+  const [zoomPct, setZoomPct] = useState(100)
+  // Camera-seam DOWN signals: bumping these numbers asks CanvasStage to run
+  // fit / 100%-reset on its OWN camera (status-bar `fit` / `1:1` buttons).
+  const [fitSignal, setFitSignal] = useState(0)
+  const [resetSignal, setResetSignal] = useState(0)
+  // jump-to-card request: a {id, nonce} App sets when a feed/recent/shelf row
+  // asks to jump. CanvasStage watches it (the camera lives there) and pans +
+  // ring-flashes. The nonce lets a repeat jump to the SAME card re-fire.
+  const [jumpTo, setJumpTo] = useState<{ id: string; nonce: number } | null>(null)
+  const setJumpToId = (id: string) => setJumpTo((j) => ({ id, nonce: (j?.nonce ?? 0) + 1 }))
   const [skipBannerDismissed, setSkipBannerDismissed] = useState(false)
   // threadNoteId: when non-null, the full-screen ThreadView replaces the feed+composer.
   // Mutual exclusivity: opening a thread clears focusedId so BacklinksPane doesn't
@@ -372,23 +402,90 @@ export function App() {
     staleTime: Number.POSITIVE_INFINITY,
   })
 
+  // Canvas placement state (spec §9/§14). The SAME query key CanvasStage +
+  // ShelfPane read, so react-query dedups — one IPC round-trip serves all three.
+  // `placedNoteIds` drives the feed bubbles' ▦ traces; `unplacedCount` drives
+  // the status-bar `N unplaced ●` indicator.
+  const { data: layoutRows = [] } = useQuery({
+    queryKey: ['canvas-layouts', ROOT_CANVAS_ID],
+    queryFn: () =>
+      api.canvas.listLayouts({ canvasId: ROOT_CANVAS_ID, arrangementId: MANUAL_ARRANGEMENT_ID }),
+  })
+  // Use the SAME `x !== null && y !== null` placed-test as CanvasStage's
+  // placedLayouts so the two can never textually disagree (the §1 CHECK
+  // constraint — x/y are null together — makes the y-test redundant but kept for
+  // parity). unplacedCount counts the shelved rows (NULL x/y).
+  const placedNoteIds = useMemo(
+    () => new Set(layoutRows.filter((r) => r.x !== null && r.y !== null).map((r) => r.note_id)),
+    [layoutRows],
+  )
+  const unplacedCount = useMemo(() => layoutRows.filter((r) => r.x === null).length, [layoutRows])
+
+  // ---- Feed↔canvas placement verbs (spec §6/§9, threaded into <Feed>). Each is
+  // bound to the note id inside NoteBubble (ADR 0006 stability); App only needs
+  // them referentially stable enough not to thrash — they close over setState
+  // setters (stable) + queryClient (stable) + the notes list for title lookup.
+  const shelfMut = useMutation({
+    mutationFn: (id: string) =>
+      api.canvas.shelveNote({
+        canvasId: ROOT_CANVAS_ID,
+        arrangementId: MANUAL_ARRANGEMENT_ID,
+        noteId: id,
+      }),
+    onSuccess: () =>
+      void queryClient.invalidateQueries({ queryKey: ['canvas-layouts', ROOT_CANVAS_ID] }),
+  })
+  // → shelf: stay in the feed (no view switch); the status bar's unplaced
+  // indicator updates once the layouts query invalidates.
+  const onShelf = (id: string) => shelfMut.mutate(id)
+  // place on canvas…: enter one-shot mode + switch to canvas (the slide animates
+  // the switch). Title derived via noteTitle for the placement banner.
+  const onPlaceOnCanvas = (id: string) => {
+    const note = notes.find((n) => n.id === id)
+    setPlacing({ noteId: id, title: note ? noteTitle(note) : id })
+    setViewMode('canvas')
+  }
+  // jump-to-card: switch to canvas + ask CanvasStage to pan + ring-flash the
+  // card. CanvasStage owns the camera, so App signals via a jump request the
+  // stage consumes (a small ref-less number bump would also work; a state ref is
+  // simplest and Task-11-friendly). Here we use a dedicated jump-id state.
+  const onJumpToCard = (id: string) => {
+    setViewMode('canvas')
+    setJumpToId(id)
+  }
+  // shelf row, unplaced, feed-direction (ShelfContext): scroll + flash the note
+  // in the feed via the existing focus path.
+  const onGotoNote = (id: string) => setFocusedId(id)
+  // begin a place-from-shelf ghost drag (canvas view only). The ghost/drop is
+  // CanvasStage's interaction hook; App reuses the one-shot placing state.
+  const onBeginShelfDrag = (id: string) => {
+    const note = notes.find((n) => n.id === id)
+    setPlacing({ noteId: id, title: note ? noteTitle(note) : id })
+  }
+
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100vh',
-        overflow: 'hidden',
-        background: 'var(--bg-0)',
-      }}
-    >
-      <WindowFrame
-        onOpenPalette={() => setPaletteOpen(true)}
-        onOpenSettings={() => setSettingsOpen(true)}
-        view={viewMode}
-        onViewChange={setViewMode}
-      />
-      {/* Body row: position:relative so BacklinksPane can absolutely overlay
+    // ShelfContext provides the shelf pane (rendered inside the Dock) its
+    // navigation surface (spec §4). The dock is window chrome — it coexists with
+    // both views and reads `view` to branch its row-click behaviour.
+    <ShelfContext.Provider value={{ view: viewMode, onGotoNote, onJumpToCard, onBeginShelfDrag }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100vh',
+          overflow: 'hidden',
+          background: 'var(--bg-0)',
+        }}
+      >
+        <WindowFrame
+          onOpenPalette={() => setPaletteOpen(true)}
+          onOpenSettings={() => setSettingsOpen(true)}
+          view={viewMode}
+          onViewChange={setViewMode}
+          dockOpen={dockOpen}
+          onToggleDock={() => setDockOpen((o) => !o)}
+        />
+        {/* Body row: position:relative so BacklinksPane can absolutely overlay
          it without pushing the feed left when the pane opens (the previous
          flex-sibling layout shifted the entire feed; user feedback called
          that "annoying and too much for such a small action"). The pane
@@ -397,180 +494,260 @@ export function App() {
          and BacklinksPane entirely (they are mutually exclusive UI modes).
          key={threadNoteId} forces a remount when switching threads so the
          player singleton and duration write-back state reset per video. */}
-      <div
-        style={{
-          display: 'flex',
-          flex: 1,
-          minHeight: 0,
-          position: 'relative',
-        }}
-      >
-        {threadNoteId ? (
-          <ThreadView
-            key={threadNoteId}
-            noteId={threadNoteId}
-            onClose={() => setThreadNoteId(null)}
-          />
-        ) : (
-          <>
-            <main
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                flex: 1,
-                minWidth: 0,
-                minHeight: 0,
-              }}
-            >
-              {skipped > 0 && !skipBannerDismissed && (
-                <div
-                  style={{
-                    padding: '8px 16px',
-                    background: '#FDECEC',
-                    borderBottom: '1px solid #FAEAC2',
-                    fontSize: 13,
-                    color: 'var(--fg-1)',
-                    display: 'flex',
-                    gap: 12,
-                    alignItems: 'center',
-                  }}
-                >
-                  <span>{skipped} notes had unreadable frontmatter and were skipped.</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void api.system.openLogsFolder()
-                    }}
+        <div
+          style={{
+            display: 'flex',
+            flex: 1,
+            minHeight: 0,
+            position: 'relative',
+          }}
+        >
+          {threadNoteId ? (
+            <ThreadView
+              key={threadNoteId}
+              noteId={threadNoteId}
+              onClose={() => setThreadNoteId(null)}
+            />
+          ) : (
+            <>
+              {/* Dock (spec §10) — window chrome, sits LEFT of <main> and coexists
+                with both views. Returns null when closed. */}
+              <Dock open={dockOpen} paneId="shelf" onClose={() => setDockOpen(false)} />
+              <main
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  flex: 1,
+                  minWidth: 0,
+                  minHeight: 0,
+                }}
+              >
+                {skipped > 0 && !skipBannerDismissed && (
+                  <div
                     style={{
-                      border: 0,
-                      background: 'transparent',
-                      color: 'var(--accent)',
-                      cursor: 'pointer',
-                      textDecoration: 'underline',
+                      padding: '8px 16px',
+                      background: '#FDECEC',
+                      borderBottom: '1px solid #FAEAC2',
+                      fontSize: 13,
+                      color: 'var(--fg-1)',
+                      display: 'flex',
+                      gap: 12,
+                      alignItems: 'center',
                     }}
                   >
-                    view log.
-                  </button>
-                  <div style={{ flex: 1 }} />
-                  <button
-                    type="button"
-                    onClick={() => setSkipBannerDismissed(true)}
-                    style={{
-                      border: 0,
-                      background: 'transparent',
-                      cursor: 'pointer',
-                      color: 'var(--fg-2)',
-                    }}
-                  >
-                    dismiss
-                  </button>
-                </div>
-              )}
-              {viewMode === 'canvas' ? (
-                <CanvasStage onWikilinkClick={onWikilinkClick} resolveSlug={resolveSlug} />
-              ) : (
-                <>
-                  {notes.length === 0 ? (
-                    <div
+                    <span>{skipped} notes had unreadable frontmatter and were skipped.</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void api.system.openLogsFolder()
+                      }}
                       style={{
-                        flex: 1,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        color: 'var(--fg-3)',
-                        fontFamily: 'var(--font-sans)',
-                        fontSize: 14,
+                        border: 0,
+                        background: 'transparent',
+                        color: 'var(--accent)',
+                        cursor: 'pointer',
+                        textDecoration: 'underline',
                       }}
                     >
-                      nothing yet. start anywhere.
-                    </div>
+                      view log.
+                    </button>
+                    <div style={{ flex: 1 }} />
+                    <button
+                      type="button"
+                      onClick={() => setSkipBannerDismissed(true)}
+                      style={{
+                        border: 0,
+                        background: 'transparent',
+                        cursor: 'pointer',
+                        color: 'var(--fg-2)',
+                      }}
+                    >
+                      dismiss
+                    </button>
+                  </div>
+                )}
+                {/* §6 stage slide: feed exits left / canvas enters right→left. Only
+                  the two OUTER stage containers' x-transform animates — the feed's
+                  virtualized rows are untouched (ADR 0019 guardrail: no
+                  layout/layoutId projection inside the feed). `mode="wait"` keeps
+                  exactly one stage mounted at a time (so the feed + canvas queries
+                  don't both run), `initial={false}` skips the first-paint slide.
+                  The two wrappers fill <main>'s flex area with overflow hidden so
+                  the off-screen slide never shows a scrollbar. */}
+                <AnimatePresence mode="wait" initial={false}>
+                  {viewMode === 'canvas' ? (
+                    <motion.div
+                      key="canvas"
+                      initial={{ x: '100%' }}
+                      animate={{ x: 0 }}
+                      exit={{ x: '-100%' }}
+                      transition={{ duration: 0.22, ease: 'easeInOut' }}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        flex: 1,
+                        minHeight: 0,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <CanvasStage
+                        onWikilinkClick={onWikilinkClick}
+                        resolveSlug={resolveSlug}
+                        placing={placing}
+                        onPlacingDone={() => setPlacing(null)}
+                        onCameraChange={(zoom) => setZoomPct(Math.round(zoom * 100))}
+                        fitSignal={fitSignal}
+                        resetSignal={resetSignal}
+                        jumpTo={jumpTo}
+                      />
+                    </motion.div>
                   ) : (
-                    <Feed
-                      notes={notes}
-                      scrollerRef={feedScrollerRef}
-                      sendInFlight={sendInFlight}
-                      focusedId={focusedId}
-                      // Toggle behaviour: clicking an unfocused bubble focuses it (opens
-                      // BacklinksPane); clicking the already-focused bubble unfocuses it
-                      // (closes the pane). Wikilink / palette / pane-jump callbacks set
-                      // focus directly without toggling — those are navigation gestures.
-                      onFocus={(id) => setFocusedId((cur) => (cur === id ? null : id))}
-                      onWikilinkClick={onWikilinkClick}
-                      resolveSlug={resolveSlug}
-                      onEdit={setEditingNoteId}
-                      onDelete={(id) => {
-                        deleteMut.mutate(id)
-                        if (focusedId === id) setFocusedId(null)
+                    <motion.div
+                      key="feed"
+                      initial={{ x: '100%' }}
+                      animate={{ x: 0 }}
+                      exit={{ x: '-100%' }}
+                      transition={{ duration: 0.22, ease: 'easeInOut' }}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        flex: 1,
+                        minHeight: 0,
+                        overflow: 'hidden',
                       }}
-                      onCopyLink={(id) => {
-                        void navigator.clipboard.writeText(`linsae://note/${id}`)
-                      }}
-                      onOpenThread={openThread}
-                    />
+                    >
+                      {notes.length === 0 ? (
+                        <div
+                          style={{
+                            flex: 1,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: 'var(--fg-3)',
+                            fontFamily: 'var(--font-sans)',
+                            fontSize: 14,
+                          }}
+                        >
+                          nothing yet. start anywhere.
+                        </div>
+                      ) : (
+                        <Feed
+                          notes={notes}
+                          scrollerRef={feedScrollerRef}
+                          sendInFlight={sendInFlight}
+                          focusedId={focusedId}
+                          // Toggle behaviour: clicking an unfocused bubble focuses it (opens
+                          // BacklinksPane); clicking the already-focused bubble unfocuses it
+                          // (closes the pane). Wikilink / palette / pane-jump callbacks set
+                          // focus directly without toggling — those are navigation gestures.
+                          onFocus={(id) => setFocusedId((cur) => (cur === id ? null : id))}
+                          onWikilinkClick={onWikilinkClick}
+                          resolveSlug={resolveSlug}
+                          onEdit={setEditingNoteId}
+                          onDelete={(id) => {
+                            deleteMut.mutate(id)
+                            if (focusedId === id) setFocusedId(null)
+                          }}
+                          onCopyLink={(id) => {
+                            void navigator.clipboard.writeText(`linsae://note/${id}`)
+                          }}
+                          onOpenThread={openThread}
+                          // Canvas traces + verbs (spec §6/§9) — placedNoteIds drives the
+                          // ▦ chip; the three callbacks are threaded to NoteBubble by id.
+                          placedNoteIds={placedNoteIds}
+                          onShelf={onShelf}
+                          onPlaceOnCanvas={onPlaceOnCanvas}
+                          onJumpToCard={onJumpToCard}
+                        />
+                      )}
+                      {editingNote ? (
+                        <Composer
+                          key={editingNote.id}
+                          initialBody={editingNote.body}
+                          initialMode={editingNote.type}
+                          editMode
+                          error={submitError}
+                          onClearError={() => setSubmitError(null)}
+                          onSubmit={({ body, type }) =>
+                            updateMut.mutate({ id: editingNote.id, body, type })
+                          }
+                          onCancel={() => setEditingNoteId(null)}
+                        />
+                      ) : (
+                        // Composite key: `draftBody ?? 'fresh'` handles the dangling-wikilink
+                        // prefill remount; `successCount` ticks on successful create to
+                        // force a remount → fresh empty textarea. Failed creates leave the
+                        // key unchanged so the user's text + cursor survive.
+                        <Composer
+                          key={`${draftBody ?? 'fresh'}-${successCount}`}
+                          initialBody={draftBody ?? ''}
+                          initialMode="claim"
+                          error={submitError}
+                          onClearError={() => setSubmitError(null)}
+                          // Flag the send so the Feed suppresses its auto-scroll while the new
+                          // note glides in (see `beginSend`), THEN create it.
+                          onSubmit={({ body, type }) => {
+                            beginSend()
+                            createMut.mutate({ body, type })
+                          }}
+                          onCancel={() => setDraftBody(null)}
+                          onPasteText={handlePasteText}
+                        />
+                      )}
+                    </motion.div>
                   )}
-                  {editingNote ? (
-                    <Composer
-                      key={editingNote.id}
-                      initialBody={editingNote.body}
-                      initialMode={editingNote.type}
-                      editMode
-                      error={submitError}
-                      onClearError={() => setSubmitError(null)}
-                      onSubmit={({ body, type }) =>
-                        updateMut.mutate({ id: editingNote.id, body, type })
-                      }
-                      onCancel={() => setEditingNoteId(null)}
-                    />
-                  ) : (
-                    // Composite key: `draftBody ?? 'fresh'` handles the dangling-wikilink
-                    // prefill remount; `successCount` ticks on successful create to
-                    // force a remount → fresh empty textarea. Failed creates leave the
-                    // key unchanged so the user's text + cursor survive.
-                    <Composer
-                      key={`${draftBody ?? 'fresh'}-${successCount}`}
-                      initialBody={draftBody ?? ''}
-                      initialMode="claim"
-                      error={submitError}
-                      onClearError={() => setSubmitError(null)}
-                      // Flag the send so the Feed suppresses its auto-scroll while the new
-                      // note glides in (see `beginSend`), THEN create it.
-                      onSubmit={({ body, type }) => {
-                        beginSend()
-                        createMut.mutate({ body, type })
-                      }}
-                      onCancel={() => setDraftBody(null)}
-                      onPasteText={handlePasteText}
-                    />
-                  )}
-                </>
+                </AnimatePresence>
+              </main>
+              {focusedId && (
+                <BacklinksPane
+                  focusedNoteId={focusedId}
+                  onClose={() => setFocusedId(null)}
+                  onJump={setFocusedId}
+                />
               )}
-            </main>
-            {focusedId && (
-              <BacklinksPane
-                focusedNoteId={focusedId}
-                onClose={() => setFocusedId(null)}
-                onJump={setFocusedId}
-              />
-            )}
-          </>
+            </>
+          )}
+        </div>
+        {/* App-wide footer (spec §14): the status strip plus the recent popover it
+          anchors. position:relative so RecentPopover (position:absolute,
+          bottom:100%) floats UP from the strip. Hidden during a thread so the
+          full-screen ThreadView owns the chrome. */}
+        {!threadNoteId && (
+          <div style={{ position: 'relative', flexShrink: 0 }}>
+            <RecentPopover
+              open={recentOpen}
+              onClose={() => setRecentOpen(false)}
+              onJump={onJumpToCard}
+            />
+            <StatusBar
+              view={viewMode}
+              placedCount={placedNoteIds.size}
+              unplacedCount={unplacedCount}
+              zoomPct={zoomPct}
+              onOpenShelf={() => setDockOpen(true)}
+              onResetZoom={() => setResetSignal((s) => s + 1)}
+              onFit={() => setFitSignal((s) => s + 1)}
+              onToggleRecent={() => setRecentOpen((o) => !o)}
+            />
+          </div>
+        )}
+        <CommandPalette
+          open={paletteOpen}
+          onClose={() => setPaletteOpen(false)}
+          onJump={setFocusedId}
+        />
+        <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+        {DEV_PLAYGROUND && revealOpen && RevealPlayground && (
+          <Suspense fallback={null}>
+            <RevealPlayground onClose={() => setOverlay('reveal', false)} />
+          </Suspense>
+        )}
+        {WaveTuner && waveOn && (
+          <Suspense fallback={null}>
+            <WaveTuner />
+          </Suspense>
         )}
       </div>
-      <CommandPalette
-        open={paletteOpen}
-        onClose={() => setPaletteOpen(false)}
-        onJump={setFocusedId}
-      />
-      <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      {DEV_PLAYGROUND && revealOpen && RevealPlayground && (
-        <Suspense fallback={null}>
-          <RevealPlayground onClose={() => setOverlay('reveal', false)} />
-        </Suspense>
-      )}
-      {WaveTuner && waveOn && (
-        <Suspense fallback={null}>
-          <WaveTuner />
-        </Suspense>
-      )}
-    </div>
+    </ShelfContext.Provider>
   )
 }

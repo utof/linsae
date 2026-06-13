@@ -19,6 +19,8 @@ const baseProps = {
   onOpenSettings: () => {},
   view: 'feed' as const,
   onViewChange: () => {},
+  dockOpen: false,
+  onToggleDock: () => {},
 }
 
 describe('WindowFrame', () => {
@@ -58,6 +60,24 @@ describe('WindowFrame', () => {
     render(<WindowFrame {...baseProps} />)
     fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
     expect(mockApi.system.window.close).toHaveBeenCalledOnce()
+  })
+
+  it('dock toggle renders, reflects dockOpen, and fires onToggleDock', () => {
+    const onToggleDock = vi.fn()
+    render(<WindowFrame {...baseProps} dockOpen={false} onToggleDock={onToggleDock} />)
+    const toggle = screen.getByRole('button', { name: /toggle shelf/i })
+    // aria-pressed mirrors dockOpen so the quiet state is assertable.
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(toggle)
+    expect(onToggleDock).toHaveBeenCalledOnce()
+  })
+
+  it('dock toggle reflects aria-pressed=true when dockOpen', () => {
+    render(<WindowFrame {...baseProps} dockOpen={true} />)
+    expect(screen.getByRole('button', { name: /toggle shelf/i })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
   })
 
   it('canvas toggle button calls onViewChange("canvas")', () => {

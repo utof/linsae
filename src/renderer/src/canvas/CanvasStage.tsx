@@ -75,6 +75,34 @@ interface Props {
   placing?: { noteId: string; title: string } | null
   /** Clear one-shot placement (called on commit or esc-cancel). */
   onPlacingDone?: () => void
+  /**
+   * Camera seam, UP direction (Task 10 binding seam): report this stage's live
+   * zoom so App can render the status-bar zoom pill WITHOUT lifting the camera.
+   * The camera state stays here (it owns `viewportRef` + the gesture/persistence/
+   * settle effects bound to that node); only the readout flows up.
+   * @see docs/plans/v0.4-canvas-mvp-3-placement-chrome.md Task 10 Step 2
+   */
+  onCameraChange?: (zoom: number) => void
+  /**
+   * Camera seam, DOWN direction: an incrementing number App bumps to ask the
+   * stage to zoom-to-fit all placed cards on its OWN camera (status-bar `fit`).
+   * The stage watches for changes (ignoring the initial value) and runs
+   * `fitCamera`. Intent flows down; the camera never leaves CanvasStage.
+   */
+  fitSignal?: number
+  /**
+   * Camera seam, DOWN direction: an incrementing number App bumps to ask the
+   * stage to reset zoom to 100% (status-bar `1:1` / % readout). Same watch-and-
+   * run-on-change posture as {@link fitSignal}.
+   */
+  resetSignal?: number
+  /**
+   * Jump-to-card request (spec §4/§9/§14): App sets `{id, nonce}` when a feed ▦
+   * chip, shelf row, or recent entry asks to jump. The stage pans to center the
+   * card + ring-flashes it (the camera lives here). The `nonce` lets a repeat
+   * jump to the SAME card re-fire (the id alone wouldn't change).
+   */
+  jumpTo?: { id: string; nonce: number } | null
 }
 
 /**
@@ -222,6 +250,10 @@ export function CanvasStage({
   resolveSlug,
   placing = null,
   onPlacingDone,
+  onCameraChange,
+  fitSignal,
+  resetSignal,
+  jumpTo,
 }: Props): React.JSX.Element {
   const viewportRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
@@ -652,6 +684,44 @@ export function CanvasStage({
     },
     [placedRects, viewportSize, setCamera, flashRing],
   )
+
+  // ---- Camera seam, UP direction (Task 10 §14): report live zoom so App can
+  // render the status-bar pill without lifting the camera. Fires only when the
+  // rounded percentage actually changes (a continuous-pinch zoom otherwise spams
+  // App with sub-percent updates). onCameraChange is optional + caller-stable.
+  useEffect(() => {
+    onCameraChange?.(camera.zoom)
+  }, [camera.zoom, onCameraChange])
+
+  // ---- Camera seam, DOWN direction (Task 10 §14): App bumps fitSignal/resetSignal
+  // to drive fit / 100%-reset on THIS stage's own camera. A ref tracks the last
+  // value so the effect ignores the initial mount and fires only on a real bump.
+  const fitSignalRef = useRef(fitSignal)
+  useEffect(() => {
+    if (fitSignal === fitSignalRef.current) return
+    fitSignalRef.current = fitSignal
+    setCamera((c) => fitCamera([...placedRects.values()], viewportSize.w, viewportSize.h, 48, c))
+  }, [fitSignal, setCamera, placedRects, viewportSize])
+  const resetSignalRef = useRef(resetSignal)
+  useEffect(() => {
+    if (resetSignal === resetSignalRef.current) return
+    resetSignalRef.current = resetSignal
+    setCamera((c) => ({ ...c, zoom: 1 }))
+  }, [resetSignal, setCamera])
+
+  // ---- Jump-to-card request from App (§4/§9/§14). A nonce ref dedupes so the
+  // same request fires once; jumpToCard is in the deps because the layouts query
+  // can resolve AFTER the request (App switches view → stage mounts → fetches),
+  // so a jump whose card isn't placed yet retries when placedRects fills in.
+  const jumpNonceRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (!jumpTo) return
+    if (jumpNonceRef.current === jumpTo.nonce) return
+    const rect = placedRects.get(jumpTo.id)
+    if (!rect) return // card not placed yet — retry when placedRects updates
+    jumpNonceRef.current = jumpTo.nonce
+    jumpToCard(jumpTo.id)
+  }, [jumpTo, jumpToCard, placedRects])
 
   // ---- `/` picker state. `pickerAnchor` is the viewport-relative SCREEN point
   // where the picker floats (= the intended drop point). Task 11 binds `/` to

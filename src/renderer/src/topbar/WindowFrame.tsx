@@ -1,4 +1,4 @@
-import { Minus, Settings, Square, X } from 'lucide-react'
+import { Minus, PanelLeft, Settings, Square, X } from 'lucide-react'
 import { api } from '../lib/api'
 
 interface Props {
@@ -8,6 +8,10 @@ interface Props {
   view: 'feed' | 'canvas'
   /** Switch the main view (mod+1 / mod+2 also drive this from App). */
   onViewChange: (v: 'feed' | 'canvas') => void
+  /** Whether the left dock (shelf) is open — drives the toggle's pressed state. */
+  dockOpen: boolean
+  /** Toggle the left dock open/closed (the §10 quiet outline toggle). */
+  onToggleDock: () => void
 }
 
 /**
@@ -36,7 +40,14 @@ interface Props {
  * @see src/main/ipc/system.ts (windowMinimize / windowToggleMaximize / windowClose)
  * @see src/renderer/src/styles/globals.css (.app-region-drag / .app-region-no-drag)
  */
-export function WindowFrame({ onOpenPalette, onOpenSettings, view, onViewChange }: Props) {
+export function WindowFrame({
+  onOpenPalette,
+  onOpenSettings,
+  view,
+  onViewChange,
+  dockOpen,
+  onToggleDock,
+}: Props) {
   // Quiet segmented control — text-only (no icons, v21 restraint). Active pill
   // reads --fg-0 on --bg-2; inactive sits at --fg-3. Ships UNANIMATED (ADR 0019:
   // the Feed|Canvas slide transition is Plan 3's, not this task's).
@@ -123,6 +134,30 @@ export function WindowFrame({ onOpenPalette, onOpenSettings, view, onViewChange 
           color: 'var(--fg-3)',
         }}
       >
+        {/* §10 dock toggle — one quiet outline button, no rail. aria-pressed
+            reflects dockOpen so the quiet state is assertable. */}
+        <button
+          type="button"
+          aria-label="toggle shelf"
+          title="toggle shelf"
+          aria-pressed={dockOpen}
+          onClick={onToggleDock}
+          style={{
+            ...iconBtn,
+            background: dockOpen ? 'var(--bg-2)' : 'transparent',
+            color: dockOpen ? 'var(--fg-0)' : 'var(--fg-2)',
+          }}
+          onMouseEnter={(e) => {
+            ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-2)'
+          }}
+          onMouseLeave={(e) => {
+            ;(e.currentTarget as HTMLButtonElement).style.background = dockOpen
+              ? 'var(--bg-2)'
+              : 'transparent'
+          }}
+        >
+          <PanelLeft size={14} />
+        </button>
         <button
           type="button"
           onClick={onOpenPalette}
