@@ -7,6 +7,7 @@
  * @see docs/specs/v0.4-canvas-mvp.md §3 §12
  */
 import { TIER_THRESHOLDS } from './lod'
+import type { WorldRect } from './spatial-index'
 
 export interface Camera {
   x: number
@@ -77,4 +78,55 @@ export function visibleWorldRect(
     maxX: c.x + w + inflate * w,
     maxY: c.y + h + inflate * h,
   }
+}
+
+/**
+ * Camera that frames every rect with `pad` screen px of margin, centered, zoom
+ * clamped to the user range. Empty set → returns `current` unchanged (fit is a
+ * no-op at zero cards, spec §14). `current` defaults to {0,0,1} when omitted.
+ * @see docs/specs/v0.4-canvas-mvp.md §14 (status-bar fit)
+ */
+export function fitCamera(
+  rects: WorldRect[],
+  viewportW: number,
+  viewportH: number,
+  pad: number,
+  current: Camera = { x: 0, y: 0, zoom: 1 },
+): Camera {
+  if (rects.length === 0) return current
+  let minX = Number.POSITIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let maxY = Number.NEGATIVE_INFINITY
+  for (const r of rects) {
+    minX = Math.min(minX, r.x)
+    minY = Math.min(minY, r.y)
+    maxX = Math.max(maxX, r.x + r.w)
+    maxY = Math.max(maxY, r.y + r.h)
+  }
+  const cw = maxX - minX
+  const ch = maxY - minY
+  // Available screen space after padding; guard against zero.
+  const availW = Math.max(1, viewportW - 2 * pad)
+  const availH = Math.max(1, viewportH - 2 * pad)
+  const zoom = clampZoom(Math.min(availW / Math.max(1, cw), availH / Math.max(1, ch)))
+  const cx = (minX + maxX) / 2
+  const cy = (minY + maxY) / 2
+  return { x: cx - viewportW / zoom / 2, y: cy - viewportH / zoom / 2, zoom }
+}
+
+/**
+ * Camera that centers one rect in the viewport at `zoom` (jump-to-card —
+ * spec §4/§5/§9/§14). Zoom is clamped to the user range.
+ */
+export function centerCamera(
+  rect: WorldRect,
+  viewportW: number,
+  viewportH: number,
+  zoom: number,
+): Camera {
+  const z = clampZoom(zoom)
+  const cx = rect.x + rect.w / 2
+  const cy = rect.y + rect.h / 2
+  return { x: cx - viewportW / z / 2, y: cy - viewportH / z / 2, zoom: z }
 }
