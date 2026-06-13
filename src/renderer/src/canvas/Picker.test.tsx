@@ -85,6 +85,23 @@ describe('Picker', () => {
     expect(screen.getByText('Placed note body')).toBeInTheDocument()
   })
 
+  it('hides stale rows when the query is cleared to empty', async () => {
+    // enabled:query>0 makes react-query RETAIN the last results when the query
+    // goes empty; gating the row map on query.length>0 must hide them so the
+    // "type to search" empty state stands alone (and Task 8's Shift+Enter
+    // cascade, which clears the query while keeping the picker open, is clean).
+    mockApi.search.run.mockResolvedValueOnce(hits)
+    renderPicker()
+    const input = screen.getByRole('combobox')
+    fireEvent.change(input, { target: { value: 'note' } })
+    await waitFor(() => expect(screen.getByText('Unplaced note body')).toBeInTheDocument())
+    // Backspace the query to empty
+    fireEvent.change(input, { target: { value: '' } })
+    await waitFor(() => expect(screen.getByText('type to search…')).toBeInTheDocument())
+    expect(screen.queryByText('Unplaced note body')).not.toBeInTheDocument()
+    expect(screen.queryByText('Placed note body')).not.toBeInTheDocument()
+  })
+
   it('shows a ▦ chip on the placed row', async () => {
     mockApi.search.run.mockResolvedValueOnce(hits)
     renderPicker()

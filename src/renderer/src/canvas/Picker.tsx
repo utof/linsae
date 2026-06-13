@@ -166,75 +166,76 @@ export function Picker({ anchor, placedNoteIds, onPick, onJump, onClose }: Picke
               no matches.
             </Command.Empty>
           )}
-          {results.map((hit) => {
-            const placed = placedNoteIds.has(hit.note.id)
-            const type = hit.note.type as NoteType
-            return (
-              <Command.Item
-                key={hit.note.id}
-                value={hit.note.id}
-                onSelect={() => {
-                  if (placed) {
-                    onJump(hit.note.id)
-                  } else {
-                    onPick(hit.note.id, { keepOpen: false })
-                  }
-                }}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  padding: '7px 10px',
-                  borderRadius: 'var(--r-3)',
-                  fontSize: 13,
-                  color: 'var(--fg-1)',
-                  cursor: 'pointer',
-                  userSelect: 'none',
-                }}
-              >
-                {/* Type glyph */}
-                <span
-                  aria-hidden="true"
+          {query.length > 0 &&
+            results.map((hit) => {
+              const placed = placedNoteIds.has(hit.note.id)
+              const type = hit.note.type as NoteType
+              return (
+                <Command.Item
+                  key={hit.note.id}
+                  value={hit.note.id}
+                  onSelect={() => {
+                    if (placed) {
+                      onJump(hit.note.id)
+                    } else {
+                      onPick(hit.note.id, { keepOpen: false })
+                    }
+                  }}
                   style={{
-                    fontSize: 10,
-                    color: TYPE_COLOR[type] ?? 'var(--fg-3)',
-                    flexShrink: 0,
-                    width: 12,
-                    textAlign: 'center',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '7px 10px',
+                    borderRadius: 'var(--r-3)',
+                    fontSize: 13,
+                    color: 'var(--fg-1)',
+                    cursor: 'pointer',
+                    userSelect: 'none',
                   }}
                 >
-                  {TYPE_GLYPH[type] ?? '●'}
-                </span>
-                {/* Title */}
-                <span
-                  style={{
-                    flex: 1,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {noteTitle(hit.note)}
-                </span>
-                {/* ▦ chip: indicates the note is already placed on the canvas */}
-                {placed && (
+                  {/* Type glyph */}
                   <span
+                    aria-hidden="true"
                     style={{
                       fontSize: 10,
-                      fontFamily: 'var(--font-mono)',
-                      color: 'var(--fg-3)',
-                      border: '1px solid var(--border-0)',
-                      borderRadius: 'var(--r-2)',
-                      padding: '1px 4px',
+                      color: TYPE_COLOR[type] ?? 'var(--fg-3)',
                       flexShrink: 0,
+                      width: 12,
+                      textAlign: 'center',
                     }}
                   >
-                    ▦
+                    {TYPE_GLYPH[type] ?? '●'}
                   </span>
-                )}
-              </Command.Item>
-            )
-          })}
+                  {/* Title */}
+                  <span
+                    style={{
+                      flex: 1,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {noteTitle(hit.note)}
+                  </span>
+                  {/* ▦ chip: indicates the note is already placed on the canvas */}
+                  {placed && (
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontFamily: 'var(--font-mono)',
+                        color: 'var(--fg-3)',
+                        border: '1px solid var(--border-0)',
+                        borderRadius: 'var(--r-2)',
+                        padding: '1px 4px',
+                        flexShrink: 0,
+                      }}
+                    >
+                      ▦
+                    </span>
+                  )}
+                </Command.Item>
+              )
+            })}
         </Command.List>
         {/* Footer hint — verbatim per spec §5 */}
         <div
