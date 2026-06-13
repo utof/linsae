@@ -1,12 +1,16 @@
 /**
  * Canvas `/` picker — a small `cmdk` Command surface anchored at a viewport
- * screen point. Reuses FTS search (`api.search.run`) keyed `['search', query]`
- * (same engine as CommandPalette). Does NOT use `Command.Dialog` — no modal
- * backdrop; the component floats at the cursor via `position:absolute`.
+ * screen point. Ranks the live `notes:list` (cached `['notes']`) in-memory via
+ * `fuzzyMatch` (subsequence + fzf-style scoring, spec §4 / decision 5); the
+ * candidate set is small (data layer caps `notes:list` at 500), so a subsequence
+ * scan is exact + instant — no server round-trip. Feed/global search keeps FTS
+ * (#130). Does NOT use `Command.Dialog` — no modal backdrop; the component
+ * floats at the cursor via `position:absolute`.
  *
  * Responsibilities (this component only):
- *   - Query state + FTS fetch.
- *   - Row rendering: type glyph + `noteTitle` + ▦ chip when placed.
+ *   - Candidate list: `notes:list` → `{id, title: noteTitle(n)}`, ranked by
+ *     `fuzzyMatch`; an id→note map resolves each row's type glyph.
+ *   - Row rendering: type glyph + fuzzy-highlighted `<mark>` title + ▦ chip when placed.
  *   - Keymap: `↵` pick highlighted (keepOpen:false), `⇧↵` pick (keepOpen:true),
  *     `esc` close + stopPropagation (prevents double-fire on canvas esc cascade).
  *   - ▦ row selection → `onJump` (jump-not-duplicate, spec §5).
@@ -14,27 +18,76 @@
  * Positioning to world coords and cascade-offset for `⇧↵` are CanvasStage's
  * concern (Task 8) — this component only takes a screen-pixel `anchor`.
  *
- * Why `shouldFilter={false}`: FTS5 ranks results server-side via `bm25()` and
- * returns `snippet()`-highlighted excerpts; cmdk re-filtering would discard that
- * ranking (same rationale as CommandPalette — see its TSDoc).
+ * Why `shouldFilter={false}`: `fuzzyMatch` already filters + ranks (and gives us
+ * `matched` indices for `<mark>` highlighting); cmdk's own filter would re-order
+ * our results (same rationale as EdgeTargetPicker.tsx).
+ *
+ * Why gate rows on `query.length > 0`: `fuzzyMatch('')` returns ALL candidates,
+ * so without the gate an empty `/` would dump every note; the empty-query hint
+ * stands alone instead (and ⇧↵'s clear-query keep-open path stays clean).
  *
  * Why controlled `Command value`/`onValueChange`: cmdk tracks the highlighted
  * item via the `value` prop when `shouldFilter={false}`; reading it in the
  * Enter handler gives us the currently-highlighted id without DOM querying.
  *
- * @see docs/specs/v0.4-canvas-mvp.md §5
- * @see docs/plans/v0.4-canvas-mvp-3-placement-chrome.md Task 5
- * @see src/renderer/src/palette/CommandPalette.tsx (shouldFilter pattern)
+ * @see docs/specs/v0.4.1-canvas-edges.md §4 (decision 5 — rewire / picker to fuzzy.ts)
+ * @see docs/plans/v0.4.1-canvas-edges.md Task 8
+ * @see src/renderer/src/canvas/EdgeTargetPicker.tsx (sibling — same notes:list + fuzzy + highlight pipe)
  */
 
 import { useQuery } from '@tanstack/react-query'
 import { Command } from 'cmdk'
 import type React from 'react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { NoteType } from '../../../shared/types'
 import { api } from '../lib/api'
+import { fuzzyMatch } from '../lib/fuzzy'
 import { noteTitle } from '../lib/note-title'
 import { NOTE_TYPE_COLOR, NOTE_TYPE_GLYPH } from '../lib/note-type-glyph'
+
+// ── Highlight ─────────────────────────────────────────────────────────────────
+
+/**
+ * Render a title with `fuzzyMatch`-matched character indices wrapped in `<mark>`.
+ * Consecutive matched/unmatched runs are coalesced into one node each so the DOM
+ * stays compact. `matched` is sorted ascending (fuzzy.ts walks left-to-right).
+ * Duplicated from EdgeTargetPicker.tsx by intent (no shared `PickerBase` yet —
+ * locked decision 4; a tiny private helper is the lower-risk choice).
+ * Why: keeps this file's highlight identical to its sibling without coupling them.
+ */
+function highlight(title: string, matched: number[]): React.ReactNode {
+  if (matched.length === 0) return title
+  const set = new Set(matched)
+  const chars = [...title]
+  const out: React.ReactNode[] = []
+  let run = ''
+  let runMatched = set.has(0)
+  let key = 0
+  const flush = () => {
+    if (run === '') return
+    out.push(
+      runMatched ? (
+        <mark key={key} style={{ background: 'var(--accent-tint)', color: 'inherit' }}>
+          {run}
+        </mark>
+      ) : (
+        <span key={key}>{run}</span>
+      ),
+    )
+    key++
+    run = ''
+  }
+  for (let i = 0; i < chars.length; i++) {
+    const m = set.has(i)
+    if (m !== runMatched) {
+      flush()
+      runMatched = m
+    }
+    run += chars[i]
+  }
+  flush()
+  return out
+}
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
@@ -68,11 +121,14 @@ export function Picker({ anchor, placedNoteIds, onPick, onJump, onClose }: Picke
   // Tracks the currently highlighted Command.Item value (= note id).
   const [highlighted, setHighlighted] = useState('')
 
-  const { data: results = [] } = useQuery({
-    queryKey: ['search', query],
-    queryFn: () => api.search.run(query),
-    enabled: query.length > 0,
-  })
+  // Candidate list = all live notes. The data layer caps `notes:list` at 500;
+  // react-query cached on ['notes'] — the same key CanvasStage's create/save
+  // mutations invalidate (mirrors EdgeTargetPicker).
+  const { data: notes = [] } = useQuery({ queryKey: ['notes'], queryFn: () => api.notes.list() })
+  const candidates = useMemo(() => notes.map((n) => ({ id: n.id, title: noteTitle(n) })), [notes])
+  // id→note map resolves each fuzzy row back to its full note for the type glyph.
+  const noteById = useMemo(() => new Map(notes.map((n) => [n.id, n])), [notes])
+  const results = useMemo(() => fuzzyMatch(query, candidates), [query, candidates])
 
   // cmdk auto-highlights the first rendered item and emits its value through
   // `onValueChange` (and again on arrow-key navigation), so `highlighted` always
@@ -156,17 +212,17 @@ export function Picker({ anchor, placedNoteIds, onPick, onJump, onClose }: Picke
           )}
           {query.length > 0 &&
             results.map((hit) => {
-              const placed = placedNoteIds.has(hit.note.id)
-              const type = hit.note.type as NoteType
+              const placed = placedNoteIds.has(hit.id)
+              const type = noteById.get(hit.id)?.type as NoteType | undefined
               return (
                 <Command.Item
-                  key={hit.note.id}
-                  value={hit.note.id}
+                  key={hit.id}
+                  value={hit.id}
                   onSelect={() => {
                     if (placed) {
-                      onJump(hit.note.id)
+                      onJump(hit.id)
                     } else {
-                      onPick(hit.note.id, { keepOpen: false })
+                      onPick(hit.id, { keepOpen: false })
                     }
                   }}
                   style={{
@@ -181,20 +237,20 @@ export function Picker({ anchor, placedNoteIds, onPick, onJump, onClose }: Picke
                     userSelect: 'none',
                   }}
                 >
-                  {/* Type glyph */}
+                  {/* Type glyph (resolved from the full note via id→note map) */}
                   <span
                     aria-hidden="true"
                     style={{
                       fontSize: 10,
-                      color: NOTE_TYPE_COLOR[type] ?? 'var(--fg-3)',
+                      color: (type && NOTE_TYPE_COLOR[type]) ?? 'var(--fg-3)',
                       flexShrink: 0,
                       width: 12,
                       textAlign: 'center',
                     }}
                   >
-                    {NOTE_TYPE_GLYPH[type] ?? '●'}
+                    {(type && NOTE_TYPE_GLYPH[type]) ?? '●'}
                   </span>
-                  {/* Title */}
+                  {/* Title with fuzzy-matched chars highlighted */}
                   <span
                     style={{
                       flex: 1,
@@ -203,7 +259,7 @@ export function Picker({ anchor, placedNoteIds, onPick, onJump, onClose }: Picke
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    {noteTitle(hit.note)}
+                    {highlight(hit.title, hit.matched)}
                   </span>
                   {/* ▦ chip: indicates the note is already placed on the canvas */}
                   {placed && (
