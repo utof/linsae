@@ -568,6 +568,11 @@ export function CanvasStage({
   const refreshCanvas = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ['canvas-layouts', ROOT_CANVAS_ID] })
     void queryClient.invalidateQueries({ queryKey: ['canvas-edges'] })
+    // The recent popover (§14) reads ['canvas-recent', root] via an always-mounted
+    // observer under global staleTime:Infinity, so it never auto-refetches —
+    // place/move/remove/undo all flow through here, so invalidate it too or the
+    // recent list goes stale after every arrange.
+    void queryClient.invalidateQueries({ queryKey: ['canvas-recent', ROOT_CANVAS_ID] })
   }, [queryClient])
 
   /**

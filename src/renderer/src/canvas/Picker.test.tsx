@@ -137,6 +137,24 @@ describe('Picker', () => {
     expect(onJump).not.toHaveBeenCalled()
   })
 
+  it('Shift+Enter clears the query but keeps the picker open (seed-a-board, §5)', async () => {
+    // ⇧↵ seeds a board with DIFFERENT notes: after the pick the query input must
+    // reset to empty (so the next pick isn't the same highlighted row) while the
+    // picker stays mounted. onClose must NOT fire.
+    mockApi.search.run.mockResolvedValueOnce(hits)
+    renderPicker()
+    const input = screen.getByRole('combobox') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'note' } })
+    await waitFor(() => expect(screen.getByText('Unplaced note body')).toBeInTheDocument())
+
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
+    expect(onPick).toHaveBeenCalledWith(UNPLACED_ID, { keepOpen: true })
+    // Query cleared → input empties and the rows reset to the empty state.
+    await waitFor(() => expect(screen.getByText('type to search…')).toBeInTheDocument())
+    expect((screen.getByRole('combobox') as HTMLInputElement).value).toBe('')
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
   it('Enter on placed row calls onJump(id) — jump-not-duplicate (§5)', async () => {
     // Return only the placed hit so it's first (and auto-highlighted)
     mockApi.search.run.mockResolvedValueOnce([hits[1]])

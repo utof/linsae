@@ -89,7 +89,12 @@ export function Picker({ anchor, placedNoteIds, onPick, onJump, onClose }: Picke
       if (placedNoteIds.has(highlighted)) {
         onJump(highlighted)
       } else {
-        onPick(highlighted, { keepOpen: e.shiftKey })
+        const keepOpen = e.shiftKey
+        onPick(highlighted, { keepOpen })
+        // ⇧↵ seeds a board: keep the picker open but reset the query so the user
+        // picks a DIFFERENT note next, not the same highlighted row again (spec
+        // §5 / plan Task 5). The +24,+24 cascade offset is CanvasStage's concern.
+        if (keepOpen) setQuery('')
       }
     }
   }
