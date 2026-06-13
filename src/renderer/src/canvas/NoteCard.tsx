@@ -35,8 +35,15 @@ export interface NoteCardProps {
   onMeasured: (noteId: string, height: number) => void
   onWikilinkClick: (slug: string) => void
   resolveSlug: (slug: string) => boolean
-  /** Called on double-click — consumed in Task 8; pass a no-op for now. */
+  /** Called on double-click to begin in-place editing (spec §3). */
   onBeginEdit: (noteId: string) => void
+  /**
+   * True while this card is being edited in place: the shell stays mounted (so
+   * its ResizeObserver-measured height survives) but `visibility: hidden` so the
+   * floating Composer rendered over it by CanvasStage is the only visible layer.
+   * @see docs/specs/v0.4-canvas-mvp.md §3 (card editing)
+   */
+  editing: boolean
 }
 
 /** Width of every canvas card in world px (spec §3). */
@@ -63,6 +70,7 @@ export const NoteCard = memo(function NoteCard({
   onWikilinkClick,
   resolveSlug,
   onBeginEdit,
+  editing,
 }: NoteCardProps) {
   const queryClient = useQueryClient()
 
@@ -129,6 +137,9 @@ export const NoteCard = memo(function NoteCard({
       onDoubleClick={() => onBeginEdit(noteId)}
       style={{
         display: keptAlive ? 'none' : undefined,
+        // editing → keep mounted (ResizeObserver height persists) but invisible;
+        // the floating Composer rendered over it by CanvasStage is what shows.
+        visibility: editing ? 'hidden' : undefined,
         position: 'absolute',
         transform: `translate(${x}px, ${y}px)`,
         width: CARD_WIDTH,

@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
 import { CanvasStage } from './CanvasStage'
+import { setCanvasDevLod } from './dev-lod'
 
 let mockApi: MockApi
 
@@ -506,6 +507,9 @@ describe('CanvasStage', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    // setCanvasDevLod is module-global; reset to defaults so a forceTier/dots
+    // toggle in one test never leaks into the next.
+    setCanvasDevLod({ forceTier: 'auto', unclampZoom: false, syntheticDots: false })
   })
 
   it('(i) regression: clearRect runs under identity, not the camera matrix (no ghosting on pan)', async () => {
@@ -658,6 +662,74 @@ describe('CanvasStage', () => {
     // The second mount reads the cached (flushed) camera → zoom 2, not boot zoom 1.
     await waitFor(() => {
       expect(world(second.container).style.transform).toContain('scale(2)')
+    })
+  })
+
+  // ---- Task 8: in-place card edit + dot tier ---------------------------------
+
+  /** Mount a single placed card at the origin (visible in the degenerate rect). */
+  async function mountSingleCard(body: string): Promise<void> {
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([row('e-note', 0, 0, 1000)])
+    mockApi.notes.get.mockResolvedValue(note('e-note', 'e', body))
+    renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(screen.queryByText(body)).toBeTruthy()
+    })
+  }
+
+  it('(l) double-click a card opens an edit Composer prefilled with the note body', async () => {
+    await mountSingleCard('Editable card body')
+    fireEvent.doubleClick(screen.getByText('Editable card body'))
+    // The edit-mode Composer textarea appears, prefilled with the body.
+    await waitFor(() => {
+      const ta = screen.getByLabelText('write a note') as HTMLTextAreaElement
+      expect(ta.value).toBe('Editable card body')
+    })
+  })
+
+  it('(m) submitting the editor (Enter) calls api.notes.update with id + new body', async () => {
+    mockApi.notes.update.mockResolvedValue(note('e-note', 'e', 'New body'))
+    await mountSingleCard('Old body')
+    fireEvent.doubleClick(screen.getByText('Old body'))
+    const ta = await screen.findByLabelText('write a note')
+    // Change the text, then press Enter (Composer submits on ↵ without shift).
+    fireEvent.change(ta, { target: { value: 'New body' } })
+    fireEvent.keyDown(ta, { key: 'Enter' })
+    await waitFor(() => {
+      expect(mockApi.notes.update).toHaveBeenCalled()
+    })
+    // api facade: api.notes.update(id, body, type) → window.api.notes.update({...}).
+    expect(mockApi.notes.update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'e-note', body: 'New body', type: 'claim' }),
+    )
+  })
+
+  it('(n) Escape closes the editor without calling api.notes.update', async () => {
+    await mountSingleCard('Esc body')
+    fireEvent.doubleClick(screen.getByText('Esc body'))
+    const ta = await screen.findByLabelText('write a note')
+    fireEvent.keyDown(ta, { key: 'Escape' })
+    // Editor gone; no write attempted.
+    await waitFor(() => {
+      expect(screen.queryByLabelText('write a note')).toBeNull()
+    })
+    expect(mockApi.notes.update).not.toHaveBeenCalled()
+  })
+
+  it('(o) force-tier dot renders no card bodies (cards unmount, dots stand in)', async () => {
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([row('d-note', 0, 0, 1000)])
+    mockApi.notes.get.mockResolvedValue(note('d-note', 'd', 'Dot tier body'))
+    renderWithProviders(<CanvasStage {...noopProps} />)
+    // Card renders at the card tier first.
+    await waitFor(() => {
+      expect(screen.queryByText('Dot tier body')).toBeTruthy()
+    })
+    // Force the dot tier: the card body must disappear (no NoteCards rendered).
+    setCanvasDevLod({ forceTier: 'dot' })
+    await waitFor(() => {
+      expect(screen.queryByText('Dot tier body')).toBeNull()
     })
   })
 })

@@ -29,14 +29,18 @@
  * @see docs/specs/v0.4-canvas-mvp.md §3 (stage transform, culling, keep-alive)
  * @see src/renderer/src/canvas/useCanvasCamera.ts
  */
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MANUAL_ARRANGEMENT_ID, ROOT_CANVAS_ID } from '../../../shared/canvas'
+import type { Note, NoteType } from '../../../shared/types'
+import { Composer } from '../composer/Composer'
 import { api } from '../lib/api'
 import type { UnderlayLayer } from './CanvasUnderlay'
 import { CanvasUnderlay } from './CanvasUnderlay'
 import { visibleWorldRect } from './camera'
+import { useCanvasDevLod } from './dev-lod'
 import { edgeSegment } from './edge-geometry'
+import { tierForZoom } from './lod'
 import { NoteCard } from './NoteCard'
 import type { WorldRect } from './spatial-index'
 import { CardSpatialIndex } from './spatial-index'
@@ -76,6 +80,36 @@ const CARD_WIDTH = 360
 const EMPTY: never[] = []
 
 /**
+ * Number of synthetic dots generated for the dev-HUD "synthetic 10k dots" toggle
+ * (spec §12 dot-tier perf probe). Big enough to stress the single-batch arc fill.
+ */
+const SYNTHETIC_DOT_COUNT = 10_000
+
+/** World-space spread (px) the synthetic dots are scattered across. */
+const SYNTHETIC_DOT_SPREAD = 100_000
+
+/**
+ * Module-level, generated once: 10k synthetic (x, y) world-coordinate pairs for
+ * the dot-tier perf probe. A `Float32Array` (not an array of objects) so the
+ * draw loop iterates a flat buffer with no per-dot allocation — the dot renderer
+ * is the §16 perf canary. Generated lazily on first access so the random work is
+ * paid only when the dev toggle is actually used.
+ * @see docs/specs/v0.4-canvas-mvp.md §12
+ */
+let syntheticDotsCache: Float32Array | null = null
+function getSyntheticDots(): Float32Array {
+  if (syntheticDotsCache === null) {
+    const buf = new Float32Array(SYNTHETIC_DOT_COUNT * 2)
+    for (let i = 0; i < buf.length; i++) buf[i] = Math.random() * SYNTHETIC_DOT_SPREAD
+    syntheticDotsCache = buf
+  }
+  return syntheticDotsCache
+}
+
+/** Screen-constant dot radius (px) at the dot tier, divided by zoom at draw time. */
+const DOT_SCREEN_RADIUS = 3
+
+/**
  * Renders the canvas viewport for the root canvas. The viewport div always
  * mounts (gestures bind immediately, layout is stable), but the world
  * container is gated on the camera hook's `ready` flag — its first paint is
@@ -88,9 +122,25 @@ const EMPTY: never[] = []
  */
 export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.Element {
   const viewportRef = useRef<HTMLDivElement>(null)
+  const queryClient = useQueryClient()
+
+  // ---- DEV LOD overrides (ephemeral store; inert in prod — forceTier defaults
+  // 'auto' and the [0.5,2.0] zoom clamp keeps tierForZoom in 'card' normally).
+  const devLod = useCanvasDevLod()
+
   const { camera, ready, isMoving } = useCanvasCamera(ROOT_CANVAS_ID, viewportRef, {
-    unclampZoom: false,
+    unclampZoom: devLod.unclampZoom,
   })
+
+  // Active tier: a forced tier wins; otherwise zoom decides (spec §12). 'title'
+  // and 'card' both render cards as today; only 'dot' swaps to the dot renderer.
+  const tier = devLod.forceTier !== 'auto' ? devLod.forceTier : tierForZoom(camera.zoom)
+
+  // ---- In-place card edit (spec §3): which card (by note id) is being edited.
+  // Set by a NoteCard double-click; cleared on commit (mutation onSuccess) or
+  // Composer esc. While set, that card hides (visibility:hidden, stays mounted so
+  // its ResizeObserver measure persists) and a Composer renders over it.
+  const [editingId, setEditingId] = useState<string | null>(null)
 
   // ---- Viewport size tracking (for culling rect)
   const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 })
@@ -220,10 +270,70 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
   }, [edges, placedLayouts, cullEpoch])
 
   /**
-   * Underlay layers array. Identity changes when edgesLayer is rebuilt, which
-   * triggers the underlay's dirty-mark effect (spec §3 cadence).
+   * Cached `--fg-2` token for the dot fill, resolved once on first dot draw.
+   * Same lazy-getComputedStyle rationale as {@link edgeColorRef}.
    */
-  const underlayLayers: UnderlayLayer[] = useMemo(() => [edgesLayer], [edgesLayer])
+  const dotColorRef = useRef<string | null>(null)
+
+  /**
+   * Flat (x, y) buffer of dot world-positions: the placed rows' top-left corners
+   * (rebuilt on layout change) OR the module-level synthetic 10k set when the dev
+   * toggle is on. A `Float32Array` so the draw loop never allocates per dot.
+   * @see docs/specs/v0.4-canvas-mvp.md §12
+   */
+  const dotPositions = useMemo(() => {
+    if (devLod.syntheticDots) return getSyntheticDots()
+    const buf = new Float32Array(placedLayouts.length * 2)
+    placedLayouts.forEach((row, i) => {
+      buf[i * 2] = row.x as number
+      buf[i * 2 + 1] = row.y as number
+    })
+    return buf
+  }, [placedLayouts, devLod.syntheticDots])
+
+  /**
+   * Dot-tier UnderlayLayer (spec §12): draws every position as one ~3px
+   * screen-constant disc. A single `beginPath()` batches all arcs, then one
+   * `fill()` paints them — the perf canary for the §16 ink seam. Reuses the
+   * generic UnderlayLayer contract (no underlay special-casing).
+   */
+  const dotsLayer: UnderlayLayer = useMemo(() => {
+    const positions = dotPositions
+    return {
+      draw(ctx: CanvasRenderingContext2D, drawCamera): void {
+        if (positions.length === 0) return
+        if (dotColorRef.current === null) {
+          dotColorRef.current =
+            getComputedStyle(document.documentElement).getPropertyValue('--fg-2').trim() ||
+            'rgba(0,0,0,0.45)'
+        }
+        const r = DOT_SCREEN_RADIUS / drawCamera.zoom // screen-constant radius
+        ctx.fillStyle = dotColorRef.current
+        ctx.beginPath()
+        for (let i = 0; i < positions.length; i += 2) {
+          // Non-null: i and i+1 are always in bounds (length is even by construction).
+          const x = positions[i] as number
+          const y = positions[i + 1] as number
+          // moveTo before each arc so the implicit line from the previous arc's
+          // end isn't part of the path (a single subpath would web all dots).
+          ctx.moveTo(x + r, y)
+          ctx.arc(x, y, r, 0, Math.PI * 2)
+        }
+        ctx.fill()
+      },
+    }
+  }, [dotPositions])
+
+  /**
+   * Underlay layers array. At the dot tier the dots layer is appended (cards do
+   * not render — see below); otherwise it is absent and only edges draw. Identity
+   * changes when any layer is rebuilt, triggering the underlay's dirty-mark
+   * effect (spec §3 cadence).
+   */
+  const underlayLayers: UnderlayLayer[] = useMemo(
+    () => (tier === 'dot' ? [edgesLayer, dotsLayer] : [edgesLayer]),
+    [edgesLayer, dotsLayer, tier],
+  )
 
   /**
    * Spatial index built DURING render from the placed layouts' real x/y and the
@@ -263,6 +373,31 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
     heightCacheRef.current.set(noteId, h)
     setCullEpoch((e) => e + 1)
   }, [])
+
+  /**
+   * Begin in-place editing of a card (NoteCard double-click → spec §3). No-op
+   * when a dot-tier swap has unmounted the cards (defensive — double-click can't
+   * reach a card that isn't rendered).
+   */
+  const handleBeginEdit = useCallback((noteId: string) => setEditingId(noteId), [])
+
+  /**
+   * Commit an in-place card edit through the normal save path: `api.notes.update`
+   * with the note's existing type round-tripped (the §7 `?`-promotion is
+   * creation-mode-only — Plan 3). On success invalidate the feed (`['notes']`),
+   * the per-note caches (`['note']` prefix), and the canvas edges (a body change
+   * can add/remove a wikilink), then leave edit mode.
+   */
+  const commitEdit = useMutation({
+    mutationFn: ({ id, body, type }: { id: string; body: string; type: NoteType }) =>
+      api.notes.update(id, body, type),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['notes'] })
+      void queryClient.invalidateQueries({ queryKey: ['note'] })
+      void queryClient.invalidateQueries({ queryKey: ['canvas-edges'] })
+      setEditingId(null)
+    },
+  })
 
   // ---- Visible ids: cards intersecting the inflated viewport rect. Reads the
   // freshly-built in-render index, so it reflects this render's layout + heights.
@@ -306,12 +441,22 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
   }
   const keepAliveIds = useMemo(() => new Set(keepAliveQueue), [keepAliveQueue])
 
-  // ---- Cards to render: visible ∪ keep-alive, sorted by placed_at ascending
+  // ---- Cards to render: visible ∪ keep-alive, sorted by placed_at ascending.
+  // At the dot tier no cards (nor the keep-alive set) render — the dots layer
+  // stands in for them (spec §12), so the whole DOM card layer is dropped.
   const cardsToRender = useMemo(() => {
+    if (tier === 'dot') return EMPTY
     return placedLayouts
       .filter((r) => visibleIds.has(r.note_id) || keepAliveIds.has(r.note_id))
       .sort((a, b) => (a.placed_at ?? 0) - (b.placed_at ?? 0))
-  }, [placedLayouts, visibleIds, keepAliveIds])
+  }, [placedLayouts, visibleIds, keepAliveIds, tier])
+
+  // The placed row of the card being edited (if any), for the floating Composer's
+  // (x, y) anchor. Null when not editing or the row is gone (e.g. unplaced).
+  const editingRow = useMemo(
+    () => (editingId ? (placedLayouts.find((r) => r.note_id === editingId) ?? null) : null),
+    [editingId, placedLayouts],
+  )
 
   return (
     // tabIndex makes the viewport focusable so canvas-scoped hotkeys can check
@@ -368,12 +513,77 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
                 onMeasured={handleMeasured}
                 onWikilinkClick={onWikilinkClick}
                 resolveSlug={resolveSlug}
-                onBeginEdit={() => {}}
+                onBeginEdit={handleBeginEdit}
+                editing={editingId === r.note_id}
               />
             ))}
+            {/* In-place editor: a floating Composer over the hidden card, in the
+                same world coordinates so it pans/zooms with the canvas (spec §3). */}
+            {editingId !== null && editingRow !== null && (
+              <CardEditor
+                key={editingId}
+                noteId={editingId}
+                x={editingRow.x as number}
+                y={editingRow.y as number}
+                onCommit={(body, type) => commitEdit.mutate({ id: editingId, body, type })}
+                onCancel={() => setEditingId(null)}
+              />
+            )}
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+/**
+ * Floating in-place editor for one card. Fetches the note (seeded from the feed
+ * cache so it prefills instantly) and renders an edit-mode {@link Composer} at
+ * the card's world `(x, y)`. The note's EXISTING type is round-tripped — the §7
+ * `?`-promotion is creation-mode-only (Plan 3). Renders nothing until the note
+ * is available (the card stays hidden beneath it meanwhile).
+ *
+ * Why a child component (not inline): it must call the `['note', id]` query hook,
+ * which can only run from a component body — and keying it on `noteId` resets the
+ * Composer's local body/mode state cleanly when the edited card changes.
+ *
+ * @see docs/specs/v0.4-canvas-mvp.md §3 (card editing)
+ */
+function CardEditor({
+  noteId,
+  x,
+  y,
+  onCommit,
+  onCancel,
+}: {
+  noteId: string
+  x: number
+  y: number
+  onCommit: (body: string, type: NoteType) => void
+  onCancel: () => void
+}): React.JSX.Element | null {
+  const queryClient = useQueryClient()
+  // Same fetch + placeholder seeding as NoteCard so the editor prefills from the
+  // already-loaded feed data without a flash. @see src/renderer/src/canvas/NoteCard.tsx
+  const { data: note } = useQuery({
+    queryKey: ['note', noteId],
+    queryFn: () => api.notes.get(noteId),
+    placeholderData: () =>
+      queryClient.getQueryData<Note[]>(['notes'])?.find((n) => n.id === noteId),
+  })
+  if (!note) return null
+  return (
+    <div
+      data-canvas-card-editor
+      style={{ position: 'absolute', transform: `translate(${x}px, ${y}px)`, width: CARD_WIDTH }}
+    >
+      <Composer
+        initialBody={note.body}
+        initialMode={note.type}
+        editMode
+        onSubmit={({ body, type }) => onCommit(body, type)}
+        onCancel={onCancel}
+      />
     </div>
   )
 }

@@ -46,6 +46,7 @@ const defaultProps: NoteCardProps = {
   onWikilinkClick: () => {},
   resolveSlug: () => false,
   onBeginEdit: () => {},
+  editing: false,
 }
 
 /**
