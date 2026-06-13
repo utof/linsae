@@ -432,9 +432,10 @@ async function runSmoke(win) {
   await win.keyboard.press(`${MOD}+1`)
   await win.waitForTimeout(250)
   await win.keyboard.press(`${MOD}+2`)
-  // Wait for the canvas to REMOUNT (world visible) before asserting (the §6
+  // Wait for the canvas to REMOUNT (world attached) before asserting (the §6
   // AnimatePresence exit can interrupt the render — this is the #111 guard).
-  await win.locator('[data-canvas-world]').waitFor({ state: 'visible', timeout: 8000 })
+  // 'attached' not 'visible': the world is a 0-size transform container.
+  await win.locator('[data-canvas-world]').waitFor({ state: 'attached', timeout: 8000 })
   await win.waitForTimeout(400)
   const worldBack = (await win.locator('[data-canvas-world]').count()) > 0
   const cardBack = toggledCardId
@@ -468,13 +469,34 @@ const SMOKE = process.argv.includes('--smoke')
 const userDataDir = mkdtempSync(join(tmpdir(), 'linsae-perf-harness-'))
 
 const app = await electron.launch({
-  args: ['out/main/index.js', `--user-data-dir=${userDataDir}`],
+  // Anti-throttling switches (harness-only — passed to THIS launch, never to the
+  // shipped app). Chromium throttles requestAnimationFrame to ~1Hz for a window it
+  // considers hidden/occluded/backgrounded; on a real desktop the launched window
+  // can lose foreground after reload and the phase rAF clock would then sample ~1
+  // fps (meaningless). These keep the renderer + rAF at full rate regardless of
+  // focus/occlusion, so the gate measures RENDER cost, not OS window state.
+  args: [
+    'out/main/index.js',
+    `--user-data-dir=${userDataDir}`,
+    '--disable-background-timer-throttling',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+  ],
   env: { ...process.env, LINSAE_HARNESS: '1' },
 })
 let exitCode = 0
 try {
   const win = await app.firstWindow()
   await win.waitForLoadState('domcontentloaded')
+
+  // ---- Defeat rAF throttling (the Electron-native way). A window Chromium deems
+  // hidden/backgrounded throttles requestAnimationFrame to ~1Hz, which would make
+  // the phase frame-clock sample ~1 fps of garbage. setBackgroundThrottling(false)
+  // keeps animations + timers at full rate regardless of window state. Called from
+  // the MAIN process on every BrowserWindow (harness-only; never ships).
+  await app.evaluate(({ BrowserWindow }) => {
+    for (const w of BrowserWindow.getAllWindows()) w.webContents.setBackgroundThrottling(false)
+  })
 
   // ---- GPU guard: VERBATIM logic from spike run.mjs:16-45 (poll until populated).
   let gpu = {}
@@ -542,7 +564,15 @@ try {
   // ---- switch to canvas + wait for the world to mount.
   await win.keyboard.press(`${MOD}+2`)
   await win.locator('[data-canvas-viewport]').waitFor({ state: 'visible', timeout: 8000 })
-  await win.locator('[data-canvas-world]').waitFor({ state: 'visible', timeout: 8000 })
+  // The world div is a 0-size transform container (position:absolute, no w/h —
+  // its children are absolutely positioned), so Playwright never deems it
+  // 'visible'; 'attached' is the correct mount signal (it renders under
+  // `ready &&`). The board-non-empty card-count guard below is the real check.
+  await win.locator('[data-canvas-world]').waitFor({ state: 'attached', timeout: 8000 })
+  // Bring the window foreground so it is not occluded when measuring (belt-and-
+  // suspenders with the anti-throttling launch switches): an occluded/unfocused
+  // window throttles rAF to ~1Hz and the phase clock would sample garbage.
+  await win.bringToFront()
   await win.waitForTimeout(800) // let the first cull pass + fonts settle
 
   // ---- BOARD-NON-EMPTY GUARD (B1 safety net): the gate must never measure an
@@ -557,6 +587,15 @@ try {
     await app.close()
     process.exit(1)
   }
+
+  // Diagnostic: a hidden page throttles rAF to ~1Hz. If this prints
+  // visibility=hidden the frame clock is invalid (see setBackgroundThrottling).
+  const vis = await win.evaluate(() => ({
+    state: document.visibilityState,
+    hidden: document.hidden,
+    focus: document.hasFocus(),
+  }))
+  console.log(`page visibility=${vis.state} hidden=${vis.hidden} hasFocus=${vis.focus}`)
 
   // ---- BRANCH: --smoke runs the pointer smoke flow (Task 3) instead of the perf
   // gates. The default path (no flag) is the unchanged 3-phase / 3-run verdict.
@@ -575,6 +614,21 @@ try {
           }),
         )
         await win.waitForTimeout(300) // let cards unmount + the dot layer draw
+        // Post-condition (Task-2 review): prove the tier actually FLIPPED before
+        // measuring it. forceTier:'dot' unmounts every card, so the dot gate is
+        // valid only if zero cards remain; otherwise setDevLod silently no-op'd
+        // (e.g. the bridge was gone) and we'd be measuring the card tier under a
+        // 'dot' label — a silent wrong measurement. Abort rather than mis-report.
+        const dotCards = await win.locator('[data-note-id]').count()
+        console.log(`dot-tier card count: ${dotCards} (expect 0 — cards unmount at dot tier)`)
+        if (dotCards > 0) {
+          console.error(
+            `FAIL: ${dotCards} cards still mounted after forcing dot tier — tier did NOT ` +
+              `flip, so the dot gate would measure the card tier. Aborting.`,
+          )
+          await app.close()
+          process.exit(1)
+        }
       }
       const runs = []
       for (let r = 0; r < RUNS; r++) {
