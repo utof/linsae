@@ -197,6 +197,10 @@ the pointer/layout interactions that happy-dom cannot test:
 | centroid pill ABSENT when centered on the board | B4 |
 | centroid pill APPEARS when panned to empty space (`[data-canvas-centroid-arrow]`) | B4 |
 | centroid arrow points toward the note centroid (`→` when panned left) | B4 |
+| ctrl-drag card→card created an edge (count +1 via `canvas:edges`) | v0.4.1 §3 |
+| drag-into-empty opened the target picker (`[data-edge-target-picker]`), created a new note + connected it (card +1, edge +1) | v0.4.1 §4 |
+| click selected the drawn edge (`[data-edge-selected]`) and ⌫ deleted it (count −1) | v0.4.1 §5 |
+| a `'reference'` edge does NOT select on click and is NOT deletable (count unchanged) | v0.4.1 §5 |
 
 **B3** (click-deselect) and **B4** (the §14 G2 "back to your notes" centroid
 pill) escaped happy-dom this cycle — both are pointer/layout-only and share the
@@ -204,16 +208,28 @@ phantom-occupancy / inflated-cull-set lineage of B1, so only the manual smoke
 can catch a regression. B3 guards the `hitVisibleAt` fix; B4 guards the
 `trueVisibleIds` gate on the pill.
 
+**Edge paths (v0.4.1 §8 harness tier):** the four edge rows above exercise the
+pointer-driven create/connect/select/delete flow that happy-dom cannot — drawing
+an edge needs `setPointerCapture` + native pointermove, and the edge underlay is
+canvas-2D (no DOM). Edge **counts** are read through the app's own `canvas:edges`
+read path (the same query the underlay renders from), not the DOM. The
+reference-edge sub-test needs a `'reference'` edge that actually **renders**, so
+the seed makes note 1's body wikilink `[[Seed note 0]]` (note `i`'s heading
+`# Seed note ${i}` → slug `seed note ${i}`); that resolves to a `reference` links
+row `1 → 0` returned by `canvas:edges` once both are placed (all seed cards are).
+A reference edge is non-drawn (`nearestDrawnEdge` skips it), so it neither selects
+nor deletes — the sub-test proves the read-only guard.
+
 Output per assertion: `OK  <label>` or `FAIL <label>`. Final line:
 
 ```
-SMOKE VERDICT: PASS — all 15 assertions OK (#119 #121 #111 B3-deselect B4-centroid covered)
+SMOKE VERDICT: PASS — all 23 assertions OK (#119 #121 #111 B3-deselect B4-centroid edge-create/connect/select/delete covered)
 ```
 
 or
 
 ```
-SMOKE VERDICT: FAIL — N/15 assertions failed: <labels>
+SMOKE VERDICT: FAIL — N/23 assertions failed: <labels>
 ```
 
 **Prereq (same as the perf gate):** a real display session and a built app —

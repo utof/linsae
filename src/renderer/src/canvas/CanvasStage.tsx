@@ -1641,6 +1641,11 @@ export function CanvasStage({
                 ` scale(${camera.zoom})`,
             }}
             data-canvas-world
+            // Smoke-harness hook (#131): present iff a drawn edge is selected, so
+            // the operator-run --smoke can assert select/deselect without reading
+            // canvas-2D pixels (happy-dom has no edge DOM). Reflects state only —
+            // selection logic lives in onWorldPointerDown / the esc cascade (Task 9).
+            data-edge-selected={selectedEdge ? '' : undefined}
             onPointerDown={onWorldPointerDown}
             onDoubleClick={onSurfaceDoubleClick}
           >

@@ -124,8 +124,17 @@ async function seedViaIpc(win) {
       }
       let placed = 0
       for (let i = 0; i < count; i++) {
+        // Each note's heading "# Seed note ${i}" → slug "seed note ${i}"
+        // (slugFromBody: heading-stripped + lowercased). Note 1 wikilinks the
+        // REAL slug of note 0 ([[Seed note 0]] → normalizeSlug → "seed note 0"),
+        // so replaceLinksForNote writes a resolvable 'reference' links row
+        // (1 → 0) that canvasEdges returns once both are placed — the smoke's
+        // reference-edge sub-test needs a reference edge that actually RENDERS
+        // (a dangling [[wikilink]] would not). All other notes keep a dangling
+        // [[wikilink]] (no seeded note has that slug) → those draw nothing.
+        const ref = i === 1 ? '[[Seed note 0]]' : '[[wikilink]]'
         const body =
-          `# Seed note ${i}\n\nProse with **emphasis** and a [[wikilink]], long enough ` +
+          `# Seed note ${i}\n\nProse with **emphasis** and a ${ref}, long enough ` +
           `to wrap a few lines like a real note body. Inline math $e^{i\\pi}+1=0$.`
         await window.api.canvas.createNoteAt({
           canvasId: 'root',
@@ -691,11 +700,260 @@ async function runSmoke(win) {
     )
   }
 
+  // ── EDGE PATHS (v0.4.1 §8 harness tier — pointer-driven, happy-dom-untestable) ──
+  // ctrl-drag card→card → createEdge; drag-into-empty → EdgeTargetPicker create+
+  // connect; select-click + ⌫ deletes a drawn edge; a 'reference' edge is NOT
+  // deletable. Read the edge COUNT through the app's OWN read path (canvas:edges,
+  // Task 1) — the SAME query the underlay renders from — so the assertion measures
+  // the persisted rows, not the DOM. Canvas/arrangement keys are the §2 opaque
+  // values (ROOT_CANVAS_ID='root' / MANUAL_ARRANGEMENT_ID='manual', src/shared/
+  // canvas.ts) — the same pair seedViaIpc + createNoteAt use above.
+  const edgeCount = () =>
+    win.evaluate(() =>
+      window.api.canvas.edges({ canvasId: 'root', arrangementId: 'manual' }).then((e) => e.length),
+    )
+
+  // Restore a board-centered camera (B4 left it there too, but be explicit) and
+  // clear any selection so the edge sub-tests start clean.
+  await win.evaluate(
+    ([world]) => {
+      const w = window.innerWidth
+      const h = window.innerHeight
+      window.__canvasHarness?.setCamera({
+        x: world.w / 2 - w / 2,
+        y: world.h / 2 - h / 2,
+        zoom: 1,
+      })
+    },
+    [WORLD],
+  )
+  await win.keyboard.press('Escape')
+  await win.waitForTimeout(200)
+
+  // ── ctrl-drag card→card creates a drawn edge (§3) ─────────────────────────────
+  // Two fully-visible cards at distinct probe points. The product selects the
+  // TOPMOST card under each press, but for edge creation we don't read selection
+  // back — the gesture routes by hitVisibleAt(dropWorld) at mouse.up, which lands
+  // the edge on whatever card the cursor is over (the dst probe). We keep the two
+  // on-screen CENTERS to (a) drive the drag and (b) compute the screen midpoint
+  // the select/delete sub-test clicks. ctrl is held across down→move→up so the
+  // gesture is the edge-draw, not a move (decision 2: ctrl-drag = edge).
+  let srcCenter = null
+  let dstCenter = null
+  const srcCard = await pickCardNear(win, vp.x + vp.width * 0.32, vp.y + vp.height * 0.4)
+  const dstCard = await pickCardNear(win, vp.x + vp.width * 0.68, vp.y + vp.height * 0.62)
+  if (!srcCard || !dstCard || srcCard.id === dstCard.id) {
+    assert('edge ctrl-drag: two distinct fully-visible cards to connect', false)
+  } else {
+    srcCenter = { x: srcCard.x + srcCard.w / 2, y: srcCard.y + srcCard.h / 2 }
+    dstCenter = { x: dstCard.x + dstCard.w / 2, y: dstCard.y + dstCard.h / 2 }
+    const before = await edgeCount()
+    await win.mouse.move(srcCenter.x, srcCenter.y)
+    await win.keyboard.down('Control')
+    await win.mouse.down()
+    // Step the rubber-band to the dst center so the live drag crosses real frames
+    // (the gesture machine runs on native pointermove + setPointerCapture).
+    for (let i = 1; i <= 6; i++) {
+      await win.mouse.move(
+        srcCenter.x + ((dstCenter.x - srcCenter.x) * i) / 6,
+        srcCenter.y + ((dstCenter.y - srcCenter.y) * i) / 6,
+      )
+    }
+    await win.mouse.up()
+    await win.keyboard.up('Control')
+    await win.waitForTimeout(500) // createEdge txn + invalidate + edges refetch
+    const after = await edgeCount()
+    console.log(`edges before/after ctrl-drag: ${before} → ${after}`)
+    assert('edge ctrl-drag card→card created an edge (count +1, §3)', after === before + 1)
+  }
+  await win.keyboard.press('Escape')
+  await win.waitForTimeout(150)
+
+  // ── drag-into-empty opens the target picker + creates+connects (§4) ───────────
+  // ctrl-drag from a card to a product-classified EMPTY point → on drop (no card
+  // under the cursor) the §4 EdgeTargetPicker opens at the drop point. Type a
+  // query that matches NO seeded title (titles are "Seed note N"; "zqx…" has no
+  // subsequence in any) so the ONLY row is the trailing "create" row → it is the
+  // highlighted Command.Item → Enter routes onCreateAndConnect: createNoteAt at the
+  // drop point THEN createEdge to the new note. Asserts BOTH a new card and a new
+  // edge appeared (place + connect in one gesture).
+  const pickerSrc = await pickCardNear(win, vp.x + vp.width * 0.4, vp.y + vp.height * 0.4)
+  const emptyDrop = await findEmptyPoint(win, vp)
+  if (!pickerSrc || !emptyDrop) {
+    assert('edge drag-into-empty: a source card + an empty drop point', false)
+  } else {
+    const psc = { x: pickerSrc.x + pickerSrc.w / 2, y: pickerSrc.y + pickerSrc.h / 2 }
+    const beforeEdges = await edgeCount()
+    const beforeCards = await win.locator('[data-note-id]').count()
+    await win.mouse.move(psc.x, psc.y)
+    await win.keyboard.down('Control')
+    await win.mouse.down()
+    for (let i = 1; i <= 6; i++) {
+      await win.mouse.move(
+        psc.x + ((emptyDrop.x - psc.x) * i) / 6,
+        psc.y + ((emptyDrop.y - psc.y) * i) / 6,
+      )
+    }
+    await win.mouse.up()
+    await win.keyboard.up('Control')
+    await win.waitForTimeout(250)
+    const pickerOpen = await win.evaluate(
+      () => !!document.querySelector('[data-edge-target-picker]'),
+    )
+    assert('edge drag-into-empty opened the target picker ([data-edge-target-picker])', pickerOpen)
+    if (pickerOpen) {
+      // The picker input auto-focuses on mount; type a no-match query so only the
+      // "create" row exists, then Enter commits create+connect.
+      await win.keyboard.type('zqxedgesmoke')
+      await win.waitForTimeout(150)
+      await win.keyboard.press('Enter')
+      await win.waitForTimeout(600) // createNoteAt + createEdge + invalidate + refetch
+      const afterEdges = await edgeCount()
+      const afterCards = await win.locator('[data-note-id]').count()
+      console.log(
+        `edges ${beforeEdges}→${afterEdges} · cards ${beforeCards}→${afterCards} (create+connect)`,
+      )
+      assert(
+        'edge drag-into-empty created a new note (count +1, §4)',
+        afterCards === beforeCards + 1,
+      )
+      assert(
+        'edge drag-into-empty connected it (edge count +1, §4)',
+        afterEdges === beforeEdges + 1,
+      )
+    }
+  }
+  await win.keyboard.press('Escape')
+  await win.waitForTimeout(150)
+
+  // ── select + ⌫ deletes a drawn edge (§5) ──────────────────────────────────────
+  // Click the SCREEN midpoint of the ctrl-drag edge's two card centers (computed
+  // above). The edge is a center-to-center segment, so the midpoint lies on it; a
+  // click there with no card underneath routes onWorldPointerDown → hitEdgeAt →
+  // setSelectedEdge (CanvasStage.tsx:1290). We assert selection via the
+  // [data-edge-selected] marker on [data-canvas-world] (present iff selectedEdge),
+  // then ⌫ deletes the row (deleteEdgeMut, no confirm) → edge count −1.
+  if (!srcCenter || !dstCenter) {
+    assert('edge select: a drawn edge from the ctrl-drag sub-test to select', false)
+  } else {
+    const mid = { x: (srcCenter.x + dstCenter.x) / 2, y: (srcCenter.y + dstCenter.y) / 2 }
+    const before = await edgeCount()
+    await win.mouse.move(mid.x, mid.y)
+    await win.mouse.down()
+    await win.mouse.up()
+    await win.waitForTimeout(150)
+    const selected = await win.evaluate(() =>
+      document.querySelector('[data-canvas-world]')?.hasAttribute('data-edge-selected'),
+    )
+    assert('edge click selected the drawn edge ([data-edge-selected] §5)', selected === true)
+    await win.keyboard.press('Backspace')
+    await win.waitForTimeout(500) // deleteEdge txn + invalidate + edges refetch
+    const after = await edgeCount()
+    console.log(`edges before/after select+⌫: ${before} → ${after}`)
+    assert('edge ⌫ deleted the selected drawn edge (count −1, §5)', after === before - 1)
+  }
+  await win.keyboard.press('Escape')
+  await win.waitForTimeout(150)
+
+  // ── a 'reference' edge is NOT deletable (§5 decision 6) ────────────────────────
+  // The seed makes note 1's body wikilink [[Seed note 0]] → a resolvable 'reference'
+  // links row (1 → 0). Locate it via the app's read path, fit the camera to BOTH
+  // endpoints (random scatter → use listLayouts for their world rects), wait for
+  // both cards to mount, click the screen midpoint. A reference edge is non-drawn,
+  // so nearestDrawnEdge skips it (edge-geometry.ts:104) → no selection, and ⌫ is a
+  // no-op → edge count UNCHANGED.
+  const refEdge = await win.evaluate(() =>
+    window.api.canvas
+      .edges({ canvasId: 'root', arrangementId: 'manual' })
+      .then((es) => es.find((e) => e.edgeType === 'reference') ?? null),
+  )
+  if (!refEdge) {
+    assert('reference edge: a rendered reference edge exists (seed [[Seed note 0]])', false)
+  } else {
+    // Fit the camera to the two endpoints (mirror fitCamera: center + zoom). The
+    // bridge setCamera is the UNCLAMPED Dispatch, so a zoom < 0.5 is honored when
+    // the two random endpoints are far apart (keeps both on-screen).
+    await win.evaluate(
+      ([ids, cardW, cardH]) => {
+        const w = window.innerWidth
+        const h = window.innerHeight
+        return window.api.canvas
+          .listLayouts({ canvasId: 'root', arrangementId: 'manual' })
+          .then((rows) => {
+            const wanted = rows.filter((r) => ids.includes(r.note_id) && r.x !== null)
+            if (wanted.length < 2) return
+            let minX = Number.POSITIVE_INFINITY
+            let minY = Number.POSITIVE_INFINITY
+            let maxX = Number.NEGATIVE_INFINITY
+            let maxY = Number.NEGATIVE_INFINITY
+            for (const r of wanted) {
+              minX = Math.min(minX, r.x)
+              minY = Math.min(minY, r.y)
+              maxX = Math.max(maxX, r.x + cardW)
+              maxY = Math.max(maxY, r.y + cardH)
+            }
+            const pad = 120
+            // Floor at 0.16 (just above the dot-tier threshold 0.15, lod.ts:10) so
+            // BOTH cards stay mounted as DOM ([data-note-id]) — at the dot tier the
+            // whole card layer is dropped (CanvasStage.tsx:1566) and the click would
+            // have no rects to land on. Cap at 1 so a near pair doesn't over-zoom.
+            const zoom = Math.max(
+              0.16,
+              Math.min(
+                (w - 2 * pad) / Math.max(1, maxX - minX),
+                (h - 2 * pad) / Math.max(1, maxY - minY),
+                1,
+              ),
+            )
+            const cx = (minX + maxX) / 2
+            const cy = (minY + maxY) / 2
+            window.__canvasHarness?.setCamera({ x: cx - w / zoom / 2, y: cy - h / zoom / 2, zoom })
+          })
+      },
+      [[refEdge.fromNoteId, refEdge.toNoteId], CARD_W, CARD_H],
+    )
+    await win.waitForTimeout(400) // camera write + cull pass + card mount
+    const rects = await win.evaluate(
+      ([from, to]) => {
+        const r = (id) => {
+          const el = document.querySelector(`[data-note-id="${id}"]`)
+          if (!el) return null
+          const b = el.getBoundingClientRect()
+          return { x: b.x + b.width / 2, y: b.y + b.height / 2 }
+        }
+        return { from: r(from), to: r(to) }
+      },
+      [refEdge.fromNoteId, refEdge.toNoteId],
+    )
+    if (!rects.from || !rects.to) {
+      assert('reference edge: both endpoints mounted on-screen after fit', false)
+    } else {
+      const before = await edgeCount()
+      const mid = {
+        x: (rects.from.x + rects.to.x) / 2,
+        y: (rects.from.y + rects.to.y) / 2,
+      }
+      await win.mouse.move(mid.x, mid.y)
+      await win.mouse.down()
+      await win.mouse.up()
+      await win.waitForTimeout(150)
+      const selected = await win.evaluate(() =>
+        document.querySelector('[data-canvas-world]')?.hasAttribute('data-edge-selected'),
+      )
+      assert('reference edge does NOT select on click ([data-edge-selected] absent §5)', !selected)
+      await win.keyboard.press('Backspace')
+      await win.waitForTimeout(400)
+      const after = await edgeCount()
+      console.log(`edges before/after reference ⌫: ${before} → ${after} (expect unchanged)`)
+      assert('reference edge is NOT deletable (count unchanged §5 decision 6)', after === before)
+    }
+  }
+
   const failures = out.filter(([, ok]) => !ok)
   console.log('')
   console.log(
     failures.length === 0
-      ? `SMOKE VERDICT: PASS — all ${out.length} assertions OK (#119 #121 #111 B3-deselect B4-centroid covered)`
+      ? `SMOKE VERDICT: PASS — all ${out.length} assertions OK (#119 #121 #111 B3-deselect B4-centroid edge-create/connect/select/delete covered)`
       : `SMOKE VERDICT: FAIL — ${failures.length}/${out.length} assertions failed: ` +
           failures.map(([l]) => l).join(' · '),
   )
