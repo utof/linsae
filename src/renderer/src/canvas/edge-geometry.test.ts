@@ -3,7 +3,9 @@
  * @see docs/specs/v0.4-canvas-mvp.md §11
  */
 import { describe, expect, it } from 'vitest'
-import { arrowhead, edgeSegment, pointToSegmentDistance } from './edge-geometry'
+import type { CanvasEdge } from '../../../shared/canvas'
+import { arrowhead, edgeSegment, nearestDrawnEdge, pointToSegmentDistance } from './edge-geometry'
+import type { WorldRect } from './spatial-index'
 
 const rect = (x: number, y: number) => ({ x, y, w: 100, h: 100 })
 
@@ -56,5 +58,59 @@ describe('arrowhead', () => {
     expect(a.left.y).toBeCloseTo(a.right.x)
     expect(a.left.x).toBeLessThan(10)
     expect(a.left.y).toBeLessThan(10)
+  })
+})
+
+describe('nearestDrawnEdge', () => {
+  // Two cards 300px apart on the x-axis (each 100×100, centers (50,50) & (350,50)).
+  // edgeSegment clips at the card borders → the visible drawn segment is x∈[100,300]
+  // at y=50. Edge midpoint ≈ (200, 50) — a point that sits BETWEEN the cards, i.e.
+  // visually-empty (the normal edge hit, spec §5).
+  const rects: ReadonlyMap<string, WorldRect> = new Map([
+    ['a', rect(0, 0)],
+    ['b', rect(300, 0)],
+    // 'c' placed below 'a' for the second-drawn-edge "nearest wins" case.
+    ['c', rect(0, 300)],
+  ])
+  const edge = (fromNoteId: string, toNoteId: string, edgeType: string): CanvasEdge => ({
+    fromNoteId,
+    toNoteId,
+    toSlug: toNoteId, // slug == id in these fixtures; not used by the hit-test
+    edgeType,
+  })
+
+  it('hits a DRAWN edge whose segment is within threshold', () => {
+    const edges = [edge('a', 'b', 'link')]
+    const hit = nearestDrawnEdge({ x: 200, y: 52 }, edges, rects, 6)
+    expect(hit).not.toBeNull()
+    expect(hit?.fromNoteId).toBe('a')
+    expect(hit?.toSlug).toBe('b')
+    expect(hit?.edgeType).toBe('link')
+  })
+
+  it('does NOT hit a reference/comment edge at the same point (drawn-only, decision 6)', () => {
+    expect(nearestDrawnEdge({ x: 200, y: 52 }, [edge('a', 'b', 'reference')], rects, 6)).toBeNull()
+    expect(nearestDrawnEdge({ x: 200, y: 52 }, [edge('a', 'b', 'comment-on')], rects, 6)).toBeNull()
+  })
+
+  it('returns null for an empty point (no drawn edge within threshold)', () => {
+    const edges = [edge('a', 'b', 'link')]
+    // (200, 400) is far from the y=50 segment → outside the 6px threshold.
+    expect(nearestDrawnEdge({ x: 200, y: 400 }, edges, rects, 6)).toBeNull()
+  })
+
+  it('returns the NEAREST of two drawn edges', () => {
+    // a→b is the horizontal segment at y=50; a→c is the vertical segment at x=50.
+    // A point near the vertical (a→c) segment must select a→c, not a→b.
+    const edges = [edge('a', 'b', 'link'), edge('a', 'c', 'supports')]
+    const hit = nearestDrawnEdge({ x: 52, y: 200 }, edges, rects, 6)
+    expect(hit?.toSlug).toBe('c')
+    expect(hit?.edgeType).toBe('supports')
+  })
+
+  it('skips a drawn edge with an unplaced endpoint', () => {
+    // 'ghost' is not in the rect map → the edge is skipped (dangling).
+    const edges = [edge('a', 'ghost', 'link')]
+    expect(nearestDrawnEdge({ x: 200, y: 52 }, edges, rects, 6)).toBeNull()
   })
 })

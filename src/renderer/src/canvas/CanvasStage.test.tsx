@@ -1402,4 +1402,94 @@ describe('CanvasStage', () => {
       expect(screen.queryByText(/1 selected/i)).toBeTruthy()
     })
   })
+
+  // ---- Task 9: drawn-edge selection + deletion -------------------------------
+  //
+  // The pure hit-test math (nearestDrawnEdge) is unit-tested in
+  // edge-geometry.test.ts. Here we drive the COMPONENT wiring headlessly WITHOUT
+  // faking canvas hit-testing: two cards placed FAR apart so the drawn edge's
+  // clipped segment passes through a VISUALLY-EMPTY world point between them, and
+  // a pointerdown there routes to the edge hit-test (hitVisibleAt is null at that
+  // point, so onWorldPointerDown reaches hitEdgeAt → setSelectedEdge). The
+  // pointer-driven creation + the canvas accent-highlight PIXELS are Task-10
+  // smoke-covered (happy-dom has no 2D raster; spec §8 harness tier).
+  //
+  // Geometry: CARD_WIDTH=360, DEFAULT_CARD_HEIGHT=140. Cards 'a' @ (0,0) and 'b'
+  // @ (900,0) → rects {0..360,0..140} & {900..1260,0..140}. The clipped edge
+  // segment runs x∈[360,900] at y=70; its midpoint (630,70) sits BETWEEN the
+  // cards (not inside either rect) → a visually-empty point → the edge hit.
+
+  /** Seed two far-apart placed cards + one edge between them; wait for ready. */
+  async function mountEdgePair(edgeType: string): Promise<HTMLElement> {
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([row('a', 0, 0, 1000), row('b', 900, 0, 2000)])
+    mockApi.notes.get.mockImplementation(async ({ id }: { id: string }) => {
+      if (id === 'a') return note('a', 'a', 'Card A body')
+      if (id === 'b') return note('b', 'b', 'Card B body')
+      return null
+    })
+    mockApi.canvas.edges.mockResolvedValue([
+      { fromNoteId: 'a', toNoteId: 'b', toSlug: 'b', edgeType },
+    ])
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(container.querySelector('[data-canvas-world]')).not.toBeNull()
+    })
+    // Wait until the edge query resolved (so `edges` is non-empty for hitEdgeAt).
+    await waitFor(() => {
+      expect(mockApi.canvas.edges).toHaveBeenCalled()
+    })
+    return container.querySelector('[data-canvas-world]') as HTMLElement
+  }
+
+  it('(mm) clicking a DRAWN edge then ⌫ deletes that edge (deleteEdge with its PK, NOT removeNotes)', async () => {
+    const surface = await mountEdgePair('link')
+    // Click the edge midpoint (630,70): visually-empty → routes to the edge
+    // hit-test → selectedEdge set. No card is selected (clearSelection ran).
+    fireEvent.pointerDown(surface, { button: 0, clientX: 630, clientY: 70 })
+    const viewport = document.querySelector('[data-canvas-viewport]') as HTMLElement
+    keyDown(viewport, { key: 'Backspace', code: 'Backspace' })
+    await waitFor(() => {
+      expect(mockApi.canvas.deleteEdge).toHaveBeenCalled()
+    })
+    // Deleted the exact PK row (the §1 toSlug component), not the note-remove path.
+    expect(mockApi.canvas.deleteEdge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        canvasId: 'root',
+        arrangementId: 'manual',
+        fromNoteId: 'a',
+        toSlug: 'b',
+        edgeType: 'link',
+      }),
+    )
+    expect(mockApi.canvas.removeNotes).not.toHaveBeenCalled()
+  })
+
+  it('(nn) a reference edge at the same point is NOT selectable → ⌫ deletes nothing (drawn-only)', async () => {
+    const surface = await mountEdgePair('reference')
+    fireEvent.pointerDown(surface, { button: 0, clientX: 630, clientY: 70 })
+    const viewport = document.querySelector('[data-canvas-viewport]') as HTMLElement
+    keyDown(viewport, { key: 'Backspace', code: 'Backspace' })
+    // No edge was selected (reference is read-only) and no card was selected, so
+    // neither delete path fires (decision 6 + the empty-selection ⌫ no-op).
+    await waitFor(() => {
+      expect(mockApi.canvas.edges).toHaveBeenCalled()
+    })
+    expect(mockApi.canvas.deleteEdge).not.toHaveBeenCalled()
+    expect(mockApi.canvas.removeNotes).not.toHaveBeenCalled()
+  })
+
+  it('(oo) esc clears a drawn-edge selection (a subsequent ⌫ deletes nothing)', async () => {
+    const surface = await mountEdgePair('link')
+    fireEvent.pointerDown(surface, { button: 0, clientX: 630, clientY: 70 })
+    const viewport = document.querySelector('[data-canvas-viewport]') as HTMLElement
+    // esc on the viewport clears the edge selection (the edge-selection cascade
+    // step, before note-selection clear). Then ⌫ must delete nothing.
+    keyDown(viewport, { key: 'Escape', code: 'Escape' })
+    keyDown(viewport, { key: 'Backspace', code: 'Backspace' })
+    await waitFor(() => {
+      expect(mockApi.canvas.edges).toHaveBeenCalled()
+    })
+    expect(mockApi.canvas.deleteEdge).not.toHaveBeenCalled()
+  })
 })

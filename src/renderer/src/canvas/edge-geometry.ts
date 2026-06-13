@@ -5,6 +5,8 @@
  * which the data layer legitimately emits (Plan-1 final review).
  * @see docs/specs/v0.4-canvas-mvp.md §11
  */
+import type { CanvasEdge } from '../../../shared/canvas'
+import { isDrawnEdge } from './edge-style'
 import type { WorldRect } from './spatial-index'
 
 export interface Segment {
@@ -73,4 +75,40 @@ export function arrowhead(s: Segment, size: number): Arrowhead {
     left: { x: bx - uy * spread, y: by + ux * spread },
     right: { x: bx + uy * spread, y: by - ux * spread },
   }
+}
+
+/**
+ * Nearest DRAWN edge to a world point, within `threshold` world units, else null
+ * (spec §5 selection hit-test). Composes {@link edgeSegment} (clip at card bounds)
+ * + {@link pointToSegmentDistance} over the edge list, skipping:
+ *   - non-drawn edges ({@link isDrawnEdge} false): 'reference'/'comment-on' are
+ *     read-only on the canvas and never selectable (decision 6, drawn-only);
+ *   - edges whose endpoints aren't BOTH placed (`rectByNoteId` miss): a dangling
+ *     edge draws nothing, so it isn't selectable either (spec §11/§1).
+ * Pure (no canvas/DOM) so the hit-test math is unit-testable; the pointer→select
+ * choreography is smoke-tested (#131).
+ * @see docs/specs/v0.4.1-canvas-edges.md §5
+ */
+export function nearestDrawnEdge(
+  point: { x: number; y: number },
+  edges: ReadonlyArray<CanvasEdge>,
+  rectByNoteId: ReadonlyMap<string, WorldRect>,
+  threshold: number,
+): CanvasEdge | null {
+  let best: CanvasEdge | null = null
+  let bestDist = threshold
+  for (const edge of edges) {
+    if (!isDrawnEdge(edge.edgeType)) continue
+    const fromRect = rectByNoteId.get(edge.fromNoteId)
+    const toRect = rectByNoteId.get(edge.toNoteId)
+    if (!fromRect || !toRect) continue
+    const seg = edgeSegment(fromRect, toRect)
+    if (!seg) continue
+    const d = pointToSegmentDistance(point, seg)
+    if (d <= bestDist) {
+      bestDist = d
+      best = edge
+    }
+  }
+  return best
 }

@@ -50,7 +50,7 @@ import {
 } from './camera'
 import { setCanvasDevLod, useCanvasDevLod } from './dev-lod'
 import { EdgeTargetPicker } from './EdgeTargetPicker'
-import { arrowhead, edgeSegment } from './edge-geometry'
+import { arrowhead, edgeSegment, nearestDrawnEdge } from './edge-geometry'
 import { edgeKind, TYPE_PILL_MIN_ZOOM } from './edge-style'
 import {
   type CanvasHarnessBridge,
@@ -447,9 +447,24 @@ export function CanvasStage({
   } | null>(null)
 
   /**
+   * The currently-selected DRAWN edge, identified by its `links` PK
+   * (`from_note_id`, `to_slug`, `edge_type`) — the exact row `canvas:deleteEdge`
+   * targets (spec §5). null = no edge selected. Only drawn edges are selectable
+   * (decision 6); the draw loop below highlights the matching edge (accent, full
+   * alpha, thicker line), and ⌫/⌦ deletes it. Declared above {@link edgesLayer}
+   * because that memo lists it as a dep (TDZ: the memo runs at declaration order).
+   */
+  const [selectedEdge, setSelectedEdge] = useState<{
+    fromNoteId: string
+    toSlug: string
+    edgeType: string
+  } | null>(null)
+
+  /**
    * UnderlayLayer that draws resolved note edges in world coordinates. Rebuilt
-   * on [edges, placedRects] so a new array reference marks the underlay dirty via
-   * the `layers` identity change (spec §3 dirty-flag cadence). Reads the shared
+   * on [edges, placedRects, selectedEdge] so a new array reference marks the
+   * underlay dirty via the `layers` identity change (spec §3 dirty-flag cadence;
+   * the selectedEdge dep repaints the §5 highlight). Reads the shared
    * {@link placedRects} map — the SAME source as culling + the interaction hook.
    */
   const edgesLayer: UnderlayLayer = useMemo(() => {
@@ -508,10 +523,16 @@ export function CanvasStage({
             ctx.globalAlpha = 0.25
             ctx.setLineDash([])
           } else {
-            // drawn edge: distinct + directed. Constant 0.7 alpha here — the
-            // selection highlight (alpha 1 + thicker line) is a Task-9 addition.
+            // drawn edge: distinct + directed. Selected (spec §5) → full alpha +
+            // a thicker line for the accent highlight; otherwise the quiet 0.7.
+            const isSel =
+              selectedEdge !== null &&
+              selectedEdge.fromNoteId === edge.fromNoteId &&
+              selectedEdge.toSlug === edge.toSlug &&
+              selectedEdge.edgeType === edge.edgeType
             ctx.strokeStyle = drawn.accent
-            ctx.globalAlpha = 0.7
+            ctx.globalAlpha = isSel ? 1 : 0.7
+            if (isSel) ctx.lineWidth = 2 / drawCamera.zoom
             ctx.setLineDash([])
           }
 
@@ -551,7 +572,9 @@ export function CanvasStage({
         }
       },
     }
-  }, [edges, placedRects])
+    // selectedEdge in the deps: a selection change must rebuild this layer so the
+    // new array identity marks the underlay dirty → the highlight repaints (#112).
+  }, [edges, placedRects, selectedEdge])
 
   /**
    * Cached `--fg-2` token for the dot fill, resolved once on first dot draw.
@@ -842,6 +865,41 @@ export function CanvasStage({
       void queryClient.invalidateQueries({ queryKey: ['canvas-edges', ROOT_CANVAS_ID] })
     },
   })
+
+  // ---- Edge deletion (spec §5). Mirrors createEdgeMut: a drawn edge is a real
+  // `links` row; delete targets the exact PK and invalidates the SAME query key
+  // the edges read uses so the edge disappears. The server guards reserved types
+  // (Task 2) — the client only ever selects drawn edges (decision 6).
+  const deleteEdgeMut = useMutation({
+    mutationFn: (i: { fromNoteId: string; toSlug: string; edgeType: string }) =>
+      api.canvas.deleteEdge({
+        canvasId: ROOT_CANVAS_ID,
+        arrangementId: MANUAL_ARRANGEMENT_ID,
+        fromNoteId: i.fromNoteId,
+        toSlug: i.toSlug,
+        edgeType: i.edgeType,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['canvas-edges', ROOT_CANVAS_ID] })
+    },
+  })
+
+  /**
+   * Nearest DRAWN edge to a world point, as its `links` PK, or null (spec §5).
+   * The screen-constant 6px threshold is divided by zoom so it stays 6 CSS px
+   * regardless of zoom. Reads the shared {@link placedRects} (the SAME source as
+   * culling + the draw loop) so the hit segment matches what's painted. The pure
+   * hit math lives in {@link nearestDrawnEdge} (unit-tested); this wraps it with
+   * the live threshold + maps the hit to the PK shape {@link selectedEdge} holds.
+   */
+  const hitEdgeAt = useCallback(
+    (w: Point): { fromNoteId: string; toSlug: string; edgeType: string } | null => {
+      const TH = 6 / (cameraRef.current?.zoom || 1)
+      const hit = nearestDrawnEdge(w, edges, placedRects, TH)
+      return hit ? { fromNoteId: hit.fromNoteId, toSlug: hit.toSlug, edgeType: hit.edgeType } : null
+    },
+    [edges, placedRects],
+  )
 
   /**
    * Pending labeled edge awaiting its type from the inline label field (spec §3
@@ -1215,10 +1273,26 @@ export function CanvasStage({
       // (marquee/deselect), not onCardPointerDown — which would reselect the
       // phantom instead of clearing the selection (bug B3 misroute).
       const top = hitVisibleAt(w)
-      if (top !== null) interactions.onCardPointerDown(e, top)
-      else interactions.onSurfacePointerDown(e)
+      if (top !== null) {
+        // A visible card takes precedence over an overlapping edge (spec §5):
+        // any card click clears the edge selection, then begins the card drag.
+        setSelectedEdge(null)
+        interactions.onCardPointerDown(e, top)
+        return
+      }
+      // Visually-empty point: hit-test drawn edges BEFORE the surface (marquee).
+      // Selecting an edge clears any note selection (one selection model at a time).
+      const he = hitEdgeAt(w)
+      if (he) {
+        setSelectedEdge(he)
+        interactions.clearSelection()
+        return
+      }
+      // Truly empty: clear any edge selection and begin the marquee/deselect.
+      setSelectedEdge(null)
+      interactions.onSurfacePointerDown(e)
     },
-    [hitVisibleAt, interactions, placing],
+    [hitVisibleAt, hitEdgeAt, interactions, placing],
   )
 
   // ---- Selection-bar verbs (spec §8). `selectedIds` comes from the hook.
@@ -1313,16 +1387,25 @@ export function CanvasStage({
     },
     [interactions],
   )
-  // ⌫/⌦ → remove the selection from the canvas (the SelectionBar's onRemove).
-  // onRemove no-ops when the selection is empty (spec §15: selection ≠ ∅).
+  // ⌫/⌦ → delete a selected DRAWN edge (spec §5, no confirm) FIRST; else remove
+  // the selected cards from the canvas (the SelectionBar's onRemove). An edge
+  // selection and a note selection are mutually exclusive (onWorldPointerDown
+  // clears one when setting the other), so the edge branch can't shadow a real
+  // note remove. onRemove no-ops when the selection is empty (spec §15).
   useHotkeys(
     'backspace,delete',
     (e) => {
+      if (selectedEdge) {
+        e.preventDefault()
+        deleteEdgeMut.mutate(selectedEdge)
+        setSelectedEdge(null)
+        return
+      }
       if (selectedIds.size === 0) return
       e.preventDefault()
       onRemove()
     },
-    [selectedIds, onRemove],
+    [selectedEdge, deleteEdgeMut, selectedIds, onRemove],
   )
 
   // ---- The esc cascade (spec §15). ONE consumer per press, in order:
@@ -1386,6 +1469,11 @@ export function CanvasStage({
         onPlacingDone?.()
         return consume()
       }
+      // Edge selection clears before note selection (spec §3/§5 cascade order).
+      if (selectedEdge !== null) {
+        setSelectedEdge(null)
+        return consume()
+      }
       if (selectedIds.size > 0) {
         clearSelection()
         return consume()
@@ -1403,6 +1491,7 @@ export function CanvasStage({
     pickerAnchor,
     placing,
     onPlacingDone,
+    selectedEdge,
     selectedIds,
     clearSelection,
   ])
