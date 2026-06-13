@@ -199,6 +199,30 @@ export const api = {
     createNoteAt: (
       i: CanvasKey & { body: string; type?: Note['type']; x: number; y: number },
     ): Promise<Note> => window.api.canvas.createNoteAt(i),
+    /**
+     * Draw a typed edge from one note to another. Resolves toNoteId→slug server-side.
+     * Rejects reserved edge_types and self-edges (spec §2).
+     * @see docs/specs/v0.4.1-canvas-edges.md §2
+     */
+    createEdge: (i: {
+      canvasId: string
+      arrangementId: string
+      fromNoteId: string
+      toNoteId: string
+      edgeType: string
+    }): Promise<void> => window.api.canvas.createEdge(i),
+    /**
+     * Delete the exact drawn-edge PK row. toSlug comes from canvas:edges (Task 1).
+     * Rejects reserved edge_types (read-only on canvas — spec §2 decision 6).
+     * @see docs/specs/v0.4.1-canvas-edges.md §2
+     */
+    deleteEdge: (i: {
+      canvasId: string
+      arrangementId: string
+      fromNoteId: string
+      toSlug: string
+      edgeType: string
+    }): Promise<void> => window.api.canvas.deleteEdge(i),
   },
   /**
    * YouTube IPC facade: screenshot capture and oEmbed metadata fetch.

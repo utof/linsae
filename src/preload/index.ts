@@ -28,7 +28,9 @@ import type {
   AttachmentsListInputSchema,
   AttachToNoteInputSchema,
   BacklinksInputSchema,
+  CanvasCreateEdgeInputSchema,
   CanvasCreateNoteAtInputSchema,
+  CanvasDeleteEdgeInputSchema,
   CanvasEdgesInputSchema,
   CanvasGetStateInputSchema,
   CanvasListLayoutsInputSchema,
@@ -105,6 +107,10 @@ const api = {
       ipcRenderer.invoke('canvas:recentOnCanvas', i),
     createNoteAt: (i: z.input<typeof CanvasCreateNoteAtInputSchema>): Promise<Note> =>
       ipcRenderer.invoke('canvas:createNoteAt', i),
+    createEdge: (i: z.input<typeof CanvasCreateEdgeInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('canvas:createEdge', i),
+    deleteEdge: (i: z.input<typeof CanvasDeleteEdgeInputSchema>): Promise<void> =>
+      ipcRenderer.invoke('canvas:deleteEdge', i),
   },
   youtube: {
     capture: (
