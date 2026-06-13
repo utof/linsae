@@ -863,6 +863,70 @@ describe('CanvasStage', () => {
     )
   })
 
+  it('(u) §13: the spatial-undo stack survives a feed↔canvas remount via the query cache', async () => {
+    // Regression guard for the §13 violation: CanvasStage's undo lived in a bare
+    // useRef(emptyUndo()), so the AnimatePresence mode="wait" view toggle (which
+    // UNMOUNTS the stage) wiped the stack — ⌘Z after a toggle-back did nothing.
+    // useSpatialUndoStore now write-throughs the stack to the query cache (the
+    // camera's survival mechanism), so a remount on the SAME client restores it.
+    //
+    // We can't reliably fire ⌘Z here: react-hotkeys-hook v5's `mod` resolution is
+    // platform-flaky under happy-dom (no prior test drives a global useHotkeys
+    // hotkey — see DevToolsHud.test.tsx, which switched to a defaultOpen
+    // affordance for the same reason). So we assert at the seam the fix introduces:
+    // a real create-on-canvas (whose onSuccess calls recordOp through CanvasStage's
+    // actual wiring) writes the entry to ['canvas-undo','root'], and that entry is
+    // STILL there after the stage unmounts and a fresh instance remounts on the
+    // same client. Pre-fix there was no cache write at all → key undefined.
+    // The end-to-end "⌘Z applies the survived entry" is covered by the
+    // useSpatialUndoStore unit test (ref restore) + applyEntry tests (s/t).
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([])
+    mockApi.canvas.createNoteAt.mockResolvedValue(note('made', 'made', 'Made on canvas'))
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    const first = render(
+      <QueryClientProvider client={qc}>
+        <CanvasStage {...noopProps} />
+      </QueryClientProvider>,
+    )
+    await waitFor(() => {
+      expect(first.container.querySelector('[data-canvas-world]')).not.toBeNull()
+    })
+    // Create a note on the canvas → records a `place` undo entry (from 'absent').
+    fireEvent.dblClick(first.container.querySelector('[data-canvas-world]') as HTMLElement)
+    const ta = await screen.findByLabelText('write a note')
+    fireEvent.change(ta, { target: { value: 'Made on canvas' } })
+    fireEvent.keyDown(ta, { key: 'Enter' })
+    await waitFor(() => {
+      expect(mockApi.canvas.createNoteAt).toHaveBeenCalled()
+    })
+    // The entry was written through to the survival cache.
+    await waitFor(() => {
+      const cached = qc.getQueryData(['canvas-undo', 'root']) as { undo: { past: unknown[] } }
+      expect(cached?.undo.past).toHaveLength(1)
+    })
+
+    // Toggle to feed → toggle back: unmount the stage, remount a FRESH instance on
+    // the same client (exactly what App.tsx's AnimatePresence does). The entry must
+    // STILL be present in the cache (the flush on unmount + boot read on remount).
+    first.unmount()
+    const second = render(
+      <QueryClientProvider client={qc}>
+        <CanvasStage {...noopProps} />
+      </QueryClientProvider>,
+    )
+    await waitFor(() => {
+      expect(second.container.querySelector('[data-canvas-viewport]')).not.toBeNull()
+    })
+    const survived = qc.getQueryData(['canvas-undo', 'root']) as {
+      undo: { past: { op: string; items: { noteId: string }[] }[] }
+    }
+    expect(survived.undo.past).toHaveLength(1)
+    expect(survived.undo.past[0]?.op).toBe('place')
+    expect(survived.undo.past[0]?.items[0]?.noteId).toBe('made')
+  })
+
   it('(t) applyEntry: place-from-shelf undo reshelves via unplaceNotes', async () => {
     // A `place` op whose `from` is 'shelf' (the picker placed a shelved note):
     // undo must reshelf it (unplaceNotes), redo must re-place it (placeNote).

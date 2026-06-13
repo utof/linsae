@@ -56,9 +56,10 @@ import { centroid } from './selection-geometry'
 import type { WorldRect } from './spatial-index'
 import { CardSpatialIndex } from './spatial-index'
 import type { Pos, UndoEntry } from './undo-stack'
-import { emptyUndo, pushOp, redo as redoStack, undo as undoStack } from './undo-stack'
+import { pushOp, redo as redoStack, undo as undoStack } from './undo-stack'
 import { useCanvasCamera } from './useCanvasCamera'
 import { useCanvasInteractions } from './useCanvasInteractions'
+import { useSpatialUndoStore } from './useSpatialUndoStore'
 import { ZeroState } from './ZeroState'
 
 interface Props {
@@ -552,13 +553,16 @@ export function CanvasStage({
     onError: (err) => setEditError(err instanceof Error ? err.message : String(err)),
   })
 
-  // ---- Spatial-undo stack (spec §13). A render-stable ref: the stack is
-  // per-window in-memory and dies on close. The reducer (undo-stack.ts) is pure;
-  // `applyEntry` (exported above) maps an entry's items to canvas IPC. The
+  // ---- Spatial-undo stack (spec §13). The stack is per-WINDOW in-memory and
+  // dies on close — but a feed↔canvas toggle unmounts/remounts this stage
+  // (App.tsx AnimatePresence mode="wait"), which is NOT a close. useSpatialUndoStore
+  // makes the stack + timestamp side-map survive a same-session remount via a
+  // query-cache write-through (the camera's mechanism, minus disk). Callers mutate
+  // the refs in place then call `persistUndo()`. The reducer (undo-stack.ts) is
+  // pure; `applyEntry` (exported above) maps an entry's items to canvas IPC. The
   // timestamp side-map captures removed rows' created_at/placed_at so a
   // restoreLayouts undo reconstructs them with the ORIGINAL timestamps (§13).
-  const undoRef = useRef(emptyUndo())
-  const timestampsRef = useRef<LayoutTimestamps>(new Map())
+  const { undoRef, timestampsRef, persist: persistUndo } = useSpatialUndoStore(ROOT_CANVAS_ID)
 
   /** Invalidate the canvas queries after any layout write so the surface refreshes. */
   const refreshCanvas = useCallback(() => {
@@ -566,26 +570,35 @@ export function CanvasStage({
     void queryClient.invalidateQueries({ queryKey: ['canvas-edges'] })
   }, [queryClient])
 
-  /** Record a committed op on the undo stack (coalescing handled by pushOp). */
-  const recordOp = useCallback((entry: UndoEntry) => {
-    undoRef.current = pushOp(undoRef.current, entry)
-  }, [])
+  /**
+   * Record a committed op on the undo stack (coalescing handled by pushOp), then
+   * persist so the entry survives a feed↔canvas remount (§13 / useSpatialUndoStore).
+   */
+  const recordOp = useCallback(
+    (entry: UndoEntry) => {
+      undoRef.current = pushOp(undoRef.current, entry)
+      persistUndo()
+    },
+    [undoRef, persistUndo],
+  )
 
   const undo = useCallback(async () => {
     const { state, entry } = undoStack(undoRef.current)
     undoRef.current = state
+    persistUndo()
     if (!entry) return
     await applyEntry(entry, 'undo', { canvas: api.canvas, timestamps: timestampsRef.current })
     refreshCanvas()
-  }, [refreshCanvas])
+  }, [refreshCanvas, undoRef, timestampsRef, persistUndo])
 
   const redo = useCallback(async () => {
     const { state, entry } = redoStack(undoRef.current)
     undoRef.current = state
+    persistUndo()
     if (!entry) return
     await applyEntry(entry, 'redo', { canvas: api.canvas, timestamps: timestampsRef.current })
     refreshCanvas()
-  }, [refreshCanvas])
+  }, [refreshCanvas, undoRef, timestampsRef, persistUndo])
 
   // Spatial undo/redo (spec §13/§15). Bound HERE because the stack ref is private
   // to CanvasStage — App can't reach it. CanvasStage only mounts on the canvas
@@ -849,6 +862,7 @@ export function CanvasStage({
   const marquee = interactions.marquee
 
   /** Remove the selected layout rows (notes stay in the feed). Undoable (§13). */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: timestampsRef is a stable ref from useSpatialUndoStore (its .set is not a reactive dep)
   const onRemove = useCallback(() => {
     const ids = [...selectedIds]
     if (ids.length === 0) return
@@ -863,6 +877,8 @@ export function CanvasStage({
     if (items.length === 0) return
     const key = { canvasId: ROOT_CANVAS_ID, arrangementId: MANUAL_ARRANGEMENT_ID }
     void api.canvas.removeNotes({ ...key, noteIds: items.map((i) => i.noteId) })
+    // recordOp persists the stack AND the just-set timestamps together (it reads
+    // timestampsRef.current live), so an undo restores rows with original stamps.
     recordOp({ op: 'remove', items })
     clearSelection()
     refreshCanvas()
