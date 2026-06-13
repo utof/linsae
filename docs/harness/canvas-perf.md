@@ -85,10 +85,10 @@ of the production build.
 pnpm harness:canvas
 ```
 
-**Run the smoke flow (pointer interactions — drag/marquee/placement/#119/#121/#111):**
+**Run the smoke flow (pointer interactions — see the Smoke section below):**
 
 ```bash
-pnpm harness:canvas -- --smoke
+pnpm harness:canvas:smoke
 ```
 
 ---
@@ -169,13 +169,16 @@ The five gate checks (concrete):
 
 ---
 
-## Smoke flow (`--smoke`)
+## Smoke flow (`pnpm harness:canvas:smoke`)
 
-`pnpm harness:canvas -- --smoke` runs a **separate code path** — it does NOT
-run the perf gates. It reuses the same setup (launch + GPU/vsync guard + IPC
-seed + reload + switch to canvas + board-non-empty guard) then drives real
-Playwright pointer events to verify the Plan-3 interactions that happy-dom
-cannot test:
+```bash
+pnpm harness:canvas:smoke
+```
+
+This runs a **separate code path** — it does NOT run the perf gates. It reuses
+the same setup (launch + GPU/vsync guard + IPC seed + reload + switch to canvas
++ board-non-empty guard) then drives real Playwright pointer events to verify
+the pointer/layout interactions that happy-dom cannot test:
 
 | Assertion | Issue |
 |---|---|
@@ -183,24 +186,50 @@ cannot test:
 | no drag-commit flash: card never snaps back to origin post-up | #119 |
 | marquee appeared mid-drag (`[data-canvas-marquee]`) | §8 |
 | marquee selected ≥2 cards (selection ring on ≥2 shells) | §8 |
+| click selected exactly one card (1 selection ring) | B3 |
+| click on empty surface deselected (0 selection rings) | B3 |
 | dblclick-over-card opened in-place editor (`[data-canvas-card-editor]`) | #121 |
 | dblclick-over-card did NOT create a card (count unchanged) | #121 |
 | placement via double-click-create added a card (count +1) | §7 |
 | canvas remounted after feed↔canvas toggle (world present) | #111 |
 | dragged card still present after toggle (no abandonment) | #111 |
 | no orphaned ghost after toggle (`[data-canvas-ghost]` count 0) | #111 |
+| centroid pill ABSENT when centered on the board | B4 |
+| centroid pill APPEARS when panned to empty space (`[data-canvas-centroid-arrow]`) | B4 |
+| centroid arrow points toward the note centroid (`→` when panned left) | B4 |
+
+**B3** (click-deselect) and **B4** (the §14 G2 "back to your notes" centroid
+pill) escaped happy-dom this cycle — both are pointer/layout-only and share the
+phantom-occupancy / inflated-cull-set lineage of B1, so only the manual smoke
+can catch a regression. B3 guards the `hitVisibleAt` fix; B4 guards the
+`trueVisibleIds` gate on the pill.
 
 Output per assertion: `OK  <label>` or `FAIL <label>`. Final line:
 
 ```
-SMOKE VERDICT: PASS — all 10 assertions OK (#119 #121 #111 covered)
+SMOKE VERDICT: PASS — all 15 assertions OK (#119 #121 #111 B3-deselect B4-centroid covered)
 ```
 
 or
 
 ```
-SMOKE VERDICT: FAIL — N/10 assertions failed: <labels>
+SMOKE VERDICT: FAIL — N/15 assertions failed: <labels>
 ```
+
+**Prereq (same as the perf gate):** a real display session and a built app —
+
+```bash
+pnpm rebuild:electron && pnpm exec electron-vite build
+```
+
+It needs hardware GL + a 60 Hz awake display for the same reasons as the perf
+gate (it shares the GPU/vsync guard); never run it under xvfb or SSH.
+
+**When to run it (ritual):** before merging any canvas work, and after touching
+pointer, layout, selection, or centroid code (`useCanvasInteractions.ts`,
+`CanvasStage.tsx` hit-testing / culling / `CentroidArrow`, `NoteCard.tsx`
+selection ring). It is operator-run on real hardware — it is **not** a lefthook
+or CI gate (ABI + display, same as the perf gate).
 
 ---
 

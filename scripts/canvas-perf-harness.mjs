@@ -221,6 +221,12 @@ function medianByMeanFps(runs) {
 //   #111 — keep-alive abandonment under the §6 Motion slide: toggling feed↔canvas
 //          mid-interaction must leave a clean canvas (world present, dragged card
 //          present, no orphaned [data-canvas-ghost]) after the canvas remounts.
+//   B3   — a plain click (down→up, no move) on a TRULY-empty surface point
+//          DESELECTS the selected card (guards the phantom-occupancy `hitVisibleAt`
+//          fix: a click on a culled/keep-alive rect must not reselect a ghost).
+//   B4   — the §14 G2 "back to your notes" centroid pill ([data-canvas-centroid-arrow])
+//          APPEARS when panned into empty world space (zero cards truly visible) and
+//          is ABSENT when centered on the board; its arrow glyph points at the centroid.
 // @see scripts/canvas-perf-harness.mjs (shared setup) · @see send-harness.mjs (trajectory print)
 
 // Read the on-screen rect of a card by its data-note-id (viewport-relative client
@@ -468,6 +474,54 @@ async function runSmoke(win) {
     await win.waitForTimeout(150)
   }
 
+  // ── B3: a plain click on a TRULY-empty point deselects (guards the phantom- ────
+  // occupancy fix `hitVisibleAt`, CanvasStage.tsx:566-574/979-997). The escaped
+  // happy-dom bug: the rbush index counted culled + keep-alive (display:none) rows
+  // as occupied, so onWorldPointerDown routed an empty-point pointerdown to
+  // onCardPointerDown (reselect) instead of onSurfacePointerDown (marquee). A bare
+  // marquee with NO movement + NO modifier clears the selection
+  // (useCanvasInteractions.ts:269 `if (!mq.moved && !mq.additive) setSelectedIds(new Set())`).
+  // State-bleed order: capture the empty point FIRST — findEmptyPoint ends by
+  // pressing Escape (clears any selection), so we select AFTER it returns.
+  const deselectPt = await findEmptyPoint(win, vp)
+  if (!deselectPt) {
+    assert('B3: an empty point to test click-deselect', false)
+  } else {
+    // Select a card with a single primary click (down→up, no move = a 0,0 drag,
+    // no commit). pickCardNear targets a center; the product selects the topmost
+    // under the press — read it back via the §8 selection ring (selectedCardId).
+    const selCard = await pickCardNear(win, probe.x, probe.y)
+    if (!selCard) {
+      assert('B3: a fully-visible card to select', false)
+    } else {
+      const sc = { x: selCard.x + selCard.w / 2, y: selCard.y + selCard.h / 2 }
+      await win.mouse.move(sc.x, sc.y)
+      await win.mouse.down()
+      await win.mouse.up()
+      await win.waitForTimeout(120)
+      const ringedId = await selectedCardId(win)
+      assert('B3 click selected exactly one card (1 selection ring §8)', ringedId !== null)
+      // The deselect: a PLAIN click (down→up, SAME coords, no movement) on the
+      // empty point. No move → marquee `moved` stays false → pointerup clears.
+      await win.mouse.move(deselectPt.x, deselectPt.y)
+      await win.mouse.down()
+      await win.mouse.up()
+      await win.waitForTimeout(120)
+      const stillRinged = await win.evaluate(() => {
+        let n = 0
+        for (const el of document.querySelectorAll('[data-note-id]')) {
+          const bs = getComputedStyle(el).boxShadow
+          if (bs && bs !== 'none') n++
+        }
+        return n
+      })
+      console.log(`selection rings after empty-click: ${stillRinged} (expect 0)`)
+      assert('B3 click on empty surface deselected (0 selection rings)', stillRinged === 0)
+    }
+    await win.keyboard.press('Escape') // belt-and-suspenders before the next block
+    await win.waitForTimeout(120)
+  }
+
   // ── #121: double-click OVER a card edits, does NOT create ─────────────────────
   const beforeEdit = await win.locator('[data-note-id]').count()
   const editCard = await pickCardNear(win, probe.x, probe.y)
@@ -553,11 +607,95 @@ async function runSmoke(win) {
   assert('#111 dragged card still present after toggle (no abandonment)', cardBack)
   assert('#111 no orphaned ghost after toggle ([data-canvas-ghost] count 0)', noGhost)
 
+  // ── B4: the "back to your notes" centroid pill (§14 G2) ───────────────────────
+  // Escaped happy-dom: the pill (CentroidArrow, CanvasStage.tsx:1583-1664) was
+  // gated on the INFLATED cull set, so a card was always "visible" and the pill
+  // NEVER appeared. The fix gates it on `trueVisibleIds` (uninflated viewport,
+  // CanvasStage.tsx:1493) → it renders iff cards exist AND zero are truly visible
+  // (CanvasStage.tsx:1605 `if (placedLayouts.length === 0 || visibleIds.size > 0) return null`).
+  // We drive it via the bridge (setCamera is the UNCLAMPED Dispatch). LAST in the
+  // smoke because it pans the camera off the board — no position-sensitive
+  // assertion follows. Selector: data-canvas-centroid-arrow (CanvasStage.tsx:1641).
+  // The arrow glyph (one of → ↘ ↓ ↙ ← ↖ ↑ ↗) is the product's direction signal:
+  // angle = atan2(centroid − viewportCenter) in WORLD coords (CanvasStage.tsx:1611-1627),
+  // rendered as TEXT in the button (CanvasStage.tsx:1660) — no data-angle attr.
+  const harnessLive = await win.evaluate(() => Boolean(window.__canvasHarness))
+  if (!harnessLive) {
+    assert('B4: harness bridge present to drive the camera', false)
+  } else {
+    // (a) ABSENT when centered on the board — the core B4 regression was that the
+    // pill never appeared; the inverse anchor proves the gate is two-sided. The
+    // seeded board spans ~5000×3300 with a uniform scatter, so its centroid ≈ the
+    // world center; centering there keeps cards truly visible → pill hidden.
+    await win.evaluate(
+      ([world]) => {
+        const w = window.innerWidth
+        const h = window.innerHeight
+        // Top-left-anchored camera (camera.ts): center the world center in view.
+        window.__canvasHarness?.setCamera({
+          x: world.w / 2 - w / 2,
+          y: world.h / 2 - h / 2,
+          zoom: 1,
+        })
+      },
+      [WORLD],
+    )
+    await win.waitForTimeout(300)
+    const pillCentered = await win.locator('[data-canvas-centroid-arrow]').count()
+    assert('B4 centroid pill ABSENT when centered on the board', pillCentered === 0)
+
+    // (b) PRESENT when panned FAR into empty world space (x = -8000, well left of
+    // the [0,5000] board → zero cards truly visible). The pill must appear (the
+    // regression: it never did). Keeping y near the board centroid makes the
+    // viewport→centroid vector point almost due RIGHT, so the glyph must be `→`.
+    await win.evaluate(
+      ([world]) => {
+        const h = window.innerHeight
+        // y so the viewport center ≈ board centroid_y (world.h/2) → near-horizontal
+        // vector; x far left so dx ≫ |dy| → unambiguous → octant.
+        window.__canvasHarness?.setCamera({ x: -8000, y: world.h / 2 - h / 2, zoom: 1 })
+      },
+      [WORLD],
+    )
+    await win.waitForTimeout(300)
+    const pillBtn = win.locator('[data-canvas-centroid-arrow]')
+    const pillPanned = await pillBtn.count()
+    assert(
+      'B4 centroid pill APPEARS when panned to empty space (trueVisibleIds gate)',
+      pillPanned > 0,
+    )
+    if (pillPanned > 0) {
+      // Direction: read the rendered glyph (the product's only direction signal).
+      // Panned far LEFT of the board, the centroid is to the RIGHT → expect `→`.
+      // The dx (~+10000) so dominates |dy| (≲ centroid_y span) that only the `→`
+      // octant ([-22.5°,22.5°)) is reachable — a stable, non-brittle check.
+      const glyph = await pillBtn.evaluate((el) => (el.textContent || '').trim().charAt(0))
+      console.log(`centroid pill glyph (panned far-left): "${glyph}" (expect →)`)
+      assert(
+        'B4 centroid arrow points toward the note centroid (→ when panned left)',
+        glyph === '→',
+      )
+    }
+    // Restore a board-centered view so the run ends on a sane camera.
+    await win.evaluate(
+      ([world]) => {
+        const w = window.innerWidth
+        const h = window.innerHeight
+        window.__canvasHarness?.setCamera({
+          x: world.w / 2 - w / 2,
+          y: world.h / 2 - h / 2,
+          zoom: 1,
+        })
+      },
+      [WORLD],
+    )
+  }
+
   const failures = out.filter(([, ok]) => !ok)
   console.log('')
   console.log(
     failures.length === 0
-      ? `SMOKE VERDICT: PASS — all ${out.length} assertions OK (#119 #121 #111 covered)`
+      ? `SMOKE VERDICT: PASS — all ${out.length} assertions OK (#119 #121 #111 B3-deselect B4-centroid covered)`
       : `SMOKE VERDICT: FAIL — ${failures.length}/${out.length} assertions failed: ` +
           failures.map(([l]) => l).join(' · '),
   )
