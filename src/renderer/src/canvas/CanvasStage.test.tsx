@@ -9,6 +9,7 @@
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
@@ -230,6 +231,167 @@ describe('CanvasStage', () => {
 
     // The shelved note has no world position → no NoteCard must be rendered
     expect(screen.queryByText('Shelved card body text')).toBeNull()
+  })
+
+  /**
+   * Build a placed layout row. happy-dom never fires ResizeObserver and
+   * getBoundingClientRect returns zeros, so the cull search rect degenerates to
+   * the single point at the camera origin (0,0). A card whose rect contains
+   * (0,0) is visible; one placed far away is culled. We flip visibility by
+   * rewriting the layout query data (not by moving the camera), keeping the
+   * notes placed throughout.
+   */
+  function row(noteId: string, x: number, y: number, placedAt: number) {
+    return {
+      canvas_id: 'root',
+      arrangement_id: 'manual',
+      note_id: noteId,
+      x,
+      y,
+      placed_at: placedAt,
+      created_at: placedAt,
+      updated_at: placedAt,
+    }
+  }
+
+  function note(id: string, slug: string, body: string): Note {
+    return {
+      id,
+      slug,
+      body,
+      type: 'claim',
+      created_at: 1000,
+      updated_at: 1000,
+      deleted_at: null,
+    }
+  }
+
+  it('keep-alive: a card that exits the viewport stays mounted (display:none), same DOM node', async () => {
+    // Camera at origin; card A starts at (0,0) → visible, card B far → culled.
+    // Rewriting the layout data so A moves far and B moves to the origin makes A
+    // EXIT the visible set. Keep-alive must keep A's SAME DOM element mounted and
+    // hidden on the very render it exits (not unmount-then-remount).
+    //
+    // Fails on pre-fix 6f91255: exit-tracking lived in a post-render bare effect,
+    // so on the render A exits, keepAliveIds was still computed from the EMPTY
+    // queue → A was filtered out of cardsToRender and removed from the DOM (no
+    // re-render brings it back). The post-fix in-render exit tracking keeps it.
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([
+      row('a-note', 0, 0, 1000),
+      row('b-note', 5000, 5000, 2000),
+    ])
+    mockApi.notes.get.mockImplementation(async ({ id }: { id: string }) => {
+      if (id === 'a-note') return note('a-note', 'a', 'Alpha card body')
+      if (id === 'b-note') return note('b-note', 'b', 'Bravo card body')
+      return null
+    })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <CanvasStage {...noopProps} />
+      </QueryClientProvider>,
+    )
+
+    // A visible initially; grab its card shell (walk up from the body text).
+    let alphaText!: HTMLElement
+    await waitFor(() => {
+      alphaText = screen.getByText('Alpha card body')
+    })
+    const alphaShell = alphaText.closest('[style]')?.parentElement as HTMLElement
+    expect(alphaShell).toBeTruthy()
+
+    // Flip: A → far (exits), B → origin (enters). Note stays placed (just moved).
+    qc.setQueryData(
+      ['canvas-layouts', 'root'],
+      [row('a-note', 5000, 5000, 1000), row('b-note', 0, 0, 2000)],
+    )
+
+    // B enters and renders.
+    await waitFor(() => {
+      expect(screen.queryByText('Bravo card body')).toBeTruthy()
+    })
+
+    // A's text is STILL in the document (kept alive), and its card shell is the
+    // SAME element object as before, now display:none.
+    const alphaAfter = screen.queryByText('Alpha card body')
+    expect(alphaAfter).toBeTruthy()
+    const alphaShellAfter = alphaAfter?.closest('[style]')?.parentElement as HTMLElement
+    expect(alphaShellAfter).toBe(alphaShell) // same DOM node — not unmount/remount
+    expect(alphaShellAfter.style.display).toBe('none')
+
+    // Re-enter A → visible again, never removed.
+    qc.setQueryData(
+      ['canvas-layouts', 'root'],
+      [row('a-note', 0, 0, 1000), row('b-note', 5000, 5000, 2000)],
+    )
+    await waitFor(() => {
+      const a = screen.getByText('Alpha card body')
+      const shell = a.closest('[style]')?.parentElement as HTMLElement
+      expect(shell.style.display).not.toBe('none')
+    })
+  })
+
+  it('keep-alive under StrictMode: single dup-free DOM node across many exits/re-entries', async () => {
+    // Wraps the stage in <StrictMode> (prod wraps the app in StrictMode too —
+    // main.tsx) so the render + keep-alive useMemo body double-invoke. The
+    // keep-alive memo mutates refs during render; if it were not idempotent under
+    // double-invocation, the queue would desync (duplicate or drop the card),
+    // surfacing as zero or >1 DOM nodes for the note. We assert exactly one node
+    // at every settle point across repeated exit/re-enter cycles.
+    //
+    // Note (honest): this passes trivially on pre-fix 6f91255 because there the
+    // cull index never recomputes on a layout-data change, so the visibility flip
+    // doesn't even take effect. Its value is post-fix: a permanent guard that the
+    // in-render exit-tracking stays double-invocation-safe.
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    const placedFar = [row('k-note', 5000, 5000, 1000)]
+    const placedOrigin = [row('k-note', 0, 0, 1000)]
+    mockApi.canvas.listLayouts.mockResolvedValue(placedOrigin)
+    mockApi.notes.get.mockImplementation(async ({ id }: { id: string }) => {
+      if (id === 'k-note') return note('k-note', 'k', 'Kilo card body')
+      return null
+    })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <StrictMode>
+        <QueryClientProvider client={qc}>
+          <CanvasStage {...noopProps} />
+        </QueryClientProvider>
+      </StrictMode>,
+    )
+    await waitFor(() => {
+      expect(screen.queryByText('Kilo card body')).toBeTruthy()
+    })
+
+    for (let i = 0; i < 5; i++) {
+      qc.setQueryData(['canvas-layouts', 'root'], placedFar)
+      await waitFor(() => {
+        expect(screen.getAllByText('Kilo card body').length).toBe(1) // kept alive, single node
+      })
+      qc.setQueryData(['canvas-layouts', 'root'], placedOrigin)
+      await waitFor(() => {
+        expect(screen.getAllByText('Kilo card body').length).toBe(1) // visible, single node
+      })
+    }
+  })
+
+  it('index built from real x/y: a card at the origin renders on first paint (no measure-time teleport)', async () => {
+    // Regression guard for Bug 1 (measure-time origin teleport). The bug needed a
+    // real ResizeObserver firing handleMeasured with setCard(0,0); happy-dom never
+    // fires RO, so this cannot reproduce the teleport directly. It pins the final
+    // design's structural invariant instead: the cull index is built from each
+    // row's real x/y, so a card placed AT the origin is visible on first paint
+    // (its rect contains the degenerate (0,0) search point). This passes on both
+    // pre- and post-fix code (documented: not a pre-fix-failing test) — it locks
+    // the invariant the restructure makes true by construction.
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([row('here', 0, 0, 1000)])
+    mockApi.notes.get.mockResolvedValue(note('here', 'here', 'Here card body'))
+    renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(screen.queryByText('Here card body')).toBeTruthy()
+    })
   })
 
   it('remount within the same QueryClient reflects the flushed camera, not boot', async () => {

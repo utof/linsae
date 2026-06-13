@@ -4,14 +4,20 @@
  * absolutely-positioned NoteCard elements (Task 6).
  *
  * Culling: only cards that intersect the inflated viewport rect (one viewport-
- * size margin on each side, spec §3) are rendered; the spatial index is rebuilt
- * on every layout-data change and updated incrementally on each card's measured
- * height change. Visible ids are memoised on [camera, layouts, cullEpoch].
+ * size margin on each side, spec §3) are rendered. The rbush spatial index is
+ * built DURING render in a `useMemo` from the placed layouts' real x/y and the
+ * measured-height cache, so `visibleIds` reads a fresh index in the same render
+ * (no post-render rebuild effect → no render→effect→setState cull loop). The
+ * index memo re-runs on `[placedLayouts, cullEpoch]`; `handleMeasured` bumps
+ * `cullEpoch` only when a card's height genuinely changes.
  *
  * Keep-alive: the 32 most recently exited cards stay mounted with
  * `display: none` so their Markdown parse trees survive a brief pan-out and
  * pan-back. react-markdown re-parses on every mount; element caches cannot
- * survive unmount — keep-alive is the lever.
+ * survive unmount — keep-alive is the lever. Exit-tracking runs DURING render
+ * (reading the previous render's visible set from a ref) so a card stays mounted
+ * on the very render it exits; the computation is idempotent under StrictMode
+ * double-invocation (running the memo body twice yields the same queue).
  *
  * Why a separate transformed container (vs transforming the viewport): the
  * viewport stays a fixed, clip-bounding box (`overflow: hidden`) while the world
@@ -51,6 +57,17 @@ const KEEP_ALIVE_SIZE = 32
  */
 const DEFAULT_CARD_HEIGHT = 140
 
+/** Fixed card width in world px at 1:1 (spec §3). */
+const CARD_WIDTH = 360
+
+/**
+ * Stable empty array for the layouts query default. A fresh `[]` literal each
+ * render (the `= []` default while `data` is undefined) would give `useMemo`'s
+ * `[layouts]` dep a new reference every render, defeating memoisation during the
+ * query's loading phase. Why a module constant: identity is stable across renders.
+ */
+const EMPTY: never[] = []
+
 /**
  * Renders the canvas viewport for the root canvas. The viewport div always
  * mounts (gestures bind immediately, layout is stable), but the world
@@ -59,6 +76,8 @@ const DEFAULT_CARD_HEIGHT = 140
  *
  * Cards are sorted by `placed_at` ascending (DOM order = stacking; no z-index
  * per card) so later-placed cards appear on top.
+ *
+ * @see docs/specs/v0.4-canvas-mvp.md §3
  */
 export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.Element {
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -83,113 +102,97 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
   }, [])
 
   // ---- Layout data: placed cards for the root canvas / manual arrangement
-  const { data: layouts = [] } = useQuery({
+  const { data: layouts = EMPTY } = useQuery({
     queryKey: ['canvas-layouts', ROOT_CANVAS_ID],
     queryFn: () =>
       api.canvas.listLayouts({ canvasId: ROOT_CANVAS_ID, arrangementId: MANUAL_ARRANGEMENT_ID }),
   })
 
-  // ---- Spatial index + height cache
-  const indexRef = useRef(new CardSpatialIndex())
-  const heightCacheRef = useRef(new Map<string, number>())
-
-  // Rebuild the spatial index whenever layout data changes
+  // Placed-only rows (a NULL x/y row is on the shelf — spec §1, never a card).
   const placedLayouts = useMemo(
     () => layouts.filter((r) => r.x !== null && r.y !== null),
     [layouts],
   )
-  useEffect(() => {
-    indexRef.current.rebuild(
+
+  // ---- Measured-height cache, keyed by note id; mutated by handleMeasured.
+  const heightCacheRef = useRef(new Map<string, number>())
+
+  // Bumped by handleMeasured when a card's measured height genuinely changes, so
+  // the index memo (which reads the height cache, invisible to biome) re-runs.
+  const [cullEpoch, setCullEpoch] = useState(0)
+
+  /**
+   * Spatial index built DURING render from the placed layouts' real x/y and the
+   * measured-height cache. Building it in render (not a post-render effect) means
+   * `visibleIds` reads a fresh index in the SAME render — no staleness, and no
+   * render→effect→setState cull loop. Bug 1 (measure-time origin teleport) is
+   * unrepresentable here: the index is always seeded from each row's real x/y.
+   * Why `cullEpoch` is a dep: the height cache is a ref (biome can't see it), so
+   * `cullEpoch` gates rebuilds when a measured height changes.
+   */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cullEpoch gates height-cache reads (heightCacheRef is a stable ref)
+  const index = useMemo(() => {
+    const idx = new CardSpatialIndex()
+    idx.rebuild(
       placedLayouts.map((r) => ({
         id: r.note_id,
         rect: {
           x: r.x as number,
           y: r.y as number,
-          w: 360,
+          w: CARD_WIDTH,
           h: heightCacheRef.current.get(r.note_id) ?? DEFAULT_CARD_HEIGHT,
         },
       })),
     )
-  }, [placedLayouts])
+    return idx
+  }, [placedLayouts, cullEpoch])
 
-  // Bump this epoch whenever a card's measured height changes so the visible
-  // set recomputes (memo dep below).
-  const [cullEpoch, setCullEpoch] = useState(0)
-
+  /**
+   * Record a card's measured shell height and trigger one index rebuild iff the
+   * height actually changed. The `prev === h` guard is load-bearing: it stops a
+   * measure→rebuild→remeasure loop (a re-render with unchanged content fires no
+   * new ResizeObserver, and a no-op measure short-circuits here). No `setCard` —
+   * the next render's index memo picks the new height up from the cache.
+   */
   const handleMeasured = useCallback((noteId: string, h: number) => {
-    const prev = heightCacheRef.current.get(noteId)
-    if (prev === h) return
+    if (heightCacheRef.current.get(noteId) === h) return
     heightCacheRef.current.set(noteId, h)
-    indexRef.current.setCard(noteId, {
-      x: 0, // overwritten by rebuild; setCard merges with existing position
-      y: 0,
-      w: 360,
-      h,
-    })
-    // Re-read position from placed layouts to update correctly
     setCullEpoch((e) => e + 1)
   }, [])
 
-  // Re-update card in index with correct position when height changes.
-  // cullEpoch is an intentional extra dep: it gates re-runs when the index is
-  // mutated via handleMeasured (indexRef.current is a stable ref, invisible to biome).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: cullEpoch intentionally triggers rerun when spatial index is mutated via handleMeasured
-  useEffect(() => {
-    for (const r of placedLayouts) {
-      const h = heightCacheRef.current.get(r.note_id)
-      if (h !== undefined) {
-        indexRef.current.setCard(r.note_id, {
-          x: r.x as number,
-          y: r.y as number,
-          w: 360,
-          h,
-        })
-      }
-    }
-  }, [cullEpoch, placedLayouts])
-
-  // ---- Visible ids: spatial search memoised on camera + layouts + cullEpoch.
-  // placedLayouts and cullEpoch are intentional extra deps: they gate re-runs when
-  // the spatial index is rebuilt/mutated (indexRef.current is a stable ref, invisible to biome).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: placedLayouts + cullEpoch intentionally gate spatial index re-reads
+  // ---- Visible ids: cards intersecting the inflated viewport rect. Reads the
+  // freshly-built in-render index, so it reflects this render's layout + heights.
   const visibleIds = useMemo(() => {
     const { w, h } = viewportSize
-    const rect = visibleWorldRect(camera, w, h, 1)
-    return new Set(indexRef.current.search(rect))
-  }, [camera, placedLayouts, cullEpoch, viewportSize])
+    return new Set(index.search(visibleWorldRect(camera, w, h, 1)))
+  }, [index, camera, viewportSize])
 
-  // ---- Keep-alive: LRU queue of up to KEEP_ALIVE_SIZE recently exited cards
+  // ---- Keep-alive: LRU queue of up to KEEP_ALIVE_SIZE recently-exited cards.
+  //
+  // Exit-tracking runs DURING render so a card stays mounted on the render it
+  // exits (a post-render effect would unmount it for one render first). The
+  // computation is pure and idempotent under StrictMode double-invocation:
+  // pass 2 reads `prevVisibleRef` already set to `visibleIds` by pass 1, finds
+  // no exits, and re-filtering the already-filtered queue is a fixed point — so
+  // both passes commit the same queue and return the same Set.
   const keepAliveQueueRef = useRef<string[]>([])
+  const prevVisibleRef = useRef(new Set<string>())
   const keepAliveIds = useMemo(() => {
-    // Add cards that just exited the visible set to the front of the queue
-    const queue = keepAliveQueueRef.current
-    const allPlacedIds = placedLayouts.map((r) => r.note_id)
-
-    // Remove cards from queue that are now visible or no longer placed
-    const filtered = queue.filter((id) => !visibleIds.has(id) && allPlacedIds.includes(id))
-
-    // For every placed card not visible and not already in queue, prepend it
-    // (we don't know which just "exited" vs never was visible — we keep recently
-    // rendered ones; the queue is already ordered from most to least recent)
-    keepAliveQueueRef.current = filtered.slice(0, KEEP_ALIVE_SIZE)
+    const placedIds = new Set(placedLayouts.map((r) => r.note_id))
+    // Newly exited: visible in the previous render, not visible now.
+    const exited = [...prevVisibleRef.current].filter((id) => !visibleIds.has(id))
+    // Most-recent-first, dedup, drop now-visible / unplaced, cap at budget.
+    const next: string[] = []
+    const seen = new Set<string>()
+    for (const id of [...exited, ...keepAliveQueueRef.current]) {
+      const keep = !seen.has(id) && !visibleIds.has(id) && placedIds.has(id)
+      seen.add(id)
+      if (keep) next.push(id)
+    }
+    keepAliveQueueRef.current = next.slice(0, KEEP_ALIVE_SIZE)
+    prevVisibleRef.current = visibleIds
     return new Set(keepAliveQueueRef.current)
   }, [visibleIds, placedLayouts])
-
-  // After render, update the keep-alive queue to track what was just visible
-  // so next cull correctly identifies "just exited" cards.
-  const prevVisibleRef = useRef(new Set<string>())
-  useEffect(() => {
-    const queue = keepAliveQueueRef.current
-    // Cards that were visible last render but are not visible now → add to queue
-    for (const id of prevVisibleRef.current) {
-      if (!visibleIds.has(id) && !queue.includes(id)) {
-        queue.unshift(id)
-      }
-    }
-    // Trim to budget
-    keepAliveQueueRef.current = queue.slice(0, KEEP_ALIVE_SIZE)
-    prevVisibleRef.current = visibleIds
-  })
 
   // ---- Cards to render: visible ∪ keep-alive, sorted by placed_at ascending
   const cardsToRender = useMemo(() => {
