@@ -4,6 +4,10 @@ import { api } from '../lib/api'
 interface Props {
   onOpenPalette: () => void
   onOpenSettings: () => void
+  /** Active main view — drives the centered feed|canvas segmented control. */
+  view: 'feed' | 'canvas'
+  /** Switch the main view (mod+1 / mod+2 also drive this from App). */
+  onViewChange: (v: 'feed' | 'canvas') => void
 }
 
 /**
@@ -32,7 +36,22 @@ interface Props {
  * @see src/main/ipc/system.ts (windowMinimize / windowToggleMaximize / windowClose)
  * @see src/renderer/src/styles/globals.css (.app-region-drag / .app-region-no-drag)
  */
-export function WindowFrame({ onOpenPalette, onOpenSettings }: Props) {
+export function WindowFrame({ onOpenPalette, onOpenSettings, view, onViewChange }: Props) {
+  // Quiet segmented control — text-only (no icons, v21 restraint). Active pill
+  // reads --fg-0 on --bg-2; inactive sits at --fg-3. Ships UNANIMATED (ADR 0019:
+  // the Feed|Canvas slide transition is Plan 3's, not this task's).
+  const segBtn = (active: boolean) =>
+    ({
+      border: 0,
+      borderRadius: 4,
+      padding: '3px 10px',
+      fontFamily: 'var(--font-sans)',
+      fontSize: 11,
+      cursor: 'pointer',
+      background: active ? 'var(--bg-2)' : 'transparent',
+      color: active ? 'var(--fg-0)' : 'var(--fg-3)',
+    }) as const
+
   const iconBtn = {
     width: 28,
     height: 22,
@@ -58,8 +77,42 @@ export function WindowFrame({ onOpenPalette, onOpenSettings }: Props) {
         padding: '0 6px 0 12px',
         background: 'transparent',
         fontFamily: 'var(--font-sans)',
+        position: 'relative',
       }}
     >
+      {/* Centered feed|canvas toggle — absolute so it stays centered regardless
+          of the right cluster's width. app-region-no-drag so clicks register. */}
+      <div
+        className="app-region-no-drag"
+        style={{
+          position: 'absolute',
+          left: '50%',
+          top: '50%',
+          transform: 'translate(-50%, -50%)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 2,
+        }}
+      >
+        <button
+          type="button"
+          aria-label="feed view"
+          aria-pressed={view === 'feed'}
+          onClick={() => onViewChange('feed')}
+          style={segBtn(view === 'feed')}
+        >
+          feed
+        </button>
+        <button
+          type="button"
+          aria-label="canvas view"
+          aria-pressed={view === 'canvas'}
+          onClick={() => onViewChange('canvas')}
+          style={segBtn(view === 'canvas')}
+        >
+          canvas
+        </button>
+      </div>
       <div
         className="app-region-no-drag"
         style={{

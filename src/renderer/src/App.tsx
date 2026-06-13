@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import type { Note, NoteType } from '../../shared/types'
 import { BacklinksPane } from './backlinks/BacklinksPane'
+import { CanvasStage } from './canvas/CanvasStage'
 import { Composer } from './composer/Composer'
 import { setOverlay, toggleOverlay, useDevOverlay } from './dev/devOverlays'
 import { Feed } from './feed/Feed'
@@ -85,6 +86,10 @@ export function App() {
   const waveOn = useDevOverlay('wave')
   const revealOpen = useDevOverlay('reveal')
   const [draftBody, setDraftBody] = useState<string | null>(null)
+  // viewMode toggles the non-thread <main> between the rolling feed+composer and
+  // the canvas stage. The toggle ships UNANIMATED (ADR 0019 — the §6 slide is
+  // Plan 3's). BacklinksPane stays outside both, working over either view.
+  const [viewMode, setViewMode] = useState<'feed' | 'canvas'>('feed')
   const [skipBannerDismissed, setSkipBannerDismissed] = useState(false)
   // threadNoteId: when non-null, the full-screen ThreadView replaces the feed+composer.
   // Mutual exclusivity: opening a thread clears focusedId so BacklinksPane doesn't
@@ -182,7 +187,14 @@ export function App() {
   )
   const resolveSlug = (slug: string) => slugSet.has(slug.toLowerCase().trim())
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['notes'] })
+  // Widen the pinned-data refetch (spec §3): saves must converge feed↔canvas,
+  // and link edits must redraw canvas edges. Invalidates the feed list, every
+  // single-note query, and the resolved-edge query.
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ['notes'] })
+    void queryClient.invalidateQueries({ queryKey: ['note'] }) // every ['note', id]
+    void queryClient.invalidateQueries({ queryKey: ['canvas-edges'] })
+  }
 
   /**
    * Paste interceptor for the create-mode composer. Called with the raw
@@ -279,6 +291,24 @@ export function App() {
     },
     { enableOnFormTags: ['textarea', 'input'] },
   )
+  // View toggle: mod+1 → feed, mod+2 → canvas (spec §6). Fires from inside the
+  // composer too (enableOnFormTags) so the user can switch without leaving text.
+  useHotkeys(
+    'mod+1',
+    (e) => {
+      e.preventDefault()
+      setViewMode('feed')
+    },
+    { enableOnFormTags: ['textarea', 'input'] },
+  )
+  useHotkeys(
+    'mod+2',
+    (e) => {
+      e.preventDefault()
+      setViewMode('canvas')
+    },
+    { enableOnFormTags: ['textarea', 'input'] },
+  )
   useHotkeys(
     'esc',
     () => {
@@ -355,6 +385,8 @@ export function App() {
       <WindowFrame
         onOpenPalette={() => setPaletteOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
+        view={viewMode}
+        onViewChange={setViewMode}
       />
       {/* Body row: position:relative so BacklinksPane can absolutely overlay
          it without pushing the feed left when the pane opens (the previous
@@ -434,77 +466,83 @@ export function App() {
                   </button>
                 </div>
               )}
-              {notes.length === 0 ? (
-                <div
-                  style={{
-                    flex: 1,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    color: 'var(--fg-3)',
-                    fontFamily: 'var(--font-sans)',
-                    fontSize: 14,
-                  }}
-                >
-                  nothing yet. start anywhere.
-                </div>
+              {viewMode === 'canvas' ? (
+                <CanvasStage onWikilinkClick={onWikilinkClick} resolveSlug={resolveSlug} />
               ) : (
-                <Feed
-                  notes={notes}
-                  scrollerRef={feedScrollerRef}
-                  sendInFlight={sendInFlight}
-                  focusedId={focusedId}
-                  // Toggle behaviour: clicking an unfocused bubble focuses it (opens
-                  // BacklinksPane); clicking the already-focused bubble unfocuses it
-                  // (closes the pane). Wikilink / palette / pane-jump callbacks set
-                  // focus directly without toggling — those are navigation gestures.
-                  onFocus={(id) => setFocusedId((cur) => (cur === id ? null : id))}
-                  onWikilinkClick={onWikilinkClick}
-                  resolveSlug={resolveSlug}
-                  onEdit={setEditingNoteId}
-                  onDelete={(id) => {
-                    deleteMut.mutate(id)
-                    if (focusedId === id) setFocusedId(null)
-                  }}
-                  onCopyLink={(id) => {
-                    void navigator.clipboard.writeText(`linsae://note/${id}`)
-                  }}
-                  onOpenThread={openThread}
-                />
-              )}
-              {editingNote ? (
-                <Composer
-                  key={editingNote.id}
-                  initialBody={editingNote.body}
-                  initialMode={editingNote.type}
-                  editMode
-                  error={submitError}
-                  onClearError={() => setSubmitError(null)}
-                  onSubmit={({ body, type }) =>
-                    updateMut.mutate({ id: editingNote.id, body, type })
-                  }
-                  onCancel={() => setEditingNoteId(null)}
-                />
-              ) : (
-                // Composite key: `draftBody ?? 'fresh'` handles the dangling-wikilink
-                // prefill remount; `successCount` ticks on successful create to
-                // force a remount → fresh empty textarea. Failed creates leave the
-                // key unchanged so the user's text + cursor survive.
-                <Composer
-                  key={`${draftBody ?? 'fresh'}-${successCount}`}
-                  initialBody={draftBody ?? ''}
-                  initialMode="claim"
-                  error={submitError}
-                  onClearError={() => setSubmitError(null)}
-                  // Flag the send so the Feed suppresses its auto-scroll while the new
-                  // note glides in (see `beginSend`), THEN create it.
-                  onSubmit={({ body, type }) => {
-                    beginSend()
-                    createMut.mutate({ body, type })
-                  }}
-                  onCancel={() => setDraftBody(null)}
-                  onPasteText={handlePasteText}
-                />
+                <>
+                  {notes.length === 0 ? (
+                    <div
+                      style={{
+                        flex: 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: 'var(--fg-3)',
+                        fontFamily: 'var(--font-sans)',
+                        fontSize: 14,
+                      }}
+                    >
+                      nothing yet. start anywhere.
+                    </div>
+                  ) : (
+                    <Feed
+                      notes={notes}
+                      scrollerRef={feedScrollerRef}
+                      sendInFlight={sendInFlight}
+                      focusedId={focusedId}
+                      // Toggle behaviour: clicking an unfocused bubble focuses it (opens
+                      // BacklinksPane); clicking the already-focused bubble unfocuses it
+                      // (closes the pane). Wikilink / palette / pane-jump callbacks set
+                      // focus directly without toggling — those are navigation gestures.
+                      onFocus={(id) => setFocusedId((cur) => (cur === id ? null : id))}
+                      onWikilinkClick={onWikilinkClick}
+                      resolveSlug={resolveSlug}
+                      onEdit={setEditingNoteId}
+                      onDelete={(id) => {
+                        deleteMut.mutate(id)
+                        if (focusedId === id) setFocusedId(null)
+                      }}
+                      onCopyLink={(id) => {
+                        void navigator.clipboard.writeText(`linsae://note/${id}`)
+                      }}
+                      onOpenThread={openThread}
+                    />
+                  )}
+                  {editingNote ? (
+                    <Composer
+                      key={editingNote.id}
+                      initialBody={editingNote.body}
+                      initialMode={editingNote.type}
+                      editMode
+                      error={submitError}
+                      onClearError={() => setSubmitError(null)}
+                      onSubmit={({ body, type }) =>
+                        updateMut.mutate({ id: editingNote.id, body, type })
+                      }
+                      onCancel={() => setEditingNoteId(null)}
+                    />
+                  ) : (
+                    // Composite key: `draftBody ?? 'fresh'` handles the dangling-wikilink
+                    // prefill remount; `successCount` ticks on successful create to
+                    // force a remount → fresh empty textarea. Failed creates leave the
+                    // key unchanged so the user's text + cursor survive.
+                    <Composer
+                      key={`${draftBody ?? 'fresh'}-${successCount}`}
+                      initialBody={draftBody ?? ''}
+                      initialMode="claim"
+                      error={submitError}
+                      onClearError={() => setSubmitError(null)}
+                      // Flag the send so the Feed suppresses its auto-scroll while the new
+                      // note glides in (see `beginSend`), THEN create it.
+                      onSubmit={({ body, type }) => {
+                        beginSend()
+                        createMut.mutate({ body, type })
+                      }}
+                      onCancel={() => setDraftBody(null)}
+                      onPasteText={handlePasteText}
+                    />
+                  )}
+                </>
               )}
             </main>
             {focusedId && (

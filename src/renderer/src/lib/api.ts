@@ -17,7 +17,11 @@
  * @see src/preload/index.ts
  */
 
+import type { CanvasCamera, CanvasEdge, CanvasLayoutRow, RecentEntry } from '../../../shared/canvas'
 import type { Attachment, Note, SearchHit, SourceLocator } from '../../../shared/types'
+
+/** Opaque canvas/arrangement key shared by most canvas IPC calls (spec §2). */
+type CanvasKey = { canvasId: string; arrangementId: string }
 
 /**
  * Ergonomic typed facade over `window.api`. Use this from components / hooks
@@ -136,6 +140,61 @@ export const api = {
      */
     commentsOf: (noteId: string): Promise<Array<{ note: Note; attachment: Attachment | null }>> =>
       window.api.links.commentsOf({ noteId }),
+  },
+  /**
+   * Canvas IPC facade: layout rows, resolved edges, placement mutations, and
+   * the per-canvas persisted camera. Mirrors the preload `canvas` namespace
+   * 1:1 — object payloads pass through unchanged (no positional repackaging),
+   * because every call already carries an opaque `{ canvasId, arrangementId }`
+   * key (spec §2 — no implicit defaults outside `src/shared/canvas.ts`).
+   * @see src/preload/index.ts (canvas namespace)
+   * @see docs/specs/v0.4-canvas-mvp.md §2
+   */
+  canvas: {
+    /** node_layouts rows for a canvas+arrangement (both-null x/y = shelved). */
+    listLayouts: (i: CanvasKey): Promise<CanvasLayoutRow[]> => window.api.canvas.listLayouts(i),
+    /** Resolved links between placed notes, for read-only edge rendering. */
+    edges: (i: CanvasKey): Promise<CanvasEdge[]> => window.api.canvas.edges(i),
+    /** Move a placed note back to the shelf (nulls x/y, keeps the row). */
+    shelveNote: (i: CanvasKey & { noteId: string }): Promise<void> =>
+      window.api.canvas.shelveNote(i),
+    /** Place a note at world coords (x/y), inserting or un-shelving its row. */
+    placeNote: (i: CanvasKey & { noteId: string; x: number; y: number }): Promise<void> =>
+      window.api.canvas.placeNote(i),
+    /** Batch-move already-placed notes to new world coords (drag commit). */
+    moveNotes: (
+      i: CanvasKey & { moves: Array<{ noteId: string; x: number; y: number }> },
+    ): Promise<void> => window.api.canvas.moveNotes(i),
+    /** Shelf a batch of notes (x/y → null) without deleting their rows. */
+    unplaceNotes: (i: CanvasKey & { noteIds: string[] }): Promise<void> =>
+      window.api.canvas.unplaceNotes(i),
+    /** Re-insert previously-removed layout rows (undo of removeNotes). */
+    restoreLayouts: (
+      i: CanvasKey & {
+        rows: Array<{
+          noteId: string
+          x: number | null
+          y: number | null
+          createdAt: number
+          placedAt: number | null
+        }>
+      },
+    ): Promise<void> => window.api.canvas.restoreLayouts(i),
+    /** Hard-remove layout rows from a canvas (note itself is untouched). */
+    removeNotes: (i: CanvasKey & { noteIds: string[] }): Promise<void> =>
+      window.api.canvas.removeNotes(i),
+    /** The persisted camera for a canvas (defaults to {0,0,1} server-side). */
+    getState: (i: { canvasId: string }): Promise<CanvasCamera> => window.api.canvas.getState(i),
+    /** Persist the camera for a canvas (debounced + flushed by useCanvasCamera). */
+    setState: (i: {
+      canvasId: string
+      camera_x: number
+      camera_y: number
+      zoom: number
+    }): Promise<void> => window.api.canvas.setState(i),
+    /** Recently edited/placed/created notes for the canvas recent popover. */
+    recentOnCanvas: (i: CanvasKey & { limit?: number }): Promise<RecentEntry[]> =>
+      window.api.canvas.recentOnCanvas(i),
   },
   /**
    * YouTube IPC facade: screenshot capture and oEmbed metadata fetch.
