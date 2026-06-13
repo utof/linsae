@@ -15,7 +15,7 @@
  * @see src/renderer/src/canvas/NoteCard.tsx (placeholderData idiom)
  */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 import { MANUAL_ARRANGEMENT_ID, ROOT_CANVAS_ID } from '../../../shared/canvas'
 import type { Note } from '../../../shared/types'
 import { api } from '../lib/api'
@@ -127,7 +127,6 @@ export function RecentPopover({ open, onClose, onJump }: Props): React.JSX.Eleme
   // Esc closes the popover; stop propagation so the canvas esc cascade
   // doesn't also fire (the popover is the highest-priority esc consumer
   // when open — spec §15 cascade order).
-  const containerRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!open) return
     const handler = (e: KeyboardEvent) => {
@@ -146,7 +145,6 @@ export function RecentPopover({ open, onClose, onJump }: Props): React.JSX.Eleme
 
   return (
     <div
-      ref={containerRef}
       data-canvas-recent-popover
       style={{
         position: 'absolute',

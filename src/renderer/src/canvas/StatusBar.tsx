@@ -172,7 +172,7 @@ export function StatusBar({
               gap: 2,
             }}
           >
-            {/* Zoom pill — fades to 40% when idle (CSS transition, latitude) */}
+            {/* Zoom pill */}
             <div
               style={{
                 display: 'flex',
@@ -182,7 +182,6 @@ export function StatusBar({
                 borderRadius: 'var(--r-1)',
                 border: '1px solid var(--border-0)',
                 background: 'var(--bg-0)',
-                transition: 'opacity 200ms',
               }}
             >
               {/* % readout — click resets to 100% */}
@@ -215,7 +214,7 @@ export function StatusBar({
             {/* Recent trigger */}
             <button
               type="button"
-              aria-label="recent ▴"
+              aria-label="recent"
               onClick={onToggleRecent}
               style={{
                 background: 'none',
@@ -227,7 +226,7 @@ export function StatusBar({
                 color: 'var(--fg-2)',
               }}
             >
-              recent ▴
+              recent <span aria-hidden="true">▴</span>
             </button>
           </div>
 

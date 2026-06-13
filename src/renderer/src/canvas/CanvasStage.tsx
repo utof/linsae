@@ -38,7 +38,14 @@ import { Composer } from '../composer/Composer'
 import { api } from '../lib/api'
 import type { UnderlayLayer } from './CanvasUnderlay'
 import { CanvasUnderlay } from './CanvasUnderlay'
-import { centerCamera, fitCamera, type Point, screenToWorld, visibleWorldRect } from './camera'
+import {
+  type Camera,
+  centerCamera,
+  fitCamera,
+  type Point,
+  screenToWorld,
+  visibleWorldRect,
+} from './camera'
 import { useCanvasDevLod } from './dev-lod'
 import { edgeSegment } from './edge-geometry'
 import { tierForZoom } from './lod'
@@ -1107,7 +1114,7 @@ export function CanvasStage({
           </div>
           {/* Centroid arrow (spec §14 G2): quiet pill pointing toward the placed-
               cards centroid when ≥1 card exists but none intersect the viewport.
-              Click → zoom-to-fit. The arrow glyph (↖/↗/↙/↘) tracks the angle
+              Click → zoom-to-fit. The arrow glyph (↑↗→↘↓↙←↖) tracks the angle
               from the viewport center to the centroid world point. */}
           <CentroidArrow
             placedLayouts={placedLayouts}
@@ -1212,7 +1219,7 @@ function CentroidArrow({
   placedLayouts: { note_id: string }[]
   visibleIds: Set<string>
   placedRects: Map<string, WorldRect>
-  camera: import('./camera').Camera
+  camera: Camera
   viewportSize: { w: number; h: number }
   onFit: () => void
 }): React.JSX.Element | null {
@@ -1272,7 +1279,7 @@ function CentroidArrow({
           whiteSpace: 'nowrap',
         }}
       >
-        {arrow} back to your notes
+        <span aria-hidden="true">{arrow}</span> back to your notes
       </button>
     </div>
   )
