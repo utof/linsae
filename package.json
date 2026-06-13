@@ -23,6 +23,7 @@
     "spike:canvas": "node scripts/spike-canvas/run.mjs",
     "harness:send": "xvfb-run -a node scripts/send-harness.mjs",
     "harness:reveal": "xvfb-run -a node scripts/reveal-stress.mjs",
+    "harness:canvas": "node scripts/canvas-perf-harness.mjs",
     "doctor": "npx react-doctor@latest"
   },
   "dependencies": {
