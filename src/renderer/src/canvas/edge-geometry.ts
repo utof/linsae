@@ -37,3 +37,40 @@ export function edgeSegment(from: WorldRect, to: WorldRect): Segment | null {
     y2: c2.y - dy * t2,
   }
 }
+
+/** Distance from a world point to the nearest point on a segment (spec §5 hit-test). */
+export function pointToSegmentDistance(p: { x: number; y: number }, s: Segment): number {
+  const dx = s.x2 - s.x1
+  const dy = s.y2 - s.y1
+  const lenSq = dx * dx + dy * dy
+  if (lenSq === 0) return Math.hypot(p.x - s.x1, p.y - s.y1)
+  let t = ((p.x - s.x1) * dx + (p.y - s.y1) * dy) / lenSq
+  t = Math.max(0, Math.min(1, t))
+  return Math.hypot(p.x - (s.x1 + t * dx), p.y - (s.y1 + t * dy))
+}
+
+/** Barb geometry for a directed edge's arrowhead. */
+export interface Arrowhead {
+  tip: { x: number; y: number }
+  left: { x: number; y: number }
+  right: { x: number; y: number }
+}
+
+/** Two barb points behind the target tip, for a directed drawn edge (spec §6). `size` in world px. */
+export function arrowhead(s: Segment, size: number): Arrowhead {
+  const dx = s.x2 - s.x1
+  const dy = s.y2 - s.y1
+  const len = Math.hypot(dx, dy) || 1
+  const ux = dx / len
+  const uy = dy / len // unit along the segment toward the tip
+  const back = size
+  const spread = size * 0.6
+  const bx = s.x2 - ux * back
+  const by = s.y2 - uy * back
+  // perpendicular = (-uy, ux)
+  return {
+    tip: { x: s.x2, y: s.y2 },
+    left: { x: bx - uy * spread, y: by + ux * spread },
+    right: { x: bx + uy * spread, y: by - ux * spread },
+  }
+}

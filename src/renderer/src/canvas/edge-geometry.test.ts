@@ -3,7 +3,7 @@
  * @see docs/specs/v0.4-canvas-mvp.md §11
  */
 import { describe, expect, it } from 'vitest'
-import { edgeSegment } from './edge-geometry'
+import { arrowhead, edgeSegment, pointToSegmentDistance } from './edge-geometry'
 
 const rect = (x: number, y: number) => ({ x, y, w: 100, h: 100 })
 
@@ -23,5 +23,27 @@ describe('edgeSegment', () => {
     expect(seg).not.toBeNull()
     // 45° line from (50,50)→(250,250): exits first rect at (100,100), enters second at (200,200)
     expect(seg).toEqual({ x1: 100, y1: 100, x2: 200, y2: 200 })
+  })
+})
+
+describe('pointToSegmentDistance', () => {
+  const seg = { x1: 0, y1: 0, x2: 10, y2: 0 }
+  it('0 on the segment', () => expect(pointToSegmentDistance({ x: 5, y: 0 }, seg)).toBe(0))
+  it('perpendicular distance', () =>
+    expect(pointToSegmentDistance({ x: 5, y: 3 }, seg)).toBeCloseTo(3))
+  it('clamps past an endpoint', () =>
+    expect(pointToSegmentDistance({ x: -4, y: 0 }, seg)).toBeCloseTo(4))
+  it('degenerate segment = distance to the point', () =>
+    expect(pointToSegmentDistance({ x: 3, y: 4 }, { x1: 0, y1: 0, x2: 0, y2: 0 })).toBeCloseTo(5))
+})
+
+describe('arrowhead', () => {
+  it('returns two barb points behind the tip, symmetric about the segment', () => {
+    const a = arrowhead({ x1: 0, y1: 0, x2: 10, y2: 0 }, 4) // size in world px
+    // tip at (10,0); barbs behind it, mirrored across y=0
+    expect(a.tip).toEqual({ x: 10, y: 0 })
+    expect(a.left.x).toBeLessThan(10)
+    expect(a.right.x).toBeLessThan(10)
+    expect(a.left.y).toBeCloseTo(-a.right.y)
   })
 })
