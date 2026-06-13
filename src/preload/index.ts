@@ -181,6 +181,13 @@ const api = {
       close: (): Promise<{ ok: true }> => ipcRenderer.invoke('system:windowClose'),
     },
   },
+  // Harness flag (spec §3 / §17): true ONLY when the Playwright perf harness
+  // launched the app with LINSAE_HARNESS=1 (scripts/canvas-perf-harness.mjs).
+  // In normal prod use the env var is unset → false → the renderer never
+  // attaches window.__canvasHarness. Read at preload load (process.env is
+  // available in the preload context; the renderer itself is isolated).
+  // @see docs/specs/v0.4-canvas-mvp.md §3 §17
+  isHarness: process.env.LINSAE_HARNESS === '1',
 }
 
 contextBridge.exposeInMainWorld('api', api)

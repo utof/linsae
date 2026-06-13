@@ -144,6 +144,7 @@ export const NoteCard = memo(function NoteCard({
     // biome-ignore lint/a11y/noStaticElementInteractions: canvas cards are spatial objects; double-click to edit is the only interaction, and adding role="button" would misrepresent the card's nature as a spatial container (not a button)
     <div
       ref={shellRef}
+      data-note-id={noteId}
       onDoubleClick={() => onBeginEdit(noteId)}
       style={{
         display: keptAlive ? 'none' : undefined,

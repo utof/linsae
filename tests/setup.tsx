@@ -109,6 +109,8 @@ export interface MockApi {
       close: ReturnType<typeof vi.fn>
     }
   }
+  /** Harness flag — added in v0.4; stable `false` so the bridge stays detached. */
+  isHarness: boolean
 }
 
 /**
@@ -188,6 +190,7 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
         close: vi.fn(async () => ({ ok: true })),
       },
     },
+    isHarness: false,
     ...overrides,
   }
   ;(globalThis as unknown as { window: { api: MockApi } }).window ||= {} as { api: MockApi }

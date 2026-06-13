@@ -15,6 +15,7 @@ import { installMockApi, type MockApi, renderWithProviders } from '../../../../t
 import type { Note } from '../../../shared/types'
 import { applyEntry, CanvasStage, type LayoutTimestamps } from './CanvasStage'
 import { setCanvasDevLod } from './dev-lod'
+import { uninstallHarnessBridge } from './harness-bridge'
 import type { UndoEntry } from './undo-stack'
 
 let mockApi: MockApi
@@ -105,6 +106,21 @@ describe('CanvasStage', () => {
       camera_y: 0,
       zoom: 1,
     })
+  })
+
+  it('does not attach the harness bridge when isHarness is false (default)', () => {
+    // installMockApi default isHarness:false (tests/setup.tsx)
+    renderWithProviders(<CanvasStage {...noopProps} />)
+    expect(window.__canvasHarness).toBeUndefined()
+  })
+
+  it('attaches the harness bridge when isHarness is true', () => {
+    ;(window.api as { isHarness: boolean }).isHarness = true
+    renderWithProviders(<CanvasStage {...noopProps} />)
+    expect(window.__canvasHarness).toBeDefined()
+    // restore so other tests stay on the default surface
+    ;(window.api as { isHarness: boolean }).isHarness = false
+    uninstallHarnessBridge()
   })
 
   it('space keydown is prevented on buttons but not in text fields', async () => {

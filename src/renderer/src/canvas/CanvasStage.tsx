@@ -46,8 +46,13 @@ import {
   screenToWorld,
   visibleWorldRect,
 } from './camera'
-import { useCanvasDevLod } from './dev-lod'
+import { setCanvasDevLod, useCanvasDevLod } from './dev-lod'
 import { edgeSegment } from './edge-geometry'
+import {
+  type CanvasHarnessBridge,
+  installHarnessBridge,
+  uninstallHarnessBridge,
+} from './harness-bridge'
 import { tierForZoom } from './lod'
 import { NoteCard } from './NoteCard'
 import { Picker } from './Picker'
@@ -726,6 +731,22 @@ export function CanvasStage({
     resetSignalRef.current = resetSignal
     setCamera((c) => ({ ...c, zoom: 1 }))
   }, [resetSignal, setCamera])
+
+  // ---- Harness control bridge (spec §3 / §17). Attached ONLY when the preload
+  // reports isHarness (LINSAE_HARNESS=1) — inert in every normal launch. Lets the
+  // Playwright perf harness drive a deterministic camera path + force the dot
+  // tier. setCamera/cameraRef are this stage's own; setDevLod hits the module store.
+  // @see scripts/canvas-perf-harness.mjs
+  useEffect(() => {
+    if (!window.api.isHarness) return
+    const bridge: CanvasHarnessBridge = {
+      setCamera: (cam) => setCamera(cam),
+      getCamera: () => cameraRef.current,
+      setDevLod: (patch) => setCanvasDevLod(patch),
+    }
+    installHarnessBridge(bridge)
+    return () => uninstallHarnessBridge()
+  }, [setCamera])
 
   // ---- Jump-to-card request from App (§4/§9/§14). A nonce ref dedupes so the
   // same request fires once; jumpToCard is in the deps because the layouts query
