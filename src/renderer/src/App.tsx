@@ -338,6 +338,31 @@ export function App() {
     },
     { enableOnFormTags: ['textarea', 'input'] },
   )
+  // ⌘J → recent-popover toggle (spec §15). Lives in App because `recentOpen` +
+  // the <RecentPopover> mount are App-level chrome (the status-bar trigger shares
+  // the same state). Gated `enabled: viewMode==='canvas'` so it is inert in the
+  // feed view — the popover is a canvas affordance (spec §14). `enableOnFormTags`
+  // off so it never fires while typing in the composer.
+  useHotkeys(
+    'mod+j',
+    (e) => {
+      e.preventDefault()
+      setRecentOpen((o) => !o)
+    },
+    { enabled: viewMode === 'canvas' },
+    [viewMode],
+  )
+  // App's global esc ladder (settings → palette → focused pane). Each rung guards
+  // on its OWN state boolean, so this is a no-op when none of App's overlays are
+  // open. This is a BUBBLE-phase document listener (react-hotkeys-hook's default).
+  // The canvas esc cascade (CanvasStage) is a CAPTURE-phase listener on the canvas
+  // viewport node: an esc dispatched inside the canvas is seen by the viewport
+  // capture handler DURING the capture descent — before the event can bubble up to
+  // this document listener — and that handler calls stopPropagation when it
+  // consumes, so the event never reaches here. Precedence is thus by event-phase +
+  // tree position (deterministic), NOT react-hotkeys-hook registration order
+  // (which is undefined between two instances). @see CanvasStage.tsx esc cascade,
+  // issue #18 (esc precedence audit).
   useHotkeys(
     'esc',
     () => {

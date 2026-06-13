@@ -742,6 +742,30 @@ export function CanvasStage({
   const [pickerAnchor, setPickerAnchor] = useState<{ x: number; y: number } | null>(null)
   const placedNoteIds = useMemo(() => new Set(placedRects.keys()), [placedRects])
 
+  // Last pointer position (viewport-relative screen px) so `/` can open the picker
+  // at the cursor (spec §15). Null until the first pointermove over the viewport;
+  // `openPickerAtCursor` falls back to the viewport center when the pointer is
+  // outside the canvas (§15: "pointer outside the canvas viewport → anchor at
+  // viewport center"). A ref (not state) — read only at `/`-press, never rendered.
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null)
+  useEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    const onMove = (e: PointerEvent) => {
+      const rect = viewport.getBoundingClientRect()
+      lastPointerRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+    }
+    const onLeave = () => {
+      lastPointerRef.current = null
+    }
+    viewport.addEventListener('pointermove', onMove)
+    viewport.addEventListener('pointerleave', onLeave)
+    return () => {
+      viewport.removeEventListener('pointermove', onMove)
+      viewport.removeEventListener('pointerleave', onLeave)
+    }
+  }, [])
+
   const onPick = useCallback(
     (noteId: string, opts: { keepOpen: boolean }) => {
       const camera = cameraRef.current
@@ -754,6 +778,16 @@ export function CanvasStage({
     },
     [pickerAnchor, placeAt, isShelved],
   )
+
+  /**
+   * Open the `/` picker at the last cursor position, or the viewport center when
+   * the pointer is outside the canvas (spec §15). The anchor is the intended drop
+   * point in viewport-relative SCREEN px; `onPick` converts it to world coords.
+   */
+  const openPickerAtCursor = useCallback(() => {
+    const p = lastPointerRef.current ?? { x: viewportSize.w / 2, y: viewportSize.h / 2 }
+    setPickerAnchor(p)
+  }, [viewportSize])
 
   // ---- One-shot ghost (spec §6, receiving side). App sets the `placing` prop;
   // we track the live cursor world point so the ghost follows it, and commit on
@@ -895,6 +929,136 @@ export function CanvasStage({
     for (const id of ids) void api.notes.delete(id)
     clearSelection()
   }, [selectedIds, clearSelection])
+
+  // ---- Canvas key map (spec §15). CanvasStage only mounts on the canvas view
+  // (App.tsx AnimatePresence), so every binding here is implicitly canvas-scoped —
+  // no viewMode prop needed (same posture as the mod+z/shift+mod+z bindings
+  // above). `enableOnFormTags` is off (the default) so none fire while typing in
+  // the create/edit Composer or the picker input. mod+1/mod+2/mod+k/mod+j stay in
+  // App (their state lives there). The esc cascade is a CAPTURE-phase listener
+  // (see below) — not a useHotkeys binding — so it can win over App's esc ladder.
+
+  // `/` → open the picker at the cursor. Gated NOT-while-placing (§15: "not in
+  // one-shot mode") and not when the picker is already open (avoids re-anchoring
+  // an open picker). The `useKey:true` default-off means `/` matches the physical
+  // slash key. preventDefault so the `/` char isn't typed into a focused field.
+  useHotkeys(
+    'slash',
+    (e) => {
+      if (placing || pickerAnchor) return
+      e.preventDefault()
+      openPickerAtCursor()
+    },
+    [placing, pickerAnchor, openPickerAtCursor],
+  )
+  // ⇧1 → zoom-to-fit, ⇧0 → 100%. PHYSICAL-key bindings (react-hotkeys-hook v5
+  // default; do NOT pass useKey — that would match the produced '!'/')' and is
+  // wrong, spec §15). Fit reuses the SAME fitCamera path as fitSignal / the
+  // centroid arrow; reset mirrors resetSignal. Fit with zero placed = no-op
+  // (fitCamera returns the current camera when the rect list is empty).
+  useHotkeys(
+    'shift+1',
+    (e) => {
+      e.preventDefault()
+      setCamera((c) => fitCamera([...placedRects.values()], viewportSize.w, viewportSize.h, 48, c))
+    },
+    [setCamera, placedRects, viewportSize],
+  )
+  useHotkeys(
+    'shift+0',
+    (e) => {
+      e.preventDefault()
+      setCamera((c) => ({ ...c, zoom: 1 }))
+    },
+    [setCamera],
+  )
+  // arrows → nudge the selection 8 px (spec §8/§15). nudge() no-ops + returns
+  // false when the selection is empty, so the gate is the hook's own check.
+  // e.key is 'ArrowUp'/etc — exactly what nudgeDelta expects.
+  useHotkeys(
+    'up,down,left,right',
+    (e) => {
+      if (interactions.nudge(e.key)) e.preventDefault()
+    },
+    [interactions],
+  )
+  // ⌫/⌦ → remove the selection from the canvas (the SelectionBar's onRemove).
+  // onRemove no-ops when the selection is empty (spec §15: selection ≠ ∅).
+  useHotkeys(
+    'backspace,delete',
+    (e) => {
+      if (selectedIds.size === 0) return
+      e.preventDefault()
+      onRemove()
+    },
+    [selectedIds, onRemove],
+  )
+
+  // ---- The esc cascade (spec §15). ONE consumer per press, in order:
+  //   composer/edit card → drag (cancelDrag) → picker → one-shot placement →
+  //   marquee (folded into cancelDrag) → selection (clear) → no-op.
+  //
+  // Mechanism — why this wins over App's esc ladder deterministically: this is a
+  // native CAPTURE-phase keydown listener on the canvas VIEWPORT node. An esc
+  // dispatched inside the canvas (focus on the viewport, a card, the create/edit
+  // Composer, or the picker input — all descendants of the viewport) is seen here
+  // DURING the capture descent, BEFORE it bubbles up to the document where App's
+  // esc useHotkeys (bubble phase) sits. When we consume a step we call
+  // stopPropagation(), so the event never bubbles to App. Precedence is by
+  // event-phase + DOM position — NOT react-hotkeys-hook registration order (which
+  // is undefined between two document listeners). A capture listener on the
+  // viewport (a tight subtree) also means esc OUTSIDE the canvas never reaches it.
+  //
+  // #118: the drag AND marquee §15 steps both collapse into cancelDrag()'s RETURN
+  // VALUE — they are the same consumer internally (useCanvasInteractions) but only
+  // one can be active at a time, so the collapse is correct. We branch on the
+  // boolean (NOT interactions.dragging) so a captured-but-unmoved pointer — where
+  // `dragging` is still false but a drag session exists — is still cancelled.
+  //
+  // Step 1 (composer/edit card): the create Composer's plain-esc does NOT
+  // stopPropagation (only edit/question mode does — Composer.tsx:148), and even
+  // edit-mode's React onKeyDown fires at the TARGET during bubble, AFTER this
+  // capture handler. So we own closing BOTH the create composer (createAt) and the
+  // in-place editor (editingId) here; consuming + stopPropagation makes the
+  // Composer's own handler moot (idempotent — both would close it).
+  useEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      const consume = () => e.stopPropagation()
+      if (createAt !== null || editingId !== null) {
+        setCreateAt(null)
+        setEditingId(null)
+        return consume()
+      }
+      if (interactions.cancelDrag()) return consume() // drag OR marquee (#118)
+      if (pickerAnchor !== null) {
+        setPickerAnchor(null)
+        return consume()
+      }
+      if (placing) {
+        onPlacingDone?.()
+        return consume()
+      }
+      if (selectedIds.size > 0) {
+        clearSelection()
+        return consume()
+      }
+      // No-op: nothing canvas-owned to consume → let App's esc ladder resolve.
+    }
+    viewport.addEventListener('keydown', onEsc, { capture: true })
+    return () => viewport.removeEventListener('keydown', onEsc, { capture: true })
+  }, [
+    createAt,
+    editingId,
+    interactions,
+    pickerAnchor,
+    placing,
+    onPlacingDone,
+    selectedIds,
+    clearSelection,
+  ])
 
   // ---- Visible ids: cards intersecting the inflated viewport rect. Reads the
   // freshly-built in-render index, so it reflects this render's layout + heights.

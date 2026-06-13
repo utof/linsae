@@ -951,4 +951,196 @@ describe('CanvasStage', () => {
       expect.objectContaining({ noteId: 'n2', x: 10, y: 20 }),
     )
   })
+
+  // ---- Task 11: keyboard map + esc cascade -----------------------------------
+  //
+  // What is HEADLESS-tested here (§15 rows that don't need real pointers/layout):
+  //   - ⇧0 → reset zoom to 1 (assert the world transform scale).
+  //   - ⇧1 → zoom-to-fit with zero placed cards = no-op (no throw, scale stays).
+  //   - arrows → nudge a seeded selection → api.canvas.moveNotes.
+  //   - ⌫ → remove a seeded selection → api.canvas.removeNotes.
+  //   - esc cascade: the SELECTION-CLEAR step and the PICKER-CLOSE step in
+  //     isolation (capture-phase consume on the viewport).
+  // What DEFERS to the Plan-4 Playwright harness (needs a real pointer/layout
+  // model happy-dom lacks): the esc-cascade ORDERING across the drag/marquee
+  // steps (cancelDrag) and one-shot placement, plus the /-picker open-at-cursor
+  // anchoring. ⌘J (App-level recentOpen) is NOT asserted here — react-hotkeys-hook
+  // `mod` resolution is platform-flaky under happy-dom (see the §13 test above +
+  // DevToolsHud.test.tsx); ⌘J's binding lives in App and is covered by the manual
+  // smoke (Task 12).
+  //
+  // Selection is seeded by a real pointerdown on a card at the origin: happy-dom's
+  // getBoundingClientRect is all-zero and the camera sits at (0,0), so a click at
+  // client (0,0) hit-tests the spatial index at world (0,0) → onCardPointerDown →
+  // setSelection([id]). Non-mod keys (digits, arrows, backspace) fire reliably.
+
+  /** Dispatch a physical-key keydown carrying BOTH key + code (the lib reads `code`). */
+  function keyDown(node: HTMLElement, init: { key: string; code: string; shiftKey?: boolean }) {
+    fireEvent.keyDown(node, { ...init, bubbles: true, cancelable: true })
+  }
+
+  it('(v) ⇧0 resets the camera zoom to 1', async () => {
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([])
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(world(container).style.transform).toBe('translate(0px, 0px) scale(1)')
+    })
+    const viewport = container.querySelector('[data-canvas-viewport]') as HTMLElement
+    // Zoom away from 1 first (ctrl+wheel → scale 2), then ⇧0 must snap back to 1.
+    ctrlWheel(viewport, -100)
+    await waitFor(() => {
+      expect(world(container).style.transform).toContain('scale(2)')
+    })
+    keyDown(viewport, { key: '0', code: 'Digit0', shiftKey: true })
+    await waitFor(() => {
+      expect(world(container).style.transform).toContain('scale(1)')
+    })
+  })
+
+  it('(w) ⇧1 zoom-to-fit with zero placed cards is a no-op (no throw, zoom unchanged)', async () => {
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([])
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(world(container).style.transform).toBe('translate(0px, 0px) scale(1)')
+    })
+    const viewport = container.querySelector('[data-canvas-viewport]') as HTMLElement
+    keyDown(viewport, { key: '1', code: 'Digit1', shiftKey: true })
+    // fitCamera returns the current camera when there are no rects → scale stays 1.
+    await waitFor(() => {
+      expect(world(container).style.transform).toContain('scale(1)')
+    })
+  })
+
+  it('(x) arrows nudge a seeded selection → api.canvas.moveNotes', async () => {
+    await mountSingleCard('Nudge me')
+    const surface = document.querySelector('[data-canvas-world]') as HTMLElement
+    // Select the card with a pointerdown at the origin (hit-tests world (0,0)).
+    fireEvent.pointerDown(surface, { button: 0, clientX: 0, clientY: 0 })
+    const viewport = document.querySelector('[data-canvas-viewport]') as HTMLElement
+    keyDown(viewport, { key: 'ArrowRight', code: 'ArrowRight' })
+    await waitFor(() => {
+      expect(mockApi.canvas.moveNotes).toHaveBeenCalled()
+    })
+    expect(mockApi.canvas.moveNotes).toHaveBeenCalledWith(
+      expect.objectContaining({ canvasId: 'root', arrangementId: 'manual' }),
+    )
+  })
+
+  it('(y) ⌫ removes a seeded selection from the canvas → api.canvas.removeNotes', async () => {
+    await mountSingleCard('Remove me')
+    const surface = document.querySelector('[data-canvas-world]') as HTMLElement
+    fireEvent.pointerDown(surface, { button: 0, clientX: 0, clientY: 0 })
+    const viewport = document.querySelector('[data-canvas-viewport]') as HTMLElement
+    keyDown(viewport, { key: 'Backspace', code: 'Backspace' })
+    await waitFor(() => {
+      expect(mockApi.canvas.removeNotes).toHaveBeenCalled()
+    })
+    expect(mockApi.canvas.removeNotes).toHaveBeenCalledWith(
+      expect.objectContaining({ noteIds: ['e-note'] }),
+    )
+  })
+
+  it('(z) esc cascade — selection-clear step: esc with a selection clears it (no remove)', async () => {
+    await mountSingleCard('Select then esc')
+    const surface = document.querySelector('[data-canvas-world]') as HTMLElement
+    // pointerDown selects the card; pointerUp RELEASES the drag session so esc
+    // reaches the selection-clear step (an unreleased pointer is a cancellable
+    // drag — #118 — which the cascade would consume FIRST via cancelDrag()).
+    fireEvent.pointerDown(surface, { button: 0, clientX: 0, clientY: 0 })
+    fireEvent.pointerUp(surface, { button: 0, clientX: 0, clientY: 0 })
+    // The selection bar appears once a card is selected (count pill).
+    await waitFor(() => {
+      expect(screen.queryByText(/1 selected/i)).toBeTruthy()
+    })
+    // esc on the viewport: the capture-phase cascade clears the selection (the
+    // last cascade step before no-op) without removing the card from the canvas.
+    const viewport = document.querySelector('[data-canvas-viewport]') as HTMLElement
+    keyDown(viewport, { key: 'Escape', code: 'Escape' })
+    await waitFor(() => {
+      expect(screen.queryByText(/1 selected/i)).toBeNull()
+    })
+    expect(mockApi.canvas.removeNotes).not.toHaveBeenCalled()
+  })
+
+  it('(aa) esc cascade — picker-close step: / opens the picker, esc closes it', async () => {
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([])
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(container.querySelector('[data-canvas-world]')).not.toBeNull()
+    })
+    const viewport = container.querySelector('[data-canvas-viewport]') as HTMLElement
+    // `/` opens the picker (its input placeholder is the marker).
+    keyDown(viewport, { key: '/', code: 'Slash' })
+    const input = await screen.findByPlaceholderText('search to place…')
+    expect(input).toBeTruthy()
+    // esc on the viewport: with no drag/composer active, the cascade closes the
+    // picker (the picker-close step). Dispatch on the viewport (not the input) so
+    // the capture-phase handler resolves the step, mirroring the §15 cascade.
+    keyDown(viewport, { key: 'Escape', code: 'Escape' })
+    await waitFor(() => {
+      expect(screen.queryByPlaceholderText('search to place…')).toBeNull()
+    })
+  })
+
+  it('(bb) esc precedence: when the canvas consumes, a document bubble listener (App ladder) does NOT fire', async () => {
+    // The crux. App's esc ladder is a BUBBLE-phase document listener
+    // (react-hotkeys-hook default). The canvas cascade is a CAPTURE-phase listener
+    // on the VIEWPORT node, and it stopPropagation()s when it consumes a step. We
+    // stand in for App's ladder with a real document bubble listener and assert it
+    // never fires for an esc the canvas consumed (here: closing the picker). This
+    // pins precedence by event-phase + tree position — NOT registration order.
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([])
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(container.querySelector('[data-canvas-world]')).not.toBeNull()
+    })
+    // Count only ESC keydowns that reach the document (the `/` keydown bubbles
+    // there too — that one is irrelevant; the canvas doesn't consume `/`).
+    const escAtDocument = vi.fn()
+    const appLadder = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') escAtDocument()
+    }
+    document.addEventListener('keydown', appLadder) // bubble phase, document target
+    try {
+      const viewport = container.querySelector('[data-canvas-viewport]') as HTMLElement
+      keyDown(viewport, { key: '/', code: 'Slash' })
+      await screen.findByPlaceholderText('search to place…')
+      keyDown(viewport, { key: 'Escape', code: 'Escape' })
+      await waitFor(() => {
+        expect(screen.queryByPlaceholderText('search to place…')).toBeNull()
+      })
+      // The canvas consumed the esc (picker closed) → the event was stopped on the
+      // capture descent and never bubbled to the document listener.
+      expect(escAtDocument).not.toHaveBeenCalled()
+    } finally {
+      document.removeEventListener('keydown', appLadder)
+    }
+  })
+
+  it('(cc) esc precedence: when the canvas has nothing to consume, the esc bubbles to the document', async () => {
+    // The other half: a bare esc on an empty canvas (no composer/drag/picker/
+    // placement/selection) is a NO-OP in the cascade — it does NOT stopPropagation,
+    // so it bubbles to the document where App's ladder resolves its own steps.
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([])
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(container.querySelector('[data-canvas-world]')).not.toBeNull()
+    })
+    const appLadder = vi.fn()
+    document.addEventListener('keydown', appLadder)
+    try {
+      const viewport = container.querySelector('[data-canvas-viewport]') as HTMLElement
+      keyDown(viewport, { key: 'Escape', code: 'Escape' })
+      // Nothing canvas-owned was open → the cascade no-ops → the esc reaches the
+      // document listener (App's ladder gets its turn).
+      expect(appLadder).toHaveBeenCalled()
+    } finally {
+      document.removeEventListener('keydown', appLadder)
+    }
+  })
 })
