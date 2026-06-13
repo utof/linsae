@@ -19,5 +19,9 @@ export function noteTitle(note: { body: string; slug: string }): string {
     .replace(/(\*\*|__|\*|_|`|~~)/g, '') // emphasis/code fences
     .trim()
   if (stripped.length === 0) return note.slug
-  return stripped.length > MAX ? `${stripped.slice(0, MAX - 1)}…` : stripped
+  // Clamp on code points, not UTF-16 units — String.prototype.slice can split
+  // a surrogate pair (emoji, 𝕏) into mojibake before the ellipsis. Spec §3
+  // says "~80 chars", so code-point counting is in-spec.
+  const points = [...stripped]
+  return points.length > MAX ? `${points.slice(0, MAX - 1).join('')}…` : stripped
 }

@@ -29,7 +29,7 @@ export function edgeSegment(from: WorldRect, to: WorldRect): Segment | null {
   if (dx === 0 && dy === 0) return null
   const t1 = exitT(from, dx, dy)
   const t2 = exitT(to, -dx, -dy)
-  if (t1 + t2 >= 1) return null // clipped away: centers inside each other's rects
+  if (t1 + t2 >= 1) return null // clipped exit points cross — overlapping or mutually-engulfed rects
   return {
     x1: c1.x + dx * t1,
     y1: c1.y + dy * t1,

@@ -21,6 +21,12 @@ describe('noteTitle', () => {
     expect(t.length).toBe(80)
     expect(t.endsWith('…')).toBe(true)
   })
+  it('clamps on code points — never splits a surrogate pair before the ellipsis', () => {
+    const t = noteTitle({ ...base, body: '𝕏'.repeat(100) })
+    expect(t.endsWith('…')).toBe(true)
+    expect([...t].at(-2)).toBe('𝕏')
+    expect([...t].length).toBe(80)
+  })
   it('falls back to the slug for empty bodies', () => {
     expect(noteTitle({ ...base, body: '' })).toBe('fallback-slug')
     expect(noteTitle({ ...base, body: '   \n\n  ' })).toBe('fallback-slug')
