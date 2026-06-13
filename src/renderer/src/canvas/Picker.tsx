@@ -22,9 +22,11 @@
  * `matched` indices for `<mark>` highlighting); cmdk's own filter would re-order
  * our results (same rationale as EdgeTargetPicker.tsx).
  *
- * Why gate rows on `query.length > 0`: `fuzzyMatch('')` returns ALL candidates,
- * so without the gate an empty `/` would dump every note; the empty-query hint
- * stands alone instead (and ⇧↵'s clear-query keep-open path stays clean).
+ * Why gate rows on a non-blank query (`query.trim().length > 0`, mirroring
+ * `fuzzyMatch`'s own trim): `fuzzyMatch('')`/`fuzzyMatch('  ')` return ALL
+ * candidates, so without the gate an empty-or-whitespace `/` would dump every
+ * note; the empty-query hint stands alone instead (and ⇧↵'s clear-query
+ * keep-open path stays clean).
  *
  * Why controlled `Command value`/`onValueChange`: cmdk tracks the highlighted
  * item via the `value` prop when `shouldFilter={false}`; reading it in the
