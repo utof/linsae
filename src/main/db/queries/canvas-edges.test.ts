@@ -42,7 +42,9 @@ describe('canvasEdges', () => {
     placeNote(db, { ...K, noteId: 'a', x: 0, y: 0 })
     expect(canvasEdges(db, K)).toEqual([]) // target not placed
     placeNote(db, { ...K, noteId: 'b', x: 9, y: 9 })
-    expect(canvasEdges(db, K)).toEqual([{ fromNoteId: 'a', toNoteId: 'b', edgeType: 'reference' }])
+    expect(canvasEdges(db, K)).toEqual([
+      { fromNoteId: 'a', toNoteId: 'b', edgeType: 'reference', toSlug: 'beta' },
+    ])
   })
 
   it('shelved endpoints do not count as placed', () => {
@@ -66,6 +68,8 @@ describe('canvasEdges', () => {
     link('a', 'beta', 'comment-on')
     placeNote(db, { ...K, noteId: 'a', x: 0, y: 0 })
     placeNote(db, { ...K, noteId: 'b', x: 1, y: 1 })
-    expect(canvasEdges(db, K)).toEqual([{ fromNoteId: 'a', toNoteId: 'b', edgeType: 'comment-on' }])
+    expect(canvasEdges(db, K)).toEqual([
+      { fromNoteId: 'a', toNoteId: 'b', edgeType: 'comment-on', toSlug: 'beta' },
+    ])
   })
 })

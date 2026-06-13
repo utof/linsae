@@ -23,7 +23,7 @@ type DB = Database.Database
 export function canvasEdges(db: DB, k: { canvasId: string; arrangementId: string }): CanvasEdge[] {
   return db
     .prepare(
-      `SELECT lk.from_note_id AS fromNoteId, tn.id AS toNoteId, lk.edge_type AS edgeType
+      `SELECT lk.from_note_id AS fromNoteId, tn.id AS toNoteId, lk.to_slug AS toSlug, lk.edge_type AS edgeType
        FROM links lk
        JOIN notes tn ON tn.slug = lk.to_slug AND tn.deleted_at IS NULL
        JOIN node_layouts lf ON lf.note_id = lk.from_note_id

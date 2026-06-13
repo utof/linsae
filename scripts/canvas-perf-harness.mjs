@@ -45,6 +45,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { _electron as electron } from 'playwright'
 
+// Operator-facing abort (bad GPU / wrong vsync / empty board / tier-flip fail /
+// mid-run rAF throttle). Carries `expected = true` so the top-level catch prints
+// just the message (no stack — these are NOT bugs) and still routes through the
+// `finally` cleanup (app.close + rmSync) so an aborted run leaks no tmpdir (#126).
+class AbortError extends Error {
+  expected = true
+}
+
 // ---- §3 gates (exact). churn vs steady vs dot, each judged on the median run.
 const GATES = {
   churn: { meanFps: 55, p95: 33.4, over100: 0 },
@@ -65,6 +73,14 @@ const CARD_W = 360 // CanvasStage CARD_WIDTH
 const CARD_H = 140 // CanvasStage DEFAULT_CARD_HEIGHT
 const RUNS = 3
 const PHASE_MS = 8000 // per-phase choreography duration
+// Mid-run rAF-throttle tripwire (#126). The start-of-run vsync probe only catches
+// a display ALREADY asleep; the screen can DPMS-blank DURING an 8s phase (or a
+// waitForTimeout gap), and Chromium then throttles rAF to ~1Hz (p50 ≈ 1000ms).
+// Gate on the run's MEDIAN frame interval (p50), not p95/max: a real perf
+// regression keeps a low-ish median with occasional spikes, but only genuine
+// throttling drags the MEDIAN to ~1000ms. 100ms is 6× the worst plausible good
+// frame (16.7ms) and 10× below the ~1Hz floor — an unambiguous band.
+const THROTTLE_P50_MS = 100
 // Culling mounts only viewport-intersecting cards, so NOT all 500 are in the DOM
 // at once; this floor just proves seeding + reconcile didn't wipe the board (B1).
 const MIN_CARDS = 50
@@ -108,8 +124,17 @@ async function seedViaIpc(win) {
       }
       let placed = 0
       for (let i = 0; i < count; i++) {
+        // Each note's heading "# Seed note ${i}" → slug "seed note ${i}"
+        // (slugFromBody: heading-stripped + lowercased). Note 1 wikilinks the
+        // REAL slug of note 0 ([[Seed note 0]] → normalizeSlug → "seed note 0"),
+        // so replaceLinksForNote writes a resolvable 'reference' links row
+        // (1 → 0) that canvasEdges returns once both are placed — the smoke's
+        // reference-edge sub-test needs a reference edge that actually RENDERS
+        // (a dangling [[wikilink]] would not). All other notes keep a dangling
+        // [[wikilink]] (no seeded note has that slug) → those draw nothing.
+        const ref = i === 1 ? '[[Seed note 0]]' : '[[wikilink]]'
         const body =
-          `# Seed note ${i}\n\nProse with **emphasis** and a [[wikilink]], long enough ` +
+          `# Seed note ${i}\n\nProse with **emphasis** and a ${ref}, long enough ` +
           `to wrap a few lines like a real note body. Inline math $e^{i\\pi}+1=0$.`
         await window.api.canvas.createNoteAt({
           canvasId: 'root',
@@ -136,10 +161,15 @@ async function seedViaIpc(win) {
 // UNCLAMPED Dispatch (clamping lives only in the gesture helpers, which the bridge
 // never touches), so {x,y,zoom} are written verbatim. Runs entirely in the page so
 // the rAF clock and the setCamera writes share a frame (the spike's runChoreo).
+// MOTION-LOD: churn/steady drive setCamera through the bridge → useCanvasCamera's
+// moveCamera → bump() (useCanvasCamera.ts:106-112), re-arming the 120ms settle timer
+// each frame, so isMoving stays TRUE the whole phase. Cards therefore render the
+// motion-LOD placeholder/skeleton (NoteCard.tsx:110 `showFull = !isMoving || upgradedRef.current`),
+// so these phases measure the §3-credited motion-LOD/amortization path — correct,
+// but note `upgradedRef` latches once-upgraded-never-demote → run-to-run nondeterminism.
 async function runPhase(win, mode, durationMs) {
   return win.evaluate(
     async ([m, dur, statsSrc, world]) => {
-      // biome-ignore lint: injected stats() (spike-verbatim)
       const stats = new Function(`${statsSrc}; return stats`)()
       const h = window.__canvasHarness
       if (!h) throw new Error('window.__canvasHarness missing — isHarness not set?')
@@ -200,6 +230,12 @@ function medianByMeanFps(runs) {
 //   #111 — keep-alive abandonment under the §6 Motion slide: toggling feed↔canvas
 //          mid-interaction must leave a clean canvas (world present, dragged card
 //          present, no orphaned [data-canvas-ghost]) after the canvas remounts.
+//   B3   — a plain click (down→up, no move) on a TRULY-empty surface point
+//          DESELECTS the selected card (guards the phantom-occupancy `hitVisibleAt`
+//          fix: a click on a culled/keep-alive rect must not reselect a ghost).
+//   B4   — the §14 G2 "back to your notes" centroid pill ([data-canvas-centroid-arrow])
+//          APPEARS when panned into empty world space (zero cards truly visible) and
+//          is ABSENT when centered on the board; its arrow glyph points at the centroid.
 // @see scripts/canvas-perf-harness.mjs (shared setup) · @see send-harness.mjs (trajectory print)
 
 // Read the on-screen rect of a card by its data-note-id (viewport-relative client
@@ -447,6 +483,54 @@ async function runSmoke(win) {
     await win.waitForTimeout(150)
   }
 
+  // ── B3: a plain click on a TRULY-empty point deselects (guards the phantom- ────
+  // occupancy fix `hitVisibleAt`, CanvasStage.tsx:566-574/979-997). The escaped
+  // happy-dom bug: the rbush index counted culled + keep-alive (display:none) rows
+  // as occupied, so onWorldPointerDown routed an empty-point pointerdown to
+  // onCardPointerDown (reselect) instead of onSurfacePointerDown (marquee). A bare
+  // marquee with NO movement + NO modifier clears the selection
+  // (useCanvasInteractions.ts:269 `if (!mq.moved && !mq.additive) setSelectedIds(new Set())`).
+  // State-bleed order: capture the empty point FIRST — findEmptyPoint ends by
+  // pressing Escape (clears any selection), so we select AFTER it returns.
+  const deselectPt = await findEmptyPoint(win, vp)
+  if (!deselectPt) {
+    assert('B3: an empty point to test click-deselect', false)
+  } else {
+    // Select a card with a single primary click (down→up, no move = a 0,0 drag,
+    // no commit). pickCardNear targets a center; the product selects the topmost
+    // under the press — read it back via the §8 selection ring (selectedCardId).
+    const selCard = await pickCardNear(win, probe.x, probe.y)
+    if (!selCard) {
+      assert('B3: a fully-visible card to select', false)
+    } else {
+      const sc = { x: selCard.x + selCard.w / 2, y: selCard.y + selCard.h / 2 }
+      await win.mouse.move(sc.x, sc.y)
+      await win.mouse.down()
+      await win.mouse.up()
+      await win.waitForTimeout(120)
+      const ringedId = await selectedCardId(win)
+      assert('B3 click selected exactly one card (1 selection ring §8)', ringedId !== null)
+      // The deselect: a PLAIN click (down→up, SAME coords, no movement) on the
+      // empty point. No move → marquee `moved` stays false → pointerup clears.
+      await win.mouse.move(deselectPt.x, deselectPt.y)
+      await win.mouse.down()
+      await win.mouse.up()
+      await win.waitForTimeout(120)
+      const stillRinged = await win.evaluate(() => {
+        let n = 0
+        for (const el of document.querySelectorAll('[data-note-id]')) {
+          const bs = getComputedStyle(el).boxShadow
+          if (bs && bs !== 'none') n++
+        }
+        return n
+      })
+      console.log(`selection rings after empty-click: ${stillRinged} (expect 0)`)
+      assert('B3 click on empty surface deselected (0 selection rings)', stillRinged === 0)
+    }
+    await win.keyboard.press('Escape') // belt-and-suspenders before the next block
+    await win.waitForTimeout(120)
+  }
+
   // ── #121: double-click OVER a card edits, does NOT create ─────────────────────
   const beforeEdit = await win.locator('[data-note-id]').count()
   const editCard = await pickCardNear(win, probe.x, probe.y)
@@ -532,11 +616,375 @@ async function runSmoke(win) {
   assert('#111 dragged card still present after toggle (no abandonment)', cardBack)
   assert('#111 no orphaned ghost after toggle ([data-canvas-ghost] count 0)', noGhost)
 
+  // ── B4: the "back to your notes" centroid pill (§14 G2) ───────────────────────
+  // Escaped happy-dom: the pill (CentroidArrow, CanvasStage.tsx:1583-1664) was
+  // gated on the INFLATED cull set, so a card was always "visible" and the pill
+  // NEVER appeared. The fix gates it on `trueVisibleIds` (uninflated viewport,
+  // CanvasStage.tsx:1493) → it renders iff cards exist AND zero are truly visible
+  // (CanvasStage.tsx:1605 `if (placedLayouts.length === 0 || visibleIds.size > 0) return null`).
+  // We drive it via the bridge (setCamera is the UNCLAMPED Dispatch). LAST in the
+  // smoke because it pans the camera off the board — no position-sensitive
+  // assertion follows. Selector: data-canvas-centroid-arrow (CanvasStage.tsx:1641).
+  // The arrow glyph (one of → ↘ ↓ ↙ ← ↖ ↑ ↗) is the product's direction signal:
+  // angle = atan2(centroid − viewportCenter) in WORLD coords (CanvasStage.tsx:1611-1627),
+  // rendered as TEXT in the button (CanvasStage.tsx:1660) — no data-angle attr.
+  const harnessLive = await win.evaluate(() => Boolean(window.__canvasHarness))
+  if (!harnessLive) {
+    assert('B4: harness bridge present to drive the camera', false)
+  } else {
+    // (a) ABSENT when centered on the board — the core B4 regression was that the
+    // pill never appeared; the inverse anchor proves the gate is two-sided. The
+    // seeded board spans ~5000×3300 with a uniform scatter, so its centroid ≈ the
+    // world center; centering there keeps cards truly visible → pill hidden.
+    await win.evaluate(
+      ([world]) => {
+        const w = window.innerWidth
+        const h = window.innerHeight
+        // Top-left-anchored camera (camera.ts): center the world center in view.
+        window.__canvasHarness?.setCamera({
+          x: world.w / 2 - w / 2,
+          y: world.h / 2 - h / 2,
+          zoom: 1,
+        })
+      },
+      [WORLD],
+    )
+    await win.waitForTimeout(300)
+    const pillCentered = await win.locator('[data-canvas-centroid-arrow]').count()
+    assert('B4 centroid pill ABSENT when centered on the board', pillCentered === 0)
+
+    // (b) PRESENT when panned FAR into empty world space (x = -8000, well left of
+    // the [0,5000] board → zero cards truly visible). The pill must appear (the
+    // regression: it never did). Keeping y near the board centroid makes the
+    // viewport→centroid vector point almost due RIGHT, so the glyph must be `→`.
+    await win.evaluate(
+      ([world]) => {
+        const h = window.innerHeight
+        // y so the viewport center ≈ board centroid_y (world.h/2) → near-horizontal
+        // vector; x far left so dx ≫ |dy| → unambiguous → octant.
+        window.__canvasHarness?.setCamera({ x: -8000, y: world.h / 2 - h / 2, zoom: 1 })
+      },
+      [WORLD],
+    )
+    await win.waitForTimeout(300)
+    const pillBtn = win.locator('[data-canvas-centroid-arrow]')
+    const pillPanned = await pillBtn.count()
+    assert(
+      'B4 centroid pill APPEARS when panned to empty space (trueVisibleIds gate)',
+      pillPanned > 0,
+    )
+    if (pillPanned > 0) {
+      // Direction: read the rendered glyph (the product's only direction signal).
+      // Panned far LEFT of the board, the centroid is to the RIGHT → expect `→`.
+      // The dx (~+10000) so dominates |dy| (≲ centroid_y span) that only the `→`
+      // octant ([-22.5°,22.5°)) is reachable — a stable, non-brittle check.
+      const glyph = await pillBtn.evaluate((el) => (el.textContent || '').trim().charAt(0))
+      console.log(`centroid pill glyph (panned far-left): "${glyph}" (expect →)`)
+      assert(
+        'B4 centroid arrow points toward the note centroid (→ when panned left)',
+        glyph === '→',
+      )
+    }
+    // Restore a board-centered view so the run ends on a sane camera.
+    await win.evaluate(
+      ([world]) => {
+        const w = window.innerWidth
+        const h = window.innerHeight
+        window.__canvasHarness?.setCamera({
+          x: world.w / 2 - w / 2,
+          y: world.h / 2 - h / 2,
+          zoom: 1,
+        })
+      },
+      [WORLD],
+    )
+  }
+
+  // ── EDGE PATHS (v0.4.1 §8 harness tier — pointer-driven, happy-dom-untestable) ──
+  // ctrl-drag card→card → createEdge; drag-into-empty → EdgeTargetPicker create+
+  // connect; select-click + ⌫ deletes a drawn edge; a 'reference' edge is NOT
+  // deletable. Read the edge COUNT through the app's OWN read path (canvas:edges,
+  // Task 1) — the SAME query the underlay renders from — so the assertion measures
+  // the persisted rows, not the DOM. Canvas/arrangement keys are the §2 opaque
+  // values (ROOT_CANVAS_ID='root' / MANUAL_ARRANGEMENT_ID='manual', src/shared/
+  // canvas.ts) — the same pair seedViaIpc + createNoteAt use above.
+  const edgeCount = () =>
+    win.evaluate(() =>
+      window.api.canvas.edges({ canvasId: 'root', arrangementId: 'manual' }).then((e) => e.length),
+    )
+
+  // Restore a board-centered camera (B4 left it there too, but be explicit) and
+  // clear any selection so the edge sub-tests start clean.
+  await win.evaluate(
+    ([world]) => {
+      const w = window.innerWidth
+      const h = window.innerHeight
+      window.__canvasHarness?.setCamera({
+        x: world.w / 2 - w / 2,
+        y: world.h / 2 - h / 2,
+        zoom: 1,
+      })
+    },
+    [WORLD],
+  )
+  await win.keyboard.press('Escape')
+  await win.waitForTimeout(200)
+
+  // ── ctrl-drag card→card creates a drawn edge (§3) ─────────────────────────────
+  // Two fully-visible cards at distinct probe points. The product selects the
+  // TOPMOST card under each press, but for edge creation we don't read selection
+  // back — the gesture routes by hitVisibleAt(dropWorld) at mouse.up, which lands
+  // the edge on whatever card the cursor is over (the dst probe). We keep the two
+  // on-screen CENTERS to (a) drive the drag and (b) compute the screen midpoint
+  // the select/delete sub-test clicks. ctrl is held across down→move→up so the
+  // gesture is the edge-draw, not a move (decision 2: ctrl-drag = edge).
+  let srcCenter = null
+  let dstCenter = null
+  const srcCard = await pickCardNear(win, vp.x + vp.width * 0.32, vp.y + vp.height * 0.4)
+  const dstCard = await pickCardNear(win, vp.x + vp.width * 0.68, vp.y + vp.height * 0.62)
+  if (!srcCard || !dstCard || srcCard.id === dstCard.id) {
+    assert('edge ctrl-drag: two distinct fully-visible cards to connect', false)
+  } else {
+    srcCenter = { x: srcCard.x + srcCard.w / 2, y: srcCard.y + srcCard.h / 2 }
+    dstCenter = { x: dstCard.x + dstCard.w / 2, y: dstCard.y + dstCard.h / 2 }
+    const before = await edgeCount()
+    await win.mouse.move(srcCenter.x, srcCenter.y)
+    await win.keyboard.down('Control')
+    await win.mouse.down()
+    // Step the rubber-band to the dst center so the live drag crosses real frames
+    // (the gesture machine runs on native pointermove + setPointerCapture).
+    for (let i = 1; i <= 6; i++) {
+      await win.mouse.move(
+        srcCenter.x + ((dstCenter.x - srcCenter.x) * i) / 6,
+        srcCenter.y + ((dstCenter.y - srcCenter.y) * i) / 6,
+      )
+    }
+    await win.mouse.up()
+    await win.keyboard.up('Control')
+    await win.waitForTimeout(500) // createEdge txn + invalidate + edges refetch
+    const after = await edgeCount()
+    console.log(`edges before/after ctrl-drag: ${before} → ${after}`)
+    assert('edge ctrl-drag card→card created an edge (count +1, §3)', after === before + 1)
+  }
+  await win.keyboard.press('Escape')
+  await win.waitForTimeout(150)
+
+  // ── drag-into-empty opens the target picker + creates+connects (§4) ───────────
+  // ctrl-drag from a card to a product-classified EMPTY point → on drop (no card
+  // under the cursor) the §4 EdgeTargetPicker opens at the drop point. Type a
+  // query that matches NO seeded title (titles are "Seed note N"; "zqx…" has no
+  // subsequence in any) so the ONLY row is the trailing "create" row → it is the
+  // highlighted Command.Item → Enter routes onCreateAndConnect: createNoteAt at the
+  // drop point THEN createEdge to the new note. Asserts BOTH a new card and a new
+  // edge appeared (place + connect in one gesture).
+  const pickerSrc = await pickCardNear(win, vp.x + vp.width * 0.4, vp.y + vp.height * 0.4)
+  const emptyDrop = await findEmptyPoint(win, vp)
+  if (!pickerSrc || !emptyDrop) {
+    assert('edge drag-into-empty: a source card + an empty drop point', false)
+  } else {
+    const psc = { x: pickerSrc.x + pickerSrc.w / 2, y: pickerSrc.y + pickerSrc.h / 2 }
+    const beforeEdges = await edgeCount()
+    const beforeCards = await win.locator('[data-note-id]').count()
+    await win.mouse.move(psc.x, psc.y)
+    await win.keyboard.down('Control')
+    await win.mouse.down()
+    for (let i = 1; i <= 6; i++) {
+      await win.mouse.move(
+        psc.x + ((emptyDrop.x - psc.x) * i) / 6,
+        psc.y + ((emptyDrop.y - psc.y) * i) / 6,
+      )
+    }
+    await win.mouse.up()
+    await win.keyboard.up('Control')
+    await win.waitForTimeout(250)
+    const pickerOpen = await win.evaluate(
+      () => !!document.querySelector('[data-edge-target-picker]'),
+    )
+    assert('edge drag-into-empty opened the target picker ([data-edge-target-picker])', pickerOpen)
+    if (pickerOpen) {
+      // The picker input auto-focuses on mount; type a no-match query so only the
+      // "create" row exists, then Enter commits create+connect.
+      await win.keyboard.type('zqxedgesmoke')
+      await win.waitForTimeout(150)
+      await win.keyboard.press('Enter')
+      await win.waitForTimeout(600) // createNoteAt + createEdge + invalidate + refetch
+      const afterEdges = await edgeCount()
+      const afterCards = await win.locator('[data-note-id]').count()
+      console.log(
+        `edges ${beforeEdges}→${afterEdges} · cards ${beforeCards}→${afterCards} (create+connect)`,
+      )
+      assert(
+        'edge drag-into-empty created a new note (count +1, §4)',
+        afterCards === beforeCards + 1,
+      )
+      assert(
+        'edge drag-into-empty connected it (edge count +1, §4)',
+        afterEdges === beforeEdges + 1,
+      )
+    }
+  }
+  await win.keyboard.press('Escape')
+  await win.waitForTimeout(150)
+
+  // ── select + ⌫ deletes a drawn edge (§5) ──────────────────────────────────────
+  // The ctrl-drag edge (sub-test 1) is a center-to-center segment between two known
+  // card centers. We click a point ON that segment with NO card under it so
+  // onWorldPointerDown's card-precedence branch (hitVisibleAt !== null,
+  // CanvasStage.tsx:1281) is NOT taken and it falls through to hitEdgeAt →
+  // setSelectedEdge (:1290). The raw midpoint sits near viewport-center — the
+  // densest region of the deterministic 500-card seed — so a THIRD card usually
+  // covers it; a plain click there would select that CARD, and an unconditional
+  // ⌫ would then route to onRemove() and DELETE the card (corrupting sub-test 4).
+  // So we (a) sample several fractions along the segment, (b) accept a candidate
+  // ONLY when the click selects the EDGE ([data-edge-selected] present AND
+  // selectedCardId null), Escaping (never ⌫) past any candidate that grabbed a
+  // card, and (c) gate ⌫ on a confirmed edge selection — the card-delete path is
+  // impossible. If no candidate selects the edge → honest skip (no deletion).
+  if (!srcCenter || !dstCenter) {
+    assert('edge select: a drawn edge from the ctrl-drag sub-test to select', false)
+  } else {
+    let edgePicked = false
+    for (const f of [0.5, 0.4, 0.6, 0.35, 0.65]) {
+      const p = {
+        x: srcCenter.x + (dstCenter.x - srcCenter.x) * f,
+        y: srcCenter.y + (dstCenter.y - srcCenter.y) * f,
+      }
+      await win.mouse.move(p.x, p.y)
+      await win.mouse.down()
+      await win.mouse.up()
+      await win.waitForTimeout(120)
+      const edgeSel = await win.evaluate(() =>
+        document.querySelector('[data-canvas-world]')?.hasAttribute('data-edge-selected'),
+      )
+      // The edge is selected only if the marker is present AND no card is ringed
+      // (selectedCardId null) — a card click sets the ring, not the edge marker,
+      // but assert the conjunction defensively before allowing ⌫.
+      const cardSel = await selectedCardId(win)
+      if (edgeSel === true && cardSel === null) {
+        edgePicked = true
+        break
+      }
+      // A card (or nothing) got picked — clear WITHOUT ⌫ so no card is deleted.
+      await win.keyboard.press('Escape')
+      await win.waitForTimeout(80)
+    }
+    assert('edge click selected the drawn edge ([data-edge-selected], not a card §5)', edgePicked)
+    if (edgePicked) {
+      const before = await edgeCount()
+      await win.keyboard.press('Backspace') // safe: an EDGE is confirmed selected
+      await win.waitForTimeout(500) // deleteEdge txn + invalidate + edges refetch
+      const after = await edgeCount()
+      console.log(`edges before/after select+⌫: ${before} → ${after}`)
+      assert('edge ⌫ deleted the selected drawn edge (count −1, §5)', after === before - 1)
+    } else {
+      // No on-segment point selected the edge (dense board covered them all). Do
+      // NOT ⌫ — sub-test 4 must see an uncorrupted board. The select assert above
+      // already records the miss honestly.
+      console.log('edge select: no card-free point on the segment selected the edge — skipping ⌫')
+    }
+  }
+  await win.keyboard.press('Escape')
+  await win.waitForTimeout(150)
+
+  // ── a 'reference' edge is NOT deletable (§5 decision 6) ────────────────────────
+  // The seed makes note 1's body wikilink [[Seed note 0]] → a resolvable 'reference'
+  // links row (1 → 0). Locate it via the app's read path, fit the camera to BOTH
+  // endpoints (random scatter → use listLayouts for their world rects), wait for
+  // both cards to mount, click the screen midpoint. A reference edge is non-drawn,
+  // so nearestDrawnEdge skips it (edge-geometry.ts:104) → no selection, and ⌫ is a
+  // no-op → edge count UNCHANGED.
+  const refEdge = await win.evaluate(() =>
+    window.api.canvas
+      .edges({ canvasId: 'root', arrangementId: 'manual' })
+      .then((es) => es.find((e) => e.edgeType === 'reference') ?? null),
+  )
+  if (!refEdge) {
+    assert('reference edge: a rendered reference edge exists (seed [[Seed note 0]])', false)
+  } else {
+    // Fit the camera to the two endpoints (mirror fitCamera: center + zoom). The
+    // bridge setCamera is the UNCLAMPED Dispatch, so a zoom < 0.5 is honored when
+    // the two random endpoints are far apart (keeps both on-screen).
+    await win.evaluate(
+      ([ids, cardW, cardH]) => {
+        const w = window.innerWidth
+        const h = window.innerHeight
+        return window.api.canvas
+          .listLayouts({ canvasId: 'root', arrangementId: 'manual' })
+          .then((rows) => {
+            const wanted = rows.filter((r) => ids.includes(r.note_id) && r.x !== null)
+            if (wanted.length < 2) return
+            let minX = Number.POSITIVE_INFINITY
+            let minY = Number.POSITIVE_INFINITY
+            let maxX = Number.NEGATIVE_INFINITY
+            let maxY = Number.NEGATIVE_INFINITY
+            for (const r of wanted) {
+              minX = Math.min(minX, r.x)
+              minY = Math.min(minY, r.y)
+              maxX = Math.max(maxX, r.x + cardW)
+              maxY = Math.max(maxY, r.y + cardH)
+            }
+            const pad = 120
+            // Floor at 0.16 (just above the dot-tier threshold 0.15, lod.ts:10) so
+            // BOTH cards stay mounted as DOM ([data-note-id]) — at the dot tier the
+            // whole card layer is dropped (CanvasStage.tsx:1566) and the click would
+            // have no rects to land on. Cap at 1 so a near pair doesn't over-zoom.
+            const zoom = Math.max(
+              0.16,
+              Math.min(
+                (w - 2 * pad) / Math.max(1, maxX - minX),
+                (h - 2 * pad) / Math.max(1, maxY - minY),
+                1,
+              ),
+            )
+            const cx = (minX + maxX) / 2
+            const cy = (minY + maxY) / 2
+            window.__canvasHarness?.setCamera({ x: cx - w / zoom / 2, y: cy - h / zoom / 2, zoom })
+          })
+      },
+      [[refEdge.fromNoteId, refEdge.toNoteId], CARD_W, CARD_H],
+    )
+    await win.waitForTimeout(400) // camera write + cull pass + card mount
+    const rects = await win.evaluate(
+      ([from, to]) => {
+        const r = (id) => {
+          const el = document.querySelector(`[data-note-id="${id}"]`)
+          if (!el) return null
+          const b = el.getBoundingClientRect()
+          return { x: b.x + b.width / 2, y: b.y + b.height / 2 }
+        }
+        return { from: r(from), to: r(to) }
+      },
+      [refEdge.fromNoteId, refEdge.toNoteId],
+    )
+    if (!rects.from || !rects.to) {
+      assert('reference edge: both endpoints mounted on-screen after fit', false)
+    } else {
+      const before = await edgeCount()
+      const mid = {
+        x: (rects.from.x + rects.to.x) / 2,
+        y: (rects.from.y + rects.to.y) / 2,
+      }
+      await win.mouse.move(mid.x, mid.y)
+      await win.mouse.down()
+      await win.mouse.up()
+      await win.waitForTimeout(150)
+      const selected = await win.evaluate(() =>
+        document.querySelector('[data-canvas-world]')?.hasAttribute('data-edge-selected'),
+      )
+      assert('reference edge does NOT select on click ([data-edge-selected] absent §5)', !selected)
+      await win.keyboard.press('Backspace')
+      await win.waitForTimeout(400)
+      const after = await edgeCount()
+      console.log(`edges before/after reference ⌫: ${before} → ${after} (expect unchanged)`)
+      assert('reference edge is NOT deletable (count unchanged §5 decision 6)', after === before)
+    }
+  }
+
   const failures = out.filter(([, ok]) => !ok)
   console.log('')
   console.log(
     failures.length === 0
-      ? `SMOKE VERDICT: PASS — all ${out.length} assertions OK (#119 #121 #111 covered)`
+      ? `SMOKE VERDICT: PASS — all ${out.length} assertions OK (#119 #121 #111 B3-deselect B4-centroid edge-create/connect/select/delete covered)`
       : `SMOKE VERDICT: FAIL — ${failures.length}/${out.length} assertions failed: ` +
           failures.map(([l]) => l).join(' · '),
   )
@@ -605,9 +1053,7 @@ try {
     `gpu_compositing=${gpu.gpu_compositing} gl="${glRenderer}" session=${process.env.XDG_SESSION_TYPE}`,
   )
   if (!/enabled/.test(gpu.gpu_compositing || '') || /llvmpipe|swiftshader/i.test(glRenderer)) {
-    console.error('FAIL: GPU compositing not hardware-accelerated — results invalid (xvfb/ssh?).')
-    await app.close()
-    process.exit(1)
+    throw new AbortError('GPU compositing not hardware-accelerated — results invalid (xvfb/ssh?).')
   }
 
   // ---- vsync probe: VERBATIM from spike run.mjs:53-72 (61 rAF frames → median).
@@ -634,11 +1080,9 @@ try {
   // Pinned-protocol trap: a non-60Hz/throttled display makes "p95 ≤ 18ms" mean
   // something else. Abort outside 15–18ms (the 60Hz band).
   if (vsync < 15 || vsync > 18) {
-    console.error(
-      `FAIL: vsync p50 ${vsync}ms outside 15–18ms — display not at 60Hz / awake. Aborting.`,
+    throw new AbortError(
+      `vsync p50 ${vsync}ms outside 15–18ms — display not at 60Hz / awake. Aborting.`,
     )
-    await app.close()
-    process.exit(1)
   }
 
   // ---- SEED via createNoteAt IPC, then RELOAD so the canvas re-reads the rows.
@@ -666,12 +1110,10 @@ try {
   const cardCount = await win.locator('[data-note-id]').count()
   console.log(`mounted cards in viewport: ${cardCount} (floor ${MIN_CARDS})`)
   if (cardCount < MIN_CARDS) {
-    console.error(
-      `FAIL: only ${cardCount} cards mounted after seed+reload — board empty/near-empty ` +
+    throw new AbortError(
+      `only ${cardCount} cards mounted after seed+reload — board empty/near-empty ` +
         `(seeding or reconcile failed?). Aborting before measuring.`,
     )
-    await app.close()
-    process.exit(1)
   }
 
   // Diagnostic: a hidden page throttles rAF to ~1Hz. If this prints
@@ -708,12 +1150,10 @@ try {
         const dotCards = await win.locator('[data-note-id]').count()
         console.log(`dot-tier card count: ${dotCards} (expect 0 — cards unmount at dot tier)`)
         if (dotCards > 0) {
-          console.error(
-            `FAIL: ${dotCards} cards still mounted after forcing dot tier — tier did NOT ` +
+          throw new AbortError(
+            `${dotCards} cards still mounted after forcing dot tier — tier did NOT ` +
               `flip, so the dot gate would measure the card tier. Aborting.`,
           )
-          await app.close()
-          process.exit(1)
         }
         // Zoom FAR + center on the synthetic dot field so ~all 10k dots are
         // on-screen — without this the dot phase oscillates at the zoom-1 camera
@@ -739,7 +1179,19 @@ try {
       }
       const runs = []
       for (let r = 0; r < RUNS; r++) {
-        runs.push(await runPhase(win, phase, PHASE_MS))
+        const run = await runPhase(win, phase, PHASE_MS)
+        // Mid-run rAF-throttle tripwire (#126): a ~1Hz throttle (DPMS-blank) pushes
+        // the MEDIAN frame interval to ~1000ms. Abort with the cause, not a bogus
+        // "suspect React reconcile" verdict that sends the operator chasing a ghost.
+        if (run.p50 > THROTTLE_P50_MS) {
+          throw new AbortError(
+            `display throttled mid-run (phase=${phase} run=${r} p50=${run.p50}ms ` +
+              `≈ ${(1000 / run.p50).toFixed(1)}fps) — the screen likely DPMS-blanked, which ` +
+              `throttles rAF to ~1Hz and is NOT a render regression. Re-run with the display ` +
+              `kept awake: xset -dpms s off (restore after). See docs/harness/canvas-perf.md + issue #126.`,
+          )
+        }
+        runs.push(run)
         await win.waitForTimeout(300)
       }
       results[phase] = { median: medianByMeanFps(runs), runs }
@@ -784,7 +1236,11 @@ try {
     exitCode = pass ? 0 : 1
   }
 } catch (err) {
-  console.error(`HARNESS ERROR: ${err.stack || err.message}`)
+  // Expected operator-facing aborts (AbortError) print just the message — a stack
+  // is noise for "your display went to sleep". Unexpected bugs still print the stack.
+  console.error(
+    err.expected ? `HARNESS ABORT: ${err.message}` : `HARNESS ERROR: ${err.stack || err.message}`,
+  )
   exitCode = 1
 } finally {
   await app.close()

@@ -36,6 +36,8 @@ export interface RecentEntry {
 export interface CanvasEdge {
   fromNoteId: string
   toNoteId: string
+  /** The stored `links.to_slug` PK component — what `canvas:deleteEdge` targets. */
+  toSlug: string
   edgeType: string
 }
 

@@ -41,6 +41,24 @@ interface WorldBox {
   maxY: number
 }
 
+/**
+ * Live edge-draw state (spec §3): a rubber-band from a source card to the cursor
+ * while drawing a link. Exposed as state so CanvasStage's underlay rubber-band
+ * layer follows it; `null` when no edge drag is in progress (so the underlay can
+ * idle — #112). `labeled` flags `ctrl+alt` (typed-edge) mode.
+ */
+export interface EdgeDragState {
+  fromNoteId: string
+  /** Source card center in world coords (the rubber-band tail). */
+  startWorld: Point
+  /** Cursor (or snapped target-card center) in world coords (the head). */
+  currentWorld: Point
+  /** The card the cursor is over (snap target), else null. Never the source. */
+  targetCardId: string | null
+  /** True for `ctrl+alt` / labeled-mode: drop opens a free-text type field (decision 2). */
+  labeled: boolean
+}
+
 export interface CanvasInteractions {
   selectedIds: ReadonlySet<string>
   /** Replace selection (marquee commit / single click). */
@@ -54,10 +72,16 @@ export interface CanvasInteractions {
   dragOffset: { dx: number; dy: number } | null
   /** True while a card/group drag or marquee is in progress (esc-cascade + drag guard). */
   dragging: boolean
-  /** pointerdown on a card → begins a (possibly group) move drag. */
+  /** pointerdown on a card → begins a (possibly group) move drag, OR a ctrl-edge-draw. */
   onCardPointerDown: (e: React.PointerEvent, noteId: string) => void
   /** pointerdown on empty surface → begins a marquee. */
   onSurfacePointerDown: (e: React.PointerEvent) => void
+  /** pointerdown on a card's hover connect-handle → ALWAYS begins an edge-draw (spec §3). */
+  onConnectHandleDown: (e: React.PointerEvent, noteId: string) => void
+  /** Live edge-draw rubber-band state, else null (spec §3). */
+  edgeDragState: EdgeDragState | null
+  /** Cancel an in-progress edge-draw (esc): release without connecting. Returns true if it consumed. */
+  cancelEdgeDrag: () => boolean
   /** Nudge the selection by an arrow key (8 px); returns true if it consumed the key. */
   nudge: (key: string) => boolean
   /** Cancel an in-progress drag/marquee (esc): snap home, no write. Returns true if it consumed. */
@@ -86,6 +110,14 @@ interface MarqueeSession {
   moved: boolean
 }
 
+/** Live bookkeeping for an edge-draw gesture; held in a ref so listeners don't re-bind. */
+interface EdgeDragSession {
+  pointerId: number
+  fromNoteId: string
+  /** True for ctrl+alt / connect-handle-with-alt: drop opens the type field. */
+  labeled: boolean
+}
+
 /** Convert a viewport-relative client point to world coords via the live camera. */
 function clientToWorld(
   camera: Camera,
@@ -95,6 +127,12 @@ function clientToWorld(
 ): Point {
   const rect = viewport.getBoundingClientRect()
   return screenToWorld(camera, { x: clientX - rect.left, y: clientY - rect.top })
+}
+
+/** Center of a placed card rect (the edge endpoint anchor); origin if absent. */
+function center(rect: WorldRect | undefined): Point {
+  if (!rect) return { x: 0, y: 0 }
+  return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 }
 }
 
 /**
@@ -108,6 +146,9 @@ function clientToWorld(
  * @param args.index spatial index for marquee hit-testing (`index.search`)
  * @param args.onCommitMove pointerup commit of a drag (one undo entry)
  * @param args.onCommitNudge arrow-key commit (caller coalesces a burst via `at`)
+ * @param args.onCreateEdge drop-on-card commit: write a link source→target (spec §3)
+ * @param args.onEdgeTargetPicker drop-in-empty: open the target picker at the drop point (spec §4)
+ * @param args.hitVisibleAt topmost VISIBLE card id at a world point (edge snap + drop target)
  */
 export function useCanvasInteractions(args: {
   cameraRef: RefObject<Camera>
@@ -116,21 +157,43 @@ export function useCanvasInteractions(args: {
   index: CardSpatialIndex
   onCommitMove: (moves: { noteId: string; from: Point; to: Point }[]) => void
   onCommitNudge: (moves: { noteId: string; from: Point; to: Point }[]) => void
+  onCreateEdge: (fromNoteId: string, toNoteId: string, labeled: boolean) => void
+  onEdgeTargetPicker: (dropWorld: Point, fromNoteId: string, labeled: boolean) => void
+  hitVisibleAt: (world: Point) => string | null
 }): CanvasInteractions {
-  const { cameraRef, viewportRef, index, onCommitMove, onCommitNudge } = args
+  const {
+    cameraRef,
+    viewportRef,
+    index,
+    onCommitMove,
+    onCommitNudge,
+    onCreateEdge,
+    onEdgeTargetPicker,
+    hitVisibleAt,
+  } = args
 
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set())
   const [marquee, setMarquee] = useState<WorldBox | null>(null)
   const [dragOffset, setDragOffset] = useState<{ dx: number; dy: number } | null>(null)
+  const [edgeDragState, setEdgeDragState] = useState<EdgeDragState | null>(null)
 
   // Live mirrors read inside the viewport pointer listeners (no re-bind needed).
   const selectedRef = useRef(selectedIds)
   selectedRef.current = selectedIds
   const placedRef = useRef(args.placedRects)
   placedRef.current = args.placedRects
+  // Edge callbacks/hit-test mirrored so the once-bound pointer listeners read the
+  // latest closures without re-binding (same posture as selectedRef/placedRef).
+  const onCreateEdgeRef = useRef(onCreateEdge)
+  onCreateEdgeRef.current = onCreateEdge
+  const onEdgeTargetPickerRef = useRef(onEdgeTargetPicker)
+  onEdgeTargetPickerRef.current = onEdgeTargetPicker
+  const hitVisibleAtRef = useRef(hitVisibleAt)
+  hitVisibleAtRef.current = hitVisibleAt
 
   const dragRef = useRef<DragSession | null>(null)
   const marqueeRef = useRef<MarqueeSession | null>(null)
+  const edgeDragRef = useRef<EdgeDragSession | null>(null)
 
   // ---- Selection ops (stable callbacks; ADR 0006).
   const setSelection = useCallback((ids: Iterable<string>) => {
@@ -151,15 +214,49 @@ export function useCanvasInteractions(args: {
   // ---- pointerdown entry points (React handlers on stage elements). They set up
   // the drag/marquee session + capture the pointer on the viewport so move/up
   // listeners keep firing past the card edge.
+
+  /**
+   * Begin an edge-draw from `noteId` (spec §3). Sets the ref session + an INITIAL
+   * zero-length rubber-band state (so START is unit-testable + the band exists
+   * from frame 0), captures the pointer. Shared by the ctrl-drag path and the
+   * always-on connect handle.
+   */
+  const startEdgeDrag = useCallback(
+    (e: React.PointerEvent, noteId: string, labeled: boolean) => {
+      const viewport = viewportRef.current
+      if (!viewport) return
+      e.preventDefault()
+      e.stopPropagation()
+      edgeDragRef.current = { pointerId: e.pointerId, fromNoteId: noteId, labeled }
+      const c = center(placedRef.current.get(noteId))
+      setEdgeDragState({
+        fromNoteId: noteId,
+        startWorld: c,
+        currentWorld: c,
+        targetCardId: null,
+        labeled,
+      })
+      viewport.setPointerCapture(e.pointerId)
+    },
+    [viewportRef],
+  )
+
   const onCardPointerDown = useCallback(
     (e: React.PointerEvent, noteId: string) => {
       const viewport = viewportRef.current
       if (e.button !== 0 || !viewport) return
+      // ctrl-drag from a card body starts an edge (ctrl+alt = labeled) — the power
+      // path; the connect handle is the discoverable one (spec §3 decision 2).
+      if (e.ctrlKey) {
+        startEdgeDrag(e, noteId, e.altKey)
+        return
+      }
       e.preventDefault()
       e.stopPropagation()
       // Modifier-click toggles; a plain click on a card outside the selection
-      // collapses the selection to just it before the drag (spec §8).
-      const additive = e.shiftKey || e.metaKey || e.ctrlKey
+      // collapses the selection to just it before the drag (spec §8). Additive is
+      // shift||meta now — ctrl is the edge modifier (decision 2).
+      const additive = e.shiftKey || e.metaKey
       let ids: string[]
       if (additive) {
         toggleSelection(noteId)
@@ -177,7 +274,20 @@ export function useCanvasInteractions(args: {
       }
       viewport.setPointerCapture(e.pointerId)
     },
-    [viewportRef, setSelection, toggleSelection],
+    [viewportRef, setSelection, toggleSelection, startEdgeDrag],
+  )
+
+  /**
+   * pointerdown on a card's hover connect-handle → ALWAYS an edge-draw, regardless
+   * of modifier (the discoverable affordance; `alt` flags labeled). The handle's
+   * own `stopPropagation` keeps this from also reaching the move/marquee router.
+   */
+  const onConnectHandleDown = useCallback(
+    (e: React.PointerEvent, noteId: string) => {
+      if (e.button !== 0) return
+      startEdgeDrag(e, noteId, e.altKey)
+    },
+    [startEdgeDrag],
   )
 
   const onSurfacePointerDown = useCallback(
@@ -190,7 +300,8 @@ export function useCanvasInteractions(args: {
         pointerId: e.pointerId,
         startWorld: start,
         base: selectedRef.current,
-        additive: e.shiftKey || e.metaKey || e.ctrlKey,
+        // Additive is shift||meta now — ctrl is reserved for edges (decision 2).
+        additive: e.shiftKey || e.metaKey,
         moved: false,
       }
       viewport.setPointerCapture(e.pointerId)
@@ -207,6 +318,22 @@ export function useCanvasInteractions(args: {
     const onPointerMove = (e: PointerEvent) => {
       const camera = cameraRef.current
       if (!camera) return
+      // Edge-draw FIRST: it must not fall through to the move/marquee branches.
+      const edge = edgeDragRef.current
+      if (edge && edge.pointerId === e.pointerId) {
+        const currentWorld = clientToWorld(camera, viewport, e.clientX, e.clientY)
+        const hit = hitVisibleAtRef.current(currentWorld)
+        // The source card is never a snap target (no self-edges, spec §1/§2).
+        const targetCardId = hit && hit !== edge.fromNoteId ? hit : null
+        setEdgeDragState({
+          fromNoteId: edge.fromNoteId,
+          startWorld: center(placedRef.current.get(edge.fromNoteId)),
+          currentWorld,
+          targetCardId,
+          labeled: edge.labeled,
+        })
+        return
+      }
       const drag = dragRef.current
       if (drag && drag.pointerId === e.pointerId) {
         // Screen movement → world delta (divide by live zoom).
@@ -234,6 +361,24 @@ export function useCanvasInteractions(args: {
     }
 
     const endGesture = (e: PointerEvent) => {
+      // Edge-draw FIRST: resolve drop → create-on-card or open the empty-drop picker.
+      const edge = edgeDragRef.current
+      if (edge && edge.pointerId === e.pointerId) {
+        edgeDragRef.current = null
+        if (viewport.hasPointerCapture(e.pointerId)) viewport.releasePointerCapture(e.pointerId)
+        setEdgeDragState(null)
+        const camera = cameraRef.current
+        if (!camera) return
+        const dropWorld = clientToWorld(camera, viewport, e.clientX, e.clientY)
+        const target = hitVisibleAtRef.current(dropWorld)
+        if (target && target !== edge.fromNoteId) {
+          onCreateEdgeRef.current(edge.fromNoteId, target, edge.labeled)
+        } else {
+          // Drop on the source itself or in empty space → target picker at the drop.
+          onEdgeTargetPickerRef.current(dropWorld, edge.fromNoteId, edge.labeled)
+        }
+        return
+      }
       const drag = dragRef.current
       if (drag && drag.pointerId === e.pointerId) {
         dragRef.current = null
@@ -321,6 +466,19 @@ export function useCanvasInteractions(args: {
     return true
   }, [viewportRef])
 
+  // ---- cancelEdgeDrag (esc): abort an in-flight edge-draw with no connect (spec
+  // §3 cascade). Returns false when no edge drag is active so the cascade falls
+  // through to the next consumer.
+  const cancelEdgeDrag = useCallback((): boolean => {
+    const edge = edgeDragRef.current
+    if (!edge) return false
+    const viewport = viewportRef.current
+    if (viewport?.hasPointerCapture(edge.pointerId)) viewport.releasePointerCapture(edge.pointerId)
+    edgeDragRef.current = null
+    setEdgeDragState(null)
+    return true
+  }, [viewportRef])
+
   return {
     selectedIds,
     setSelection,
@@ -331,6 +489,9 @@ export function useCanvasInteractions(args: {
     dragging: dragOffset !== null || marquee !== null,
     onCardPointerDown,
     onSurfacePointerDown,
+    onConnectHandleDown,
+    edgeDragState,
+    cancelEdgeDrag,
     nudge,
     cancelDrag,
   }

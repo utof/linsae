@@ -17,15 +17,64 @@ import type { Camera, Point } from './camera'
 import { CardSpatialIndex, type WorldRect } from './spatial-index'
 import { useCanvasInteractions } from './useCanvasInteractions'
 
-function setup(placed: Record<string, WorldRect> = {}) {
+/**
+ * A minimal HTMLElement stand-in: the edge-gesture START path (Task 6) calls
+ * `viewport.setPointerCapture` + `getBoundingClientRect`, and `onCardPointerDown`
+ * early-returns when `viewportRef.current` is null — so the gesture tests must
+ * supply a non-null viewport. happy-dom has no real pointer/layout model, so the
+ * move→drop choreography is smoke-tested in Task 10, NOT here.
+ */
+function fakeViewport(): HTMLDivElement {
+  return {
+    setPointerCapture() {},
+    releasePointerCapture() {},
+    hasPointerCapture() {
+      return true
+    },
+    // The hook's effect attaches native pointer listeners to the viewport node;
+    // happy-dom never dispatches them in this file, so no-ops suffice.
+    addEventListener() {},
+    removeEventListener() {},
+    getBoundingClientRect() {
+      return { left: 0, top: 0, width: 1000, height: 800 } as DOMRect
+    },
+  } as unknown as HTMLDivElement
+}
+
+/** Build a synthetic React.PointerEvent with modifier keys defaulted off. */
+const evt = (over: Partial<React.PointerEvent>) =>
+  ({
+    button: 0,
+    pointerId: 1,
+    clientX: 100,
+    clientY: 100,
+    ctrlKey: false,
+    altKey: false,
+    shiftKey: false,
+    metaKey: false,
+    preventDefault() {},
+    stopPropagation() {},
+    ...over,
+  }) as unknown as React.PointerEvent
+
+function setup(
+  placed: Record<string, WorldRect> = {},
+  opts: { viewport?: HTMLDivElement | null } = {},
+) {
   const cameraRef: RefObject<Camera> = createRef() as RefObject<Camera>
   cameraRef.current = { x: 0, y: 0, zoom: 1 }
   const viewportRef = createRef<HTMLDivElement | null>()
+  // Default to no viewport (the legacy imperative tests never touch pointers); the
+  // gesture tests pass a fakeViewport so the START path runs.
+  viewportRef.current = opts.viewport ?? null
   const placedRects = new Map(Object.entries(placed))
   const index = new CardSpatialIndex()
   for (const [id, rect] of placedRects) index.setCard(id, rect)
   const onCommitMove = vi.fn()
   const onCommitNudge = vi.fn<(m: { noteId: string; from: Point; to: Point }[]) => void>()
+  const onCreateEdge = vi.fn()
+  const onEdgeTargetPicker = vi.fn()
+  const hitVisibleAt = vi.fn<(w: Point) => string | null>(() => null)
   const { result } = renderHook(() =>
     useCanvasInteractions({
       cameraRef,
@@ -34,9 +83,19 @@ function setup(placed: Record<string, WorldRect> = {}) {
       index,
       onCommitMove,
       onCommitNudge,
+      onCreateEdge,
+      onEdgeTargetPicker,
+      hitVisibleAt,
     }),
   )
-  return { result, onCommitMove, onCommitNudge }
+  return { result, onCommitMove, onCommitNudge, onCreateEdge, onEdgeTargetPicker, hitVisibleAt }
+}
+
+/** Three cards laid out for the edge-gesture START tests. */
+const EDGE_BOARD: Record<string, WorldRect> = {
+  A: { x: 0, y: 0, w: 360, h: 140 },
+  B: { x: 500, y: 0, w: 360, h: 140 },
+  C: { x: 0, y: 300, w: 360, h: 140 },
 }
 
 describe('useCanvasInteractions (headless transitions)', () => {
@@ -92,6 +151,59 @@ describe('useCanvasInteractions (headless transitions)', () => {
     let consumed = true
     act(() => {
       consumed = result.current.cancelDrag()
+    })
+    expect(consumed).toBe(false)
+  })
+})
+
+describe('useCanvasInteractions — edge-draw gesture START (Task 6)', () => {
+  // Only the SYNCHRONOUS gesture start + the modifier remap run headless here;
+  // the pointer move→drop choreography (native listeners + setPointerCapture) is
+  // smoke-tested in Task 10 (spec §8 / §3).
+  it('ctrl-drag on a card starts an edge, does not select', () => {
+    const { result } = setup(EDGE_BOARD, { viewport: fakeViewport() })
+    act(() => result.current.onCardPointerDown(evt({ ctrlKey: true }), 'A'))
+    expect(result.current.selectedIds.size).toBe(0)
+    expect(result.current.edgeDragState?.fromNoteId).toBe('A')
+  })
+
+  it('ctrl+alt-drag starts a LABELED edge', () => {
+    const { result } = setup(EDGE_BOARD, { viewport: fakeViewport() })
+    act(() => result.current.onCardPointerDown(evt({ ctrlKey: true, altKey: true }), 'A'))
+    expect(result.current.edgeDragState?.labeled).toBe(true)
+  })
+
+  it('shift adds to selection; ctrl does NOT (ctrl is the edge modifier now)', () => {
+    const { result } = setup(EDGE_BOARD, { viewport: fakeViewport() })
+    act(() => result.current.onCardPointerDown(evt({}), 'A')) // plain → select A
+    act(() => result.current.onCardPointerDown(evt({ shiftKey: true }), 'B')) // additive → A+B
+    expect(result.current.selectedIds.size).toBe(2)
+    act(() => result.current.onCardPointerDown(evt({ ctrlKey: true }), 'C')) // ctrl → edge, NOT add
+    expect(result.current.selectedIds.has('C')).toBe(false)
+  })
+
+  it('the connect handle starts an edge unconditionally (no modifier needed)', () => {
+    const { result } = setup(EDGE_BOARD, { viewport: fakeViewport() })
+    act(() => result.current.onConnectHandleDown(evt({}), 'A'))
+    expect(result.current.selectedIds.size).toBe(0)
+    expect(result.current.edgeDragState?.fromNoteId).toBe('A')
+    expect(result.current.edgeDragState?.labeled).toBe(false)
+  })
+
+  it('cancelEdgeDrag clears an in-progress edge drag', () => {
+    const { result } = setup(EDGE_BOARD, { viewport: fakeViewport() })
+    act(() => result.current.onCardPointerDown(evt({ ctrlKey: true }), 'A'))
+    act(() => {
+      expect(result.current.cancelEdgeDrag()).toBe(true)
+    })
+    expect(result.current.edgeDragState).toBeNull()
+  })
+
+  it('cancelEdgeDrag returns false when no edge drag is active', () => {
+    const { result } = setup(EDGE_BOARD, { viewport: fakeViewport() })
+    let consumed = true
+    act(() => {
+      consumed = result.current.cancelEdgeDrag()
     })
     expect(consumed).toBe(false)
   })

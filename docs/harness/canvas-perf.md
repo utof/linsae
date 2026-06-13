@@ -23,6 +23,8 @@ measured phases through the `window.__canvasHarness` bridge — all without any
 Each phase runs **3×**; the verdict uses the **median run by mean fps**
 (the pinned protocol — see below).
 
+> **Motion-LOD note:** churn/steady drive `setCamera` through the bridge → `moveCamera` → `bump()`, re-arming the 120 ms settle timer every frame, so `isMoving` stays **true** the whole phase — these phases therefore measure the §3-credited motion-LOD placeholder/amortization path, not full-Markdown cards (`NoteCard`'s `upgradedRef` latches once-upgraded, adding run-to-run nondeterminism).
+
 ### IPC-seed + reload + board-non-empty guard
 
 The harness seeds via `window.api.canvas.createNoteAt` (the app's own IPC,
@@ -83,10 +85,10 @@ of the production build.
 pnpm harness:canvas
 ```
 
-**Run the smoke flow (pointer interactions — drag/marquee/placement/#119/#121/#111):**
+**Run the smoke flow (pointer interactions — see the Smoke section below):**
 
 ```bash
-pnpm harness:canvas -- --smoke
+pnpm harness:canvas:smoke
 ```
 
 ---
@@ -109,6 +111,11 @@ pnpm harness:canvas -- --smoke
   This is a feature, not a bug. The "p95 ≤ 18ms" steady/dot gates are
   calibrated to 60 Hz; a 75 Hz or throttled/DPMS-off display makes the numbers
   meaningless. The v0.4.0 spike found that DPMS-off throttles rAF to ~1 Hz.
+- **Mid-run throttle tripwire (#126):** the vsync probe only catches a display
+  *already* asleep at start. If the screen DPMS-blanks **during** a phase, every
+  run's median frame interval jumps to ~1000 ms (~1 Hz); the harness detects
+  `p50 > 100ms` per run and aborts with the cause rather than a bogus
+  "suspect React reconcile" verdict. Re-run with `xset -dpms s off` (restore after).
 - **Run on a real display session, NEVER under xvfb or SSH:** software GL
   invalidates results. This is the same hard rule as the v0.1.3 morph harness
   and the spike harness.
@@ -162,13 +169,16 @@ The five gate checks (concrete):
 
 ---
 
-## Smoke flow (`--smoke`)
+## Smoke flow (`pnpm harness:canvas:smoke`)
 
-`pnpm harness:canvas -- --smoke` runs a **separate code path** — it does NOT
-run the perf gates. It reuses the same setup (launch + GPU/vsync guard + IPC
-seed + reload + switch to canvas + board-non-empty guard) then drives real
-Playwright pointer events to verify the Plan-3 interactions that happy-dom
-cannot test:
+```bash
+pnpm harness:canvas:smoke
+```
+
+This runs a **separate code path** — it does NOT run the perf gates. It reuses
+the same setup (launch + GPU/vsync guard + IPC seed + reload + switch to canvas
++ board-non-empty guard) then drives real Playwright pointer events to verify
+the pointer/layout interactions that happy-dom cannot test:
 
 | Assertion | Issue |
 |---|---|
@@ -176,24 +186,66 @@ cannot test:
 | no drag-commit flash: card never snaps back to origin post-up | #119 |
 | marquee appeared mid-drag (`[data-canvas-marquee]`) | §8 |
 | marquee selected ≥2 cards (selection ring on ≥2 shells) | §8 |
+| click selected exactly one card (1 selection ring) | B3 |
+| click on empty surface deselected (0 selection rings) | B3 |
 | dblclick-over-card opened in-place editor (`[data-canvas-card-editor]`) | #121 |
 | dblclick-over-card did NOT create a card (count unchanged) | #121 |
 | placement via double-click-create added a card (count +1) | §7 |
 | canvas remounted after feed↔canvas toggle (world present) | #111 |
 | dragged card still present after toggle (no abandonment) | #111 |
 | no orphaned ghost after toggle (`[data-canvas-ghost]` count 0) | #111 |
+| centroid pill ABSENT when centered on the board | B4 |
+| centroid pill APPEARS when panned to empty space (`[data-canvas-centroid-arrow]`) | B4 |
+| centroid arrow points toward the note centroid (`→` when panned left) | B4 |
+| ctrl-drag card→card created an edge (count +1 via `canvas:edges`) | v0.4.1 §3 |
+| drag-into-empty opened the target picker (`[data-edge-target-picker]`), created a new note + connected it (card +1, edge +1) | v0.4.1 §4 |
+| click selected the drawn edge (`[data-edge-selected]`) and ⌫ deleted it (count −1) | v0.4.1 §5 |
+| a `'reference'` edge does NOT select on click and is NOT deletable (count unchanged) | v0.4.1 §5 |
+
+**B3** (click-deselect) and **B4** (the §14 G2 "back to your notes" centroid
+pill) escaped happy-dom this cycle — both are pointer/layout-only and share the
+phantom-occupancy / inflated-cull-set lineage of B1, so only the manual smoke
+can catch a regression. B3 guards the `hitVisibleAt` fix; B4 guards the
+`trueVisibleIds` gate on the pill.
+
+**Edge paths (v0.4.1 §8 harness tier):** the four edge rows above exercise the
+pointer-driven create/connect/select/delete flow that happy-dom cannot — drawing
+an edge needs `setPointerCapture` + native pointermove, and the edge underlay is
+canvas-2D (no DOM). Edge **counts** are read through the app's own `canvas:edges`
+read path (the same query the underlay renders from), not the DOM. The
+reference-edge sub-test needs a `'reference'` edge that actually **renders**, so
+the seed makes note 1's body wikilink `[[Seed note 0]]` (note `i`'s heading
+`# Seed note ${i}` → slug `seed note ${i}`); that resolves to a `reference` links
+row `1 → 0` returned by `canvas:edges` once both are placed (all seed cards are).
+A reference edge is non-drawn (`nearestDrawnEdge` skips it), so it neither selects
+nor deletes — the sub-test proves the read-only guard.
 
 Output per assertion: `OK  <label>` or `FAIL <label>`. Final line:
 
 ```
-SMOKE VERDICT: PASS — all 10 assertions OK (#119 #121 #111 covered)
+SMOKE VERDICT: PASS — all 23 assertions OK (#119 #121 #111 B3-deselect B4-centroid edge-create/connect/select/delete covered)
 ```
 
 or
 
 ```
-SMOKE VERDICT: FAIL — N/10 assertions failed: <labels>
+SMOKE VERDICT: FAIL — N/23 assertions failed: <labels>
 ```
+
+**Prereq (same as the perf gate):** a real display session and a built app —
+
+```bash
+pnpm rebuild:electron && pnpm exec electron-vite build
+```
+
+It needs hardware GL + a 60 Hz awake display for the same reasons as the perf
+gate (it shares the GPU/vsync guard); never run it under xvfb or SSH.
+
+**When to run it (ritual):** before merging any canvas work, and after touching
+pointer, layout, selection, or centroid code (`useCanvasInteractions.ts`,
+`CanvasStage.tsx` hit-testing / culling / `CentroidArrow`, `NoteCard.tsx`
+selection ring). It is operator-run on real hardware — it is **not** a lefthook
+or CI gate (ABI + display, same as the perf gate).
 
 ---
 

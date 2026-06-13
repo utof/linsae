@@ -98,6 +98,10 @@ export interface MockApi {
     setState: ReturnType<typeof vi.fn>
     recentOnCanvas: ReturnType<typeof vi.fn>
     createNoteAt: ReturnType<typeof vi.fn>
+    /** createEdge mock — added in v0.4.1. @see docs/specs/v0.4.1-canvas-edges.md §2 */
+    createEdge: ReturnType<typeof vi.fn>
+    /** deleteEdge mock — added in v0.4.1. @see docs/specs/v0.4.1-canvas-edges.md §2 */
+    deleteEdge: ReturnType<typeof vi.fn>
   }
   system: {
     revealNotesFolder: ReturnType<typeof vi.fn>
@@ -179,6 +183,8 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
         updated_at: 0,
         deleted_at: null,
       })),
+      createEdge: vi.fn(async (): Promise<void> => undefined),
+      deleteEdge: vi.fn(async (): Promise<void> => undefined),
     },
     system: {
       revealNotesFolder: vi.fn(async () => ({ ok: true })),

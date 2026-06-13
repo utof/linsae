@@ -320,3 +320,52 @@ export const CanvasCreateNoteAtInputSchema = z.object({
   x: z.number().finite(),
   y: z.number().finite(),
 })
+
+/**
+ * Reserved edge_type values managed by other subsystems.
+ * 'reference' is wiped on every note save by replaceLinksForNote (links.ts:48);
+ * 'comment-on' is managed by setCommentOnEdge (links.ts:153). Both are forbidden
+ * as user-drawn labels — defence in depth (also guarded in edges.ts).
+ * @see docs/specs/v0.4.1-canvas-edges.md §1 §2
+ */
+const RESERVED_EDGE_TYPES = ['reference', 'comment-on'] as const
+
+/**
+ * Trimmed non-empty string, ≤40 chars, NOT in the reserved set.
+ * Why trim: prevents whitespace-only labels that pass min(1) but are blank.
+ * Why ≤40: generous for type labels; caps DB and UI payload.
+ * @see docs/specs/v0.4.1-canvas-edges.md §2
+ */
+const EdgeTypeSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(40)
+  .refine((t) => !(RESERVED_EDGE_TYPES as readonly string[]).includes(t), {
+    message: "edgeType 'reference'/'comment-on' are reserved",
+  })
+
+/**
+ * canvas:createEdge input — draw a typed link from one note to another.
+ * The server resolves toNoteId → slug and stores it as to_slug (spec §2).
+ * @see docs/specs/v0.4.1-canvas-edges.md §2
+ */
+export const CanvasCreateEdgeInputSchema = z.object({
+  ...CanvasKey,
+  fromNoteId: z.string().min(1),
+  toNoteId: z.string().min(1),
+  edgeType: EdgeTypeSchema,
+})
+
+/**
+ * canvas:deleteEdge input — delete the exact PK row from links.
+ * toSlug comes from the canvas:edges response (the toSlug field added in Task 1).
+ * Reserved types are rejected here (server-side guard, spec §2 decision 6).
+ * @see docs/specs/v0.4.1-canvas-edges.md §2
+ */
+export const CanvasDeleteEdgeInputSchema = z.object({
+  ...CanvasKey,
+  fromNoteId: z.string().min(1),
+  toSlug: z.string().min(1),
+  edgeType: EdgeTypeSchema, // reserved types rejected here too (server-side §2 guard)
+})

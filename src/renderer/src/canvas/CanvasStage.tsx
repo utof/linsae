@@ -46,9 +46,12 @@ import {
   type Point,
   screenToWorld,
   visibleWorldRect,
+  worldToScreen,
 } from './camera'
 import { setCanvasDevLod, useCanvasDevLod } from './dev-lod'
-import { edgeSegment } from './edge-geometry'
+import { EdgeTargetPicker } from './EdgeTargetPicker'
+import { arrowhead, edgeSegment, nearestDrawnEdge } from './edge-geometry'
+import { edgeKind, TYPE_PILL_MIN_ZOOM } from './edge-style'
 import {
   type CanvasHarnessBridge,
   installHarnessBridge,
@@ -64,7 +67,7 @@ import { CardSpatialIndex } from './spatial-index'
 import type { Pos, UndoEntry } from './undo-stack'
 import { pushOp, redo as redoStack, undo as undoStack } from './undo-stack'
 import { useCanvasCamera } from './useCanvasCamera'
-import { useCanvasInteractions } from './useCanvasInteractions'
+import { type EdgeDragState, useCanvasInteractions } from './useCanvasInteractions'
 import { useSpatialUndoStore } from './useSpatialUndoStore'
 import { ZeroState } from './ZeroState'
 
@@ -250,6 +253,50 @@ function getSyntheticDots(): Float32Array {
 const DOT_SCREEN_RADIUS = 3
 
 /**
+ * Draw a quiet, screen-constant type-label pill centered at world (x, y) for a
+ * drawn edge (spec §6 "tiny mid-segment pill"). Sizes everything via `/camera.zoom`
+ * so the pill stays visually constant across zoom (like the hairline strokes).
+ * `fill` is the canvas-bg token (`--bg-0`), `text` the secondary token (`--fg-2`),
+ * `fontFamily` the resolved `--font-sans` value — all pre-resolved by the caller so
+ * getComputedStyle is never called per-edge (and so the Canvas 2D `font` setter gets
+ * a real family, not a CSS var() it can't expand). Caller gates the call on
+ * `camera.zoom >= TYPE_PILL_MIN_ZOOM`. Saves/restores ctx so it's hermetic — the
+ * text-state mutations (font/textAlign/textBaseline) never leak to the next draw.
+ */
+function drawTypePill(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  camera: Camera,
+  fill: string,
+  textColor: string,
+  fontFamily: string,
+): void {
+  ctx.save()
+  const z = camera.zoom
+  const fontPx = 11 / z // screen-constant 11px label
+  const padX = 5 / z
+  const h = 16 / z
+  const r = 4 / z // corner radius
+  ctx.font = `${fontPx}px ${fontFamily}`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  const w = ctx.measureText(text).width + padX + padX
+  const left = x - w / 2
+  const top = y - h / 2
+  ctx.beginPath()
+  ctx.roundRect(left, top, w, h, r)
+  ctx.globalAlpha = 0.9 // quiet — let the underlying edge read through faintly
+  ctx.fillStyle = fill
+  ctx.fill()
+  ctx.globalAlpha = 1
+  ctx.fillStyle = textColor
+  ctx.fillText(text, x, y)
+  ctx.restore()
+}
+
+/**
  * Renders the canvas viewport for the root canvas. The viewport div always
  * mounts (gestures bind immediately, layout is stable), but the world
  * container is gated on the camera hook's `ready` flag — its first paint is
@@ -387,9 +434,37 @@ export function CanvasStage({
   const edgeColorRef = useRef<string | null>(null)
 
   /**
+   * Cached tokens for the DRAWN-edge styling (spec §6): `--accent` for the stroke +
+   * arrowhead, `--bg-0` for the type-pill fill, `--fg-2` for the pill text. Resolved
+   * lazily on first draw, same rationale as {@link edgeColorRef} (getComputedStyle is
+   * a layout read; tolerate empty values in test envs via the fallbacks).
+   */
+  const edgeDrawnColorRef = useRef<{
+    accent: string
+    pillBg: string
+    pillFg: string
+    font: string
+  } | null>(null)
+
+  /**
+   * The currently-selected DRAWN edge, identified by its `links` PK
+   * (`from_note_id`, `to_slug`, `edge_type`) — the exact row `canvas:deleteEdge`
+   * targets (spec §5). null = no edge selected. Only drawn edges are selectable
+   * (decision 6); the draw loop below highlights the matching edge (accent, full
+   * alpha, thicker line), and ⌫/⌦ deletes it. Declared above {@link edgesLayer}
+   * because that memo lists it as a dep (TDZ: the memo runs at declaration order).
+   */
+  const [selectedEdge, setSelectedEdge] = useState<{
+    fromNoteId: string
+    toSlug: string
+    edgeType: string
+  } | null>(null)
+
+  /**
    * UnderlayLayer that draws resolved note edges in world coordinates. Rebuilt
-   * on [edges, placedRects] so a new array reference marks the underlay dirty via
-   * the `layers` identity change (spec §3 dirty-flag cadence). Reads the shared
+   * on [edges, placedRects, selectedEdge] so a new array reference marks the
+   * underlay dirty via the `layers` identity change (spec §3 dirty-flag cadence;
+   * the selectedEdge dep repaints the §5 highlight). Reads the shared
    * {@link placedRects} map — the SAME source as culling + the interaction hook.
    */
   const edgesLayer: UnderlayLayer = useMemo(() => {
@@ -401,15 +476,28 @@ export function CanvasStage({
       draw(ctx: CanvasRenderingContext2D, drawCamera): void {
         if (edges.length === 0) return
 
-        // Resolve the colour token lazily on first draw (getComputedStyle is a
+        // Resolve the colour tokens lazily on first draw (getComputedStyle is a
         // layout read — defer to draw time so it's never called pre-paint).
         if (edgeColorRef.current === null) {
           edgeColorRef.current =
             getComputedStyle(document.documentElement).getPropertyValue('--fg-3').trim() ||
             'rgba(0,0,0,0.25)'
         }
+        if (edgeDrawnColorRef.current === null) {
+          const root = getComputedStyle(document.documentElement)
+          edgeDrawnColorRef.current = {
+            accent: root.getPropertyValue('--accent').trim() || '#0D99FF',
+            pillBg: root.getPropertyValue('--bg-0').trim() || '#FFFFFF',
+            pillFg: root.getPropertyValue('--fg-2').trim() || '#757575',
+            // Resolve the family token here: the Canvas 2D `font` setter does NOT
+            // expand CSS var() — an unparseable string is silently ignored and the
+            // pill would fall back to 10px sans-serif (wrong size + measureText off).
+            font: root.getPropertyValue('--font-sans').trim() || 'system-ui, sans-serif',
+          }
+        }
 
         const color = edgeColorRef.current
+        const drawn = edgeDrawnColorRef.current
 
         for (const edge of edges) {
           const fromRect = rectByNoteId.get(edge.fromNoteId)
@@ -421,15 +509,30 @@ export function CanvasStage({
           // edgeSegment returns null for self-edges and overlapping cards.
           if (!seg) continue
 
+          // kind-routed styling (spec §6): comment-on dashed-quiet, reference
+          // solid-quiet, drawn edges distinct (accent, full-ish alpha, directed).
+          const kind = edgeKind(edge.edgeType)
           ctx.beginPath()
-          ctx.strokeStyle = color
           ctx.lineWidth = 1 / drawCamera.zoom // screen-constant hairline
-          ctx.globalAlpha = 0.25
-
-          if (edge.edgeType === 'comment-on') {
+          if (kind === 'comment') {
+            ctx.strokeStyle = color // --fg-3, quiet
+            ctx.globalAlpha = 0.25
             ctx.setLineDash([6 / drawCamera.zoom, 4 / drawCamera.zoom])
+          } else if (kind === 'reference') {
+            ctx.strokeStyle = color
+            ctx.globalAlpha = 0.25
+            ctx.setLineDash([])
           } else {
-            // 'reference' and any future types: solid line.
+            // drawn edge: distinct + directed. Selected (spec §5) → full alpha +
+            // a thicker line for the accent highlight; otherwise the quiet 0.7.
+            const isSel =
+              selectedEdge !== null &&
+              selectedEdge.fromNoteId === edge.fromNoteId &&
+              selectedEdge.toSlug === edge.toSlug &&
+              selectedEdge.edgeType === edge.edgeType
+            ctx.strokeStyle = drawn.accent
+            ctx.globalAlpha = isSel ? 1 : 0.7
+            if (isSel) ctx.lineWidth = 2 / drawCamera.zoom
             ctx.setLineDash([])
           }
 
@@ -437,13 +540,46 @@ export function CanvasStage({
           ctx.lineTo(seg.x2, seg.y2)
           ctx.stroke()
 
-          // Reset per-edge state so strokes don't bleed into each other.
+          if (kind === 'drawn') {
+            const a = arrowhead(seg, 9 / drawCamera.zoom) // screen-constant barb
+            ctx.beginPath()
+            ctx.moveTo(a.tip.x, a.tip.y)
+            ctx.lineTo(a.left.x, a.left.y)
+            ctx.lineTo(a.right.x, a.right.y)
+            ctx.closePath()
+            ctx.fillStyle = drawn.accent
+            ctx.fill()
+            // Type-label pill: only for non-'link' (i.e. free-text typed) edges,
+            // and only when zoomed in past TYPE_PILL_MIN_ZOOM (spec §6 "hidden at
+            // small zoom"). The bare 'link' type carries no label worth showing.
+            if (edge.edgeType !== 'link' && drawCamera.zoom >= TYPE_PILL_MIN_ZOOM) {
+              drawTypePill(
+                ctx,
+                edge.edgeType,
+                (seg.x1 + seg.x2) / 2,
+                (seg.y1 + seg.y2) / 2,
+                drawCamera,
+                drawn.pillBg,
+                drawn.pillFg,
+                drawn.font,
+              )
+            }
+          }
+
+          // Reset per-edge state so styling doesn't bleed into the next edge.
+          // lineWidth is also re-set at the top of every iteration, but reset it
+          // here too so the selected-edge 2/zoom width is self-contained — if the
+          // top-of-loop set ever moves into a branch, the thicker line still can't
+          // bleed onto the next edge (no pixel test would catch that regression).
           ctx.globalAlpha = 1
+          ctx.lineWidth = 1 / drawCamera.zoom
           ctx.setLineDash([])
         }
       },
     }
-  }, [edges, placedRects])
+    // selectedEdge in the deps: a selection change must rebuild this layer so the
+    // new array identity marks the underlay dirty → the highlight repaints (#112).
+  }, [edges, placedRects, selectedEdge])
 
   /**
    * Cached `--fg-2` token for the dot fill, resolved once on first dot draw.
@@ -516,16 +652,8 @@ export function CanvasStage({
     }
   }, [dotPositions])
 
-  /**
-   * Underlay layers array. At the dot tier the dots layer is appended (cards do
-   * not render — see below); otherwise it is absent and only edges draw. Identity
-   * changes when any layer is rebuilt, triggering the underlay's dirty-mark
-   * effect (spec §3 cadence).
-   */
-  const underlayLayers: UnderlayLayer[] = useMemo(
-    () => (tier === 'dot' ? [edgesLayer, dotsLayer] : [edgesLayer]),
-    [edgesLayer, dotsLayer, tier],
-  )
+  // The underlay layers array is assembled AFTER the interaction hook below, so it
+  // can append the live edge-draw rubber-band layer (which reads edgeDragState).
 
   /**
    * Spatial index built DURING render from the shared {@link placedRects} map
@@ -726,8 +854,115 @@ export function CanvasStage({
     [commitMoves],
   )
 
-  // ---- Interaction hook (selection + drag/marquee/nudge). Reads placedRects +
-  // index live; commits flow back through the callbacks above.
+  // ---- Edge creation (spec §3). A drawn edge is a real `links` row; create
+  // invalidates the SAME query key the edges read uses (['canvas-edges', root]) so
+  // the new edge renders. NOT part of the §13 layout-undo stack (spec §7).
+  const createEdgeMut = useMutation({
+    mutationFn: (i: { fromNoteId: string; toNoteId: string; edgeType: string }) =>
+      api.canvas.createEdge({
+        canvasId: ROOT_CANVAS_ID,
+        arrangementId: MANUAL_ARRANGEMENT_ID,
+        fromNoteId: i.fromNoteId,
+        toNoteId: i.toNoteId,
+        edgeType: i.edgeType,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['canvas-edges', ROOT_CANVAS_ID] })
+    },
+  })
+
+  // ---- Edge deletion (spec §5). Mirrors createEdgeMut: a drawn edge is a real
+  // `links` row; delete targets the exact PK and invalidates the SAME query key
+  // the edges read uses so the edge disappears. The server guards reserved types
+  // (Task 2) — the client only ever selects drawn edges (decision 6).
+  const deleteEdgeMut = useMutation({
+    mutationFn: (i: { fromNoteId: string; toSlug: string; edgeType: string }) =>
+      api.canvas.deleteEdge({
+        canvasId: ROOT_CANVAS_ID,
+        arrangementId: MANUAL_ARRANGEMENT_ID,
+        fromNoteId: i.fromNoteId,
+        toSlug: i.toSlug,
+        edgeType: i.edgeType,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['canvas-edges', ROOT_CANVAS_ID] })
+    },
+  })
+
+  /**
+   * Nearest DRAWN edge to a world point, as its `links` PK, or null (spec §5).
+   * The screen-constant 6px threshold is divided by zoom so it stays 6 CSS px
+   * regardless of zoom. Reads the shared {@link placedRects} (the SAME source as
+   * culling + the draw loop) so the hit segment matches what's painted. The pure
+   * hit math lives in {@link nearestDrawnEdge} (unit-tested); this wraps it with
+   * the live threshold + maps the hit to the PK shape {@link selectedEdge} holds.
+   */
+  const hitEdgeAt = useCallback(
+    (w: Point): { fromNoteId: string; toSlug: string; edgeType: string } | null => {
+      const TH = 6 / (cameraRef.current?.zoom || 1)
+      const hit = nearestDrawnEdge(w, edges, placedRects, TH)
+      return hit ? { fromNoteId: hit.fromNoteId, toSlug: hit.toSlug, edgeType: hit.edgeType } : null
+    },
+    [edges, placedRects],
+  )
+
+  /**
+   * Pending labeled edge awaiting its type from the inline label field (spec §3
+   * decision 2/3). `worldAnchor` positions the field at the drop midpoint; `↵`
+   * commits the typed label as `edgeType`, `esc` cancels the WHOLE edge.
+   * `toNoteId` is set for the drop-on-card path; the drop-in-empty labeled path
+   * (Task 7) resolves the target first, then reuses this field.
+   */
+  const [pendingEdgeLabel, setPendingEdgeLabel] = useState<{
+    fromNoteId: string
+    toNoteId: string
+    worldAnchor: Point
+  } | null>(null)
+
+  /**
+   * Drop-in-empty target-picker request (spec §4). Task 6 establishes the STATE +
+   * setter; the `<EdgeTargetPicker>` that reads it is rendered in Task 7. Until
+   * then, an empty-space drop sets this but shows nothing — drop-on-card is the
+   * fully-working path this task delivers.
+   */
+  const [edgeTargetPicker, setEdgeTargetPicker] = useState<{
+    dropWorld: Point
+    fromNoteId: string
+    labeled: boolean
+  } | null>(null)
+
+  /**
+   * Commit a drop-on-card edge (spec §3). Plain → create immediately as 'link';
+   * labeled → open the inline label field at the drop midpoint (decision 2).
+   */
+  const onCreateEdge = useCallback(
+    (fromNoteId: string, toNoteId: string, labeled: boolean) => {
+      if (labeled) {
+        // Anchor the field at the midpoint of the two card centers (the drop locus).
+        const f = placedRects.get(fromNoteId)
+        const t = placedRects.get(toNoteId)
+        const mid: Point =
+          f && t
+            ? { x: (f.x + f.w / 2 + t.x + t.w / 2) / 2, y: (f.y + f.h / 2 + t.y + t.h / 2) / 2 }
+            : { x: 0, y: 0 }
+        setPendingEdgeLabel({ fromNoteId, toNoteId, worldAnchor: mid })
+        return
+      }
+      createEdgeMut.mutate({ fromNoteId, toNoteId, edgeType: 'link' })
+    },
+    [placedRects, createEdgeMut],
+  )
+
+  /** Drop in empty space → open the target picker at the drop point (Task 7 renders it). */
+  const onEdgeTargetPicker = useCallback(
+    (dropWorld: Point, fromNoteId: string, labeled: boolean) => {
+      setEdgeTargetPicker({ dropWorld, fromNoteId, labeled })
+    },
+    [],
+  )
+
+  // ---- Interaction hook (selection + drag/marquee/nudge + edge-draw). Reads
+  // placedRects + index live; commits flow back through the callbacks above.
   const interactions = useCanvasInteractions({
     cameraRef,
     viewportRef,
@@ -735,7 +970,60 @@ export function CanvasStage({
     index,
     onCommitMove,
     onCommitNudge,
+    onCreateEdge,
+    onEdgeTargetPicker,
+    hitVisibleAt,
   })
+
+  /**
+   * Live edge-draw rubber-band (spec §3): a quiet accent line from the source card
+   * center to the cursor, snapping to a hovered target card's center. Null when no
+   * edge drag is in progress — so the underlay layers array does NOT rebuild on
+   * idle (it stays edges[/dots] only) and the underlay can idle (#112). Resolves
+   * the accent token lazily (reuses the {@link edgeDrawnColorRef} cache; falls back
+   * to a getComputedStyle read on first draw if no edge has drawn yet).
+   */
+  const liveRubberBandLayer = useMemo<UnderlayLayer | null>(() => {
+    const st: EdgeDragState | null = interactions.edgeDragState
+    if (!st) return null
+    return {
+      draw(ctx, cam): void {
+        const accent =
+          edgeDrawnColorRef.current?.accent ||
+          getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() ||
+          '#0D99FF'
+        // Snap the head to the target card's center when hovering one.
+        const target = st.targetCardId ? placedRects.get(st.targetCardId) : undefined
+        const head = target
+          ? { x: target.x + target.w / 2, y: target.y + target.h / 2 }
+          : st.currentWorld
+        ctx.beginPath()
+        ctx.lineWidth = 1 / cam.zoom
+        ctx.strokeStyle = accent
+        ctx.globalAlpha = 0.5 // quiet (spec §3 "quiet rubber-band")
+        ctx.setLineDash([4 / cam.zoom, 3 / cam.zoom])
+        ctx.moveTo(st.startWorld.x, st.startWorld.y)
+        ctx.lineTo(head.x, head.y)
+        ctx.stroke()
+        ctx.globalAlpha = 1
+        ctx.setLineDash([])
+      },
+    }
+  }, [interactions.edgeDragState, placedRects])
+
+  /**
+   * Underlay layers array. At the dot tier the dots layer is appended (cards do
+   * not render — see below); otherwise only edges draw. The live edge-draw
+   * rubber-band is appended last while a drag is in progress. Identity changes when
+   * any layer is rebuilt, triggering the underlay's dirty-mark effect (spec §3
+   * cadence): the rubber-band layer's identity changes each drag frame
+   * (edgeDragState updates) → underlay redraws; no drag → no rebuild → idle (#112).
+   */
+  const underlayLayers: UnderlayLayer[] = useMemo(() => {
+    const base = tier === 'dot' ? [edgesLayer, dotsLayer] : [edgesLayer]
+    if (liveRubberBandLayer) base.push(liveRubberBandLayer)
+    return base
+  }, [edgesLayer, dotsLayer, tier, liveRubberBandLayer])
 
   /**
    * Place a note at a world point + record the undo entry. `from` is `'shelf'`
@@ -990,10 +1278,26 @@ export function CanvasStage({
       // (marquee/deselect), not onCardPointerDown — which would reselect the
       // phantom instead of clearing the selection (bug B3 misroute).
       const top = hitVisibleAt(w)
-      if (top !== null) interactions.onCardPointerDown(e, top)
-      else interactions.onSurfacePointerDown(e)
+      if (top !== null) {
+        // A visible card takes precedence over an overlapping edge (spec §5):
+        // any card click clears the edge selection, then begins the card drag.
+        setSelectedEdge(null)
+        interactions.onCardPointerDown(e, top)
+        return
+      }
+      // Visually-empty point: hit-test drawn edges BEFORE the surface (marquee).
+      // Selecting an edge clears any note selection (one selection model at a time).
+      const he = hitEdgeAt(w)
+      if (he) {
+        setSelectedEdge(he)
+        interactions.clearSelection()
+        return
+      }
+      // Truly empty: clear any edge selection and begin the marquee/deselect.
+      setSelectedEdge(null)
+      interactions.onSurfacePointerDown(e)
     },
-    [hitVisibleAt, interactions, placing],
+    [hitVisibleAt, hitEdgeAt, interactions, placing],
   )
 
   // ---- Selection-bar verbs (spec §8). `selectedIds` comes from the hook.
@@ -1088,16 +1392,25 @@ export function CanvasStage({
     },
     [interactions],
   )
-  // ⌫/⌦ → remove the selection from the canvas (the SelectionBar's onRemove).
-  // onRemove no-ops when the selection is empty (spec §15: selection ≠ ∅).
+  // ⌫/⌦ → delete a selected DRAWN edge (spec §5, no confirm) FIRST; else remove
+  // the selected cards from the canvas (the SelectionBar's onRemove). An edge
+  // selection and a note selection are mutually exclusive (onWorldPointerDown
+  // clears one when setting the other), so the edge branch can't shadow a real
+  // note remove. onRemove no-ops when the selection is empty (spec §15).
   useHotkeys(
     'backspace,delete',
     (e) => {
+      if (selectedEdge) {
+        e.preventDefault()
+        deleteEdgeMut.mutate(selectedEdge)
+        setSelectedEdge(null)
+        return
+      }
       if (selectedIds.size === 0) return
       e.preventDefault()
       onRemove()
     },
-    [selectedIds, onRemove],
+    [selectedEdge, deleteEdgeMut, selectedIds, onRemove],
   )
 
   // ---- The esc cascade (spec §15). ONE consumer per press, in order:
@@ -1138,13 +1451,32 @@ export function CanvasStage({
         setEditingId(null)
         return consume()
       }
+      // Edge-draw cancel (T6, spec §3): an in-progress rubber-band releases first
+      // (before move/marquee), connecting nothing.
+      if (interactions.cancelEdgeDrag()) return consume()
       if (interactions.cancelDrag()) return consume() // drag OR marquee (#118)
+      // Drop-in-empty target picker (spec §3/§4): clear it (Task 7 renders it).
+      if (edgeTargetPicker !== null) {
+        setEdgeTargetPicker(null)
+        return consume()
+      }
+      // Labeled-edge field (spec §3 decision 3): esc cancels the WHOLE edge — no
+      // edge is created; a plain edge is one ctrl-drag away.
+      if (pendingEdgeLabel !== null) {
+        setPendingEdgeLabel(null)
+        return consume()
+      }
       if (pickerAnchor !== null) {
         setPickerAnchor(null)
         return consume()
       }
       if (placing) {
         onPlacingDone?.()
+        return consume()
+      }
+      // Edge selection clears before note selection (spec §3/§5 cascade order).
+      if (selectedEdge !== null) {
+        setSelectedEdge(null)
         return consume()
       }
       if (selectedIds.size > 0) {
@@ -1159,9 +1491,12 @@ export function CanvasStage({
     createAt,
     editingId,
     interactions,
+    edgeTargetPicker,
+    pendingEdgeLabel,
     pickerAnchor,
     placing,
     onPlacingDone,
+    selectedEdge,
     selectedIds,
     clearSelection,
   ])
@@ -1306,6 +1641,11 @@ export function CanvasStage({
                 ` scale(${camera.zoom})`,
             }}
             data-canvas-world
+            // Smoke-harness hook (#131): present iff a drawn edge is selected, so
+            // the operator-run --smoke can assert select/deselect without reading
+            // canvas-2D pixels (happy-dom has no edge DOM). Reflects state only —
+            // selection logic lives in onWorldPointerDown / the esc cascade (Task 9).
+            data-edge-selected={selectedEdge ? '' : undefined}
             onPointerDown={onWorldPointerDown}
             onDoubleClick={onSurfaceDoubleClick}
           >
@@ -1330,6 +1670,7 @@ export function CanvasStage({
                   onBeginEdit={handleBeginEdit}
                   editing={editingId === r.note_id}
                   selected={isSel || ringFlashId === r.note_id}
+                  onConnectHandleDown={interactions.onConnectHandleDown}
                 />
               )
             })}
@@ -1398,6 +1739,26 @@ export function CanvasStage({
                   onCancel={() => setCreateAt(null)}
                 />
               </div>
+            )}
+            {/* Labeled-edge type field (spec §3 decision 2/3): a small inline input
+                at the drop midpoint. ↵ commits the typed label as edgeType; esc
+                cancels the WHOLE edge (handled by the capture-phase esc cascade). */}
+            {pendingEdgeLabel && (
+              <EdgeLabelField
+                anchor={pendingEdgeLabel.worldAnchor}
+                onCommit={(label) => {
+                  const edgeType = label.trim()
+                  if (edgeType.length > 0) {
+                    createEdgeMut.mutate({
+                      fromNoteId: pendingEdgeLabel.fromNoteId,
+                      toNoteId: pendingEdgeLabel.toNoteId,
+                      edgeType,
+                    })
+                  }
+                  setPendingEdgeLabel(null)
+                }}
+                onCancel={() => setPendingEdgeLabel(null)}
+              />
             )}
             {/* In-place editor: a floating Composer over the hidden card, in the
                 same world coordinates so it pans/zooms with the canvas (spec §3). */}
@@ -1470,6 +1831,54 @@ export function CanvasStage({
               onClose={() => setPickerAnchor(null)}
             />
           )}
+          {/* Edge-target picker (spec §4) — drop an edge into empty space → fuzzy
+              place-or-create + connect. Anchored at the drop world point. */}
+          {edgeTargetPicker &&
+            (() => {
+              const { dropWorld, fromNoteId: src, labeled } = edgeTargetPicker
+              // Connect src→target: labeled routes through the inline label field
+              // at the drop point (↵ commits the type, esc cancels the whole edge —
+              // decision 3); plain creates a 'link' edge immediately.
+              const connectTo = (targetId: string) => {
+                if (labeled) {
+                  setPendingEdgeLabel({
+                    fromNoteId: src,
+                    toNoteId: targetId,
+                    worldAnchor: dropWorld,
+                  })
+                } else {
+                  createEdgeMut.mutate({ fromNoteId: src, toNoteId: targetId, edgeType: 'link' })
+                }
+              }
+              return (
+                <EdgeTargetPicker
+                  anchor={worldToScreen(camera, dropWorld)}
+                  placedNoteIds={placedNoteIds}
+                  onConnectExisting={(id) => {
+                    connectTo(id)
+                    setEdgeTargetPicker(null)
+                  }}
+                  onPlaceAndConnect={(id) => {
+                    placeAt(id, dropWorld, isShelved(id) ? 'shelf' : 'absent')
+                    connectTo(id)
+                    setEdgeTargetPicker(null)
+                  }}
+                  onCreateAndConnect={(body) => {
+                    // mutateAsync so the new note's id chains into connectTo — the
+                    // shared createMut.onSuccess can't do a per-call createEdge.
+                    void createMut
+                      .mutateAsync({ body, type: 'claim', x: dropWorld.x, y: dropWorld.y })
+                      .then((note) => connectTo(note.id))
+                      // Terminal no-op catch: the picker is already closed, so a
+                      // rejected create-note has nothing to update here — its failure
+                      // surfaces via react-query mutation state, not this chain.
+                      .catch(() => {})
+                    setEdgeTargetPicker(null)
+                  }}
+                  onClose={() => setEdgeTargetPicker(null)}
+                />
+              )
+            })()}
           {/* Zero state (spec §14): centered in the viewport, shown when no cards
               are placed. Follows the camera (viewport-space, not world-space). */}
           <div
@@ -1502,6 +1911,71 @@ export function CanvasStage({
           />
         </>
       )}
+    </div>
+  )
+}
+
+/**
+ * Inline free-text field for a labeled drawn edge (spec §3 decision 2/3). A
+ * quiet single-line input anchored at the drop midpoint in world space (so it
+ * pans/zooms with the canvas). `↵` commits the typed label as the edge's
+ * `edgeType`; `esc` cancels the WHOLE edge (owned by CanvasStage's capture-phase
+ * esc cascade, so this field does NOT handle esc itself — a local handler would
+ * double-fire). Blur also cancels (clicking away abandons the labeled edge).
+ *
+ * Why a child component: it autofocuses on mount via a ref effect, which needs a
+ * component body; mounting it only while `pendingEdgeLabel` is set keys it fresh.
+ *
+ * @see docs/specs/v0.4.1-canvas-edges.md §3
+ */
+function EdgeLabelField({
+  anchor,
+  onCommit,
+  onCancel,
+}: {
+  anchor: Point
+  onCommit: (label: string) => void
+  onCancel: () => void
+}): React.JSX.Element {
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [])
+  return (
+    <div
+      data-canvas-edge-label
+      style={{
+        position: 'absolute',
+        transform: `translate(${anchor.x}px, ${anchor.y}px)`,
+      }}
+    >
+      <input
+        ref={inputRef}
+        type="text"
+        placeholder="edge type…"
+        aria-label="edge type"
+        onKeyDown={(e) => {
+          // Enter commits; esc is intentionally NOT handled here (the stage's
+          // capture-phase cascade owns it → cancels the whole edge, decision 3).
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            onCommit(e.currentTarget.value)
+          }
+        }}
+        onBlur={onCancel}
+        style={{
+          width: 140,
+          padding: '4px 8px',
+          fontSize: 12,
+          fontFamily: 'var(--font-sans)',
+          color: 'var(--fg-1)',
+          background: 'var(--bg-1)',
+          border: '1px solid var(--accent)',
+          borderRadius: 'var(--r-2)',
+          boxShadow: 'var(--shadow-1)',
+          outline: 'none',
+        }}
+      />
     </div>
   )
 }

@@ -6,7 +6,9 @@
 import type Database from 'better-sqlite3'
 import { ipcMain } from 'electron'
 import {
+  CanvasCreateEdgeInputSchema,
   CanvasCreateNoteAtInputSchema,
+  CanvasDeleteEdgeInputSchema,
   CanvasEdgesInputSchema,
   CanvasGetStateInputSchema,
   CanvasListLayoutsInputSchema,
@@ -20,6 +22,7 @@ import {
 } from '../../shared/zod-schemas'
 import { canvasEdges } from '../db/queries/canvas-edges'
 import { getCanvasState, setCanvasState } from '../db/queries/canvas-state'
+import { createDrawnEdge, deleteDrawnEdge } from '../db/queries/edges'
 import {
   createNoteAt,
   listLayouts,
@@ -82,5 +85,11 @@ export function registerCanvasIpc(db: DB, nd: NotesDir): void {
   )
   ipcMain.handle('canvas:createNoteAt', (_e, input) =>
     createNoteAt(db, nd, CanvasCreateNoteAtInputSchema.parse(input)),
+  )
+  ipcMain.handle('canvas:createEdge', (_e, input) =>
+    createDrawnEdge(db, CanvasCreateEdgeInputSchema.parse(input)),
+  )
+  ipcMain.handle('canvas:deleteEdge', (_e, input) =>
+    deleteDrawnEdge(db, CanvasDeleteEdgeInputSchema.parse(input)),
   )
 }
