@@ -1,15 +1,17 @@
 /**
  * Component tests for the canvas stage shell: persisted-camera first paint,
- * wheel-zoom transform change, and the persistence flush/write-through cadence
- * (the camera must NOT revert to boot on a same-session toggle-back).
+ * wheel-zoom transform change, the persistence flush/write-through cadence
+ * (the camera must NOT revert to boot on a same-session toggle-back), and
+ * layout culling + shelved-row handling (Task 6).
  *
  * @see src/renderer/src/canvas/CanvasStage.tsx
  * @see src/renderer/src/canvas/useCanvasCamera.ts
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../../tests/setup'
+import type { Note } from '../../../shared/types'
 import { CanvasStage } from './CanvasStage'
 
 let mockApi: MockApi
@@ -125,6 +127,109 @@ describe('CanvasStage', () => {
 
     button.remove()
     textarea.remove()
+  })
+
+  it('(d) culling: only the near card body text appears when far card is out of viewport', async () => {
+    /**
+     * happy-dom's ResizeObserver never fires and getBoundingClientRect returns
+     * zeros everywhere, so the viewport size is (0, 0) and visibleWorldRect
+     * degenerates to a single point at the camera origin (0, 0). We place the
+     * "near" card at world (0, 0) so it intersects the degenerate search rect,
+     * and the "far" card at (5000, 5000) so it does not.
+     */
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([
+      {
+        canvas_id: 'root',
+        arrangement_id: 'manual',
+        note_id: 'near-note',
+        x: 0,
+        y: 0,
+        placed_at: 1000,
+        created_at: 1000,
+        updated_at: 1000,
+      },
+      {
+        canvas_id: 'root',
+        arrangement_id: 'manual',
+        note_id: 'far-note',
+        x: 5000,
+        y: 5000,
+        placed_at: 2000,
+        created_at: 2000,
+        updated_at: 2000,
+      },
+    ])
+
+    const nearNote: Note = {
+      id: 'near-note',
+      slug: 'near',
+      body: 'Near card body text',
+      type: 'claim',
+      created_at: 1000,
+      updated_at: 1000,
+      deleted_at: null,
+    }
+    const farNote: Note = {
+      id: 'far-note',
+      slug: 'far',
+      body: 'Far card body text',
+      type: 'claim',
+      created_at: 2000,
+      updated_at: 2000,
+      deleted_at: null,
+    }
+
+    // window.api.notes.get receives { id } payload (api facade wraps positional arg)
+    mockApi.notes.get.mockImplementation(async ({ id }: { id: string }) => {
+      if (id === 'near-note') return nearNote
+      if (id === 'far-note') return farNote
+      return null
+    })
+
+    renderWithProviders(<CanvasStage onWikilinkClick={() => {}} resolveSlug={() => false} />)
+
+    await waitFor(() => {
+      expect(screen.queryByText('Near card body text')).toBeTruthy()
+    })
+
+    // Far card is outside the degenerate (0,0) search rect and must NOT render
+    expect(screen.queryByText('Far card body text')).toBeNull()
+  })
+
+  it('(e) a shelved row (x: null) renders no card', async () => {
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([
+      {
+        canvas_id: 'root',
+        arrangement_id: 'manual',
+        note_id: 'shelved-note',
+        x: null,
+        y: null,
+        placed_at: null,
+        created_at: 1000,
+        updated_at: 1000,
+      },
+    ])
+    mockApi.notes.get.mockResolvedValue({
+      id: 'shelved-note',
+      slug: 'shelved',
+      body: 'Shelved card body text',
+      type: 'claim',
+      created_at: 1000,
+      updated_at: 1000,
+      deleted_at: null,
+    } satisfies Note)
+
+    renderWithProviders(<CanvasStage onWikilinkClick={() => {}} resolveSlug={() => false} />)
+
+    // Wait for the world to be ready (getState resolved)
+    await waitFor(() => {
+      expect(document.querySelector('[data-canvas-world]')).not.toBeNull()
+    })
+
+    // The shelved note has no world position → no NoteCard must be rendered
+    expect(screen.queryByText('Shelved card body text')).toBeNull()
   })
 
   it('remount within the same QueryClient reflects the flushed camera, not boot', async () => {
