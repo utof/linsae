@@ -516,6 +516,39 @@ export function CanvasStage({
   }, [placedRects])
 
   /**
+   * Live mirror of the on-screen card set ({@link visibleIds}, computed below).
+   * Held in a ref so {@link hitVisibleAt} can read the latest visible set without
+   * the pointer-down / double-click callbacks re-binding every render.
+   *
+   * Why: the full spatial `index` includes EVERY placed row — culled cards (never
+   * rendered) and keep-alive `display:none` cards — and seeds unmeasured cards
+   * with {@link DEFAULT_CARD_HEIGHT}. So `index.search(point)` can report a
+   * VISUALLY-empty point as occupied (bug B1: create blocked; bug B3: a click
+   * routed to a phantom card → reselect instead of deselect). Hit-testing for
+   * create-blocking + click-routing must reflect ACTUAL on-screen occupancy, so
+   * those two paths filter index hits through this set. Culling + marquee keep
+   * using the full index (they legitimately need off-screen rows).
+   * @issue utof/linsae#109 (DEFAULT_CARD_HEIGHT over-estimate)
+   */
+  const visibleIdsRef = useRef<Set<string>>(new Set())
+
+  /**
+   * Topmost VISIBLE card whose rect contains world point `w`, or null. Filters
+   * the spatial index's hits to {@link visibleIdsRef} so phantom (culled /
+   * keep-alive) rects never count as occupancy (see {@link visibleIdsRef}).
+   * Topmost = last in DOM/stacking order (index hits are ascending placed_at).
+   */
+  const hitVisibleAt = useCallback(
+    (w: Point): string | null => {
+      const hits = index.search({ minX: w.x, minY: w.y, maxX: w.x, maxY: w.y })
+      let top: string | null = null
+      for (const id of hits) if (visibleIdsRef.current.has(id)) top = id
+      return top
+    },
+    [index],
+  )
+
+  /**
    * Record a card's measured shell height and trigger one index rebuild iff the
    * height actually changed. The `prev === h` guard is load-bearing: it stops a
    * measure→rebuild→remeasure loop (a re-render with unchanged content fires no
@@ -886,12 +919,14 @@ export function CanvasStage({
       if (!viewport || !camera) return
       const rect = viewport.getBoundingClientRect()
       const w = screenToWorld(camera, { x: e.clientX - rect.left, y: e.clientY - rect.top })
-      // Only the EMPTY surface creates — a double-click over a card begins that
-      // card's in-place edit (NoteCard's own dblclick), so skip create there.
-      if (index.search({ minX: w.x, minY: w.y, maxX: w.x, maxY: w.y }).length > 0) return
+      // Only the EMPTY surface creates — a double-click over a VISIBLE card begins
+      // that card's in-place edit (NoteCard's own dblclick), so skip create there.
+      // hitVisibleAt (not raw index.search) so a phantom culled/keep-alive rect
+      // over a visually-empty point never blocks create (bug B1).
+      if (hitVisibleAt(w) !== null) return
       setCreateAt(w)
     },
-    [index],
+    [hitVisibleAt],
   )
 
   // ---- Pointer-down dispatch on the world surface (spec §8). A pointerdown over
@@ -909,11 +944,15 @@ export function CanvasStage({
       if (e.button !== 0 || !viewport || !camera || placing) return
       const rect = viewport.getBoundingClientRect()
       const w = screenToWorld(camera, { x: e.clientX - rect.left, y: e.clientY - rect.top })
-      const hit = index.search({ minX: w.x, minY: w.y, maxX: w.x, maxY: w.y })
-      if (hit.length > 0) interactions.onCardPointerDown(e, hit[hit.length - 1] as string)
+      // hitVisibleAt (not raw index.search) so a click on a VISUALLY-empty point
+      // that only overlaps a phantom culled/keep-alive rect routes to the surface
+      // (marquee/deselect), not onCardPointerDown — which would reselect the
+      // phantom instead of clearing the selection (bug B3 misroute).
+      const top = hitVisibleAt(w)
+      if (top !== null) interactions.onCardPointerDown(e, top)
       else interactions.onSurfacePointerDown(e)
     },
-    [index, interactions, placing],
+    [hitVisibleAt, interactions, placing],
   )
 
   // ---- Selection-bar verbs (spec §8). `selectedIds` comes from the hook.
@@ -1092,6 +1131,10 @@ export function CanvasStage({
     const { w, h } = viewportSize
     return new Set(index.search(visibleWorldRect(camera, w, h, 1)))
   }, [index, camera, viewportSize])
+  // Mirror into the ref read by hitVisibleAt (create-block + click-routing). Set
+  // during render — same posture as cameraRef above; the pointer/dblclick
+  // listeners read it at event time (post-commit), never mid-render.
+  visibleIdsRef.current = visibleIds
 
   // ---- Keep-alive: LRU queue of up to KEEP_ALIVE_SIZE recently-exited cards.
   //

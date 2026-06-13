@@ -1159,4 +1159,126 @@ describe('CanvasStage', () => {
       document.removeEventListener('keydown', appLadder)
     }
   })
+
+  // ---- Bug B1 (double-click empty surface → create) + B3 (click empty →
+  // deselect): both share a phantom-occupancy root cause — the hit-test index
+  // includes culled / keep-alive cards whose DEFAULT_CARD_HEIGHT rects can cover
+  // a VISUALLY-empty point. The create-block (B1) and the click-routing (B3
+  // misroute) must reflect actual visible occupancy, not the full cull index.
+
+  it('(dd) B1: double-click over a CULLED (phantom-occupied) point still opens the create composer', async () => {
+    // A card placed far off-screen at (5000,5000) is culled (not in visibleIds —
+    // the degenerate happy-dom search rect sits at the origin) but its rect still
+    // lives in the spatial index at {5000,5000 .. 5360,5140}. A double-click at
+    // world (5000,5000) overlaps that phantom rect. PRE-FIX onSurfaceDoubleClick
+    // early-returns on ANY index hit → no composer. POST-FIX the create-block
+    // only counts VISIBLE cards, so the empty (culled) point creates.
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([row('far', 5000, 5000, 1000)])
+    mockApi.notes.get.mockResolvedValue(note('far', 'far', 'Far card body'))
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(container.querySelector('[data-canvas-world]')).not.toBeNull()
+    })
+    const surface = container.querySelector('[data-canvas-world]') as HTMLElement
+    // Double-click at client (5000,5000) → world (5000,5000): over the phantom rect.
+    fireEvent.dblClick(surface, { clientX: 5000, clientY: 5000 })
+    // The create composer must open (data-canvas-create wrapper + composer textarea).
+    await waitFor(() => {
+      expect(container.querySelector('[data-canvas-create]')).not.toBeNull()
+    })
+    expect(screen.queryByLabelText('write a note')).toBeTruthy()
+  })
+
+  it('(ee) B1: double-click directly over a VISIBLE card still edits (does NOT create)', async () => {
+    // Guard: the create-block must still suppress create over a genuinely visible
+    // card so the card's own dblclick → in-place edit wins (spec §7). Card at the
+    // origin is visible (degenerate rect contains (0,0)); a dblclick there must NOT
+    // open the create composer.
+    await mountSingleCard('Visible card body')
+    const surface = document.querySelector('[data-canvas-world]') as HTMLElement
+    fireEvent.dblClick(surface, { clientX: 0, clientY: 0 })
+    // No create composer (the visible card occupies the point).
+    expect(document.querySelector('[data-canvas-create]')).toBeNull()
+  })
+
+  it('(ff) B3: a jittery click on truly-empty surface clears the selection', async () => {
+    // Select a visible card, then a plain click on truly-empty surface with 1-2px
+    // of pointer jitter between down and up. The tiny marquee box this opens hits
+    // NO visible card, so the live marquee-replace path sets the selection to the
+    // empty hit set → cleared. (Confirmed during root-cause that the bare `moved`
+    // flag is not the deselect-failure cause here; the phantom-routing case in
+    // (gg) is. This pins the common "jittery empty click deselects" behavior.)
+    await mountSingleCard('Jitter target')
+    const surface = document.querySelector('[data-canvas-world]') as HTMLElement
+    // Select the card (pointerdown at origin hit-tests world (0,0)); release it.
+    fireEvent.pointerDown(surface, { button: 0, clientX: 0, clientY: 0 })
+    fireEvent.pointerUp(surface, { button: 0, clientX: 0, clientY: 0 })
+    await waitFor(() => {
+      expect(screen.queryByText(/1 selected/i)).toBeTruthy()
+    })
+    // A jittery click on EMPTY surface: down → tiny 1px move → up, at a culled
+    // point (far from the card so this is the empty surface, not the card).
+    fireEvent.pointerDown(surface, { button: 0, clientX: 2000, clientY: 2000 })
+    fireEvent.pointerMove(surface, { clientX: 2001, clientY: 2001 })
+    fireEvent.pointerUp(surface, { button: 0, clientX: 2001, clientY: 2001 })
+    // The selection must clear (the jitter is below the marquee threshold).
+    await waitFor(() => {
+      expect(screen.queryByText(/1 selected/i)).toBeNull()
+    })
+  })
+
+  it('(gg) B3: a click on a phantom-occupied (culled) point clears the selection (no reselect)', async () => {
+    // Card A visible at the origin (selected); card B culled far away at
+    // (5000,5000) — a phantom rect in the index. A plain click at the phantom
+    // point routes through onWorldPointerDown. PRE-FIX index.search hits B →
+    // onCardPointerDown(B) → reselects the phantom card. POST-FIX only visible
+    // cards route to onCardPointerDown, so the click hits empty surface and the
+    // selection clears.
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([
+      row('vis', 0, 0, 1000),
+      row('phantom', 5000, 5000, 2000),
+    ])
+    mockApi.notes.get.mockImplementation(async ({ id }: { id: string }) => {
+      if (id === 'vis') return note('vis', 'vis', 'Visible A body')
+      if (id === 'phantom') return note('phantom', 'phantom', 'Phantom B body')
+      return null
+    })
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(screen.queryByText('Visible A body')).toBeTruthy()
+    })
+    const surface = container.querySelector('[data-canvas-world]') as HTMLElement
+    // Select the visible card A (down+up at the origin).
+    fireEvent.pointerDown(surface, { button: 0, clientX: 0, clientY: 0 })
+    fireEvent.pointerUp(surface, { button: 0, clientX: 0, clientY: 0 })
+    await waitFor(() => {
+      expect(screen.queryByText(/1 selected/i)).toBeTruthy()
+    })
+    // Click at the phantom point (5000,5000) — visually empty, index-occupied by B.
+    fireEvent.pointerDown(surface, { button: 0, clientX: 5000, clientY: 5000 })
+    fireEvent.pointerUp(surface, { button: 0, clientX: 5000, clientY: 5000 })
+    // The selection must clear — NOT reselect the phantom card B.
+    await waitFor(() => {
+      expect(screen.queryByText(/1 selected/i)).toBeNull()
+    })
+  })
+
+  it('(hh) B3 no-regression: a real marquee drag over a visible card still selects it', async () => {
+    // Guard the threshold fix does not break a genuine rubber-band. A drag well
+    // past the movement threshold over the origin card must select it live on
+    // pointermove (the additive-union / replace path in onPointerMove).
+    await mountSingleCard('Marquee me')
+    const surface = document.querySelector('[data-canvas-world]') as HTMLElement
+    // Start the marquee on empty surface, then drag a box that encloses the origin
+    // card (from (300,300) up-left across (0,0)); the move is far past threshold.
+    fireEvent.pointerDown(surface, { button: 0, clientX: 300, clientY: 300 })
+    fireEvent.pointerMove(surface, { clientX: -50, clientY: -50 })
+    fireEvent.pointerUp(surface, { button: 0, clientX: -50, clientY: -50 })
+    // The card inside the band is selected (selection bar shows 1 selected).
+    await waitFor(() => {
+      expect(screen.queryByText(/1 selected/i)).toBeTruthy()
+    })
+  })
 })
