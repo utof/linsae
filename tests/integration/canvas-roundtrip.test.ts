@@ -56,7 +56,10 @@ describe('canvas data-layer round-trip (real file)', () => {
 
     db.close()
     db = openDb(join(dir, 'test.db'))
-    expect(listLayouts(db, K)).toMatchObject([{ note_id: 'n1', x: 30, y: 40 }])
+    expect(listLayouts(db, K)).toMatchObject([
+      // restoreLayouts must preserve original stamps across the reopen (spec §13)
+      { note_id: 'n1', x: 30, y: 40, created_at: row.created_at, placed_at: row.placed_at },
+    ])
     expect(getCanvasState(db, ROOT_CANVAS_ID)).toEqual({ camera_x: 5, camera_y: 6, zoom: 1.5 })
   })
 })
