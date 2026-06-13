@@ -233,6 +233,86 @@ async function pickCardNear(win, cx, cy) {
   )
 }
 
+// The data-note-id of the single card the PRODUCT currently has selected (its
+// shell carries the §8 selection ring → a non-`none` computed box-shadow), or
+// null if zero / more-than-one are ringed. The board seeds 500 cards densely
+// over a 5000×3300 world, so at zoom 1 cards OVERLAP: a click lands inside
+// several cards' rects and `onWorldPointerDown` selects the TOPMOST (the rbush
+// `hit[last]` = highest placed_at, CanvasStage.tsx:913) — NOT necessarily the
+// nearest-center card a harness-side scan would guess. So we never assume WHICH
+// card a click grabs; we read it back from the product's own ring. Why exactly
+// one: the assertions that use this start from a cleared selection + a single
+// primary click, so >1 ring means stale state and we bail rather than mis-measure.
+async function selectedCardId(win) {
+  return win.evaluate(() => {
+    const ringed = []
+    for (const el of document.querySelectorAll('[data-note-id]')) {
+      const bs = getComputedStyle(el).boxShadow
+      if (bs && bs !== 'none') ringed.push(el.getAttribute('data-note-id'))
+    }
+    return ringed.length === 1 ? ringed[0] : null
+  })
+}
+
+// Find a viewport-relative client point the PRODUCT classifies as EMPTY surface
+// (a pointerdown there begins a marquee, not a card drag). We CANNOT reuse a
+// DOM probe (elementFromPoint / rect scan): the product hit-tests the rbush
+// spatial index, which keys off each row's world x/y + DEFAULT_CARD_HEIGHT for
+// unmeasured cards AND still contains keep-alive (display:none) rows — so the
+// index disagrees with the painted DOM, and a DOM-"empty" point can still be a
+// card per `index.search` (this was the original bug: the create/marquee grid
+// scans found DOM-empty points the product treated as occupied). Instead we ask
+// the PRODUCT: trial a short pointerdown+move at each grid point; if a
+// [data-canvas-marquee] appears the point is genuinely empty (surface path).
+// Cancel each trial with esc (clears the just-started marquee + any selection)
+// so probing is side-effect-free. Returns {x,y} or null if none of the grid is
+// empty (a 500-card board still has gaps; the grid is fine-grained enough).
+async function findEmptyPoint(win, vp) {
+  for (let gy = 0.15; gy <= 0.85; gy += 0.06) {
+    for (let gx = 0.15; gx <= 0.85; gx += 0.06) {
+      const px = vp.x + vp.width * gx
+      const py = vp.y + vp.height * gy
+      await win.mouse.move(px, py)
+      await win.mouse.down()
+      await win.mouse.move(px + 20, py + 18)
+      await win.mouse.move(px + 40, py + 36)
+      const isEmpty = (await win.locator('[data-canvas-marquee]').count()) > 0
+      await win.mouse.up()
+      await win.keyboard.press('Escape')
+      await win.waitForTimeout(40)
+      if (isEmpty) return { x: px, y: py }
+    }
+  }
+  return null
+}
+
+// Fire a double-click the canvas's `onDoubleClick` handlers actually receive, at
+// a viewport-relative client point. Why NOT win.mouse.dblclick: the canvas calls
+// viewport.setPointerCapture(e.pointerId) on the FIRST pointerdown of any
+// gesture (useCanvasInteractions.ts:178/196), and Playwright's synthetic
+// click→dblclick is then RETARGETED to the capturing viewport — so the dblclick
+// lands on the viewport, never on the card shell (NoteCard onDoubleClick) nor the
+// world surface (onSurfaceDoubleClick), and neither React handler fires. (Verified
+// on real hardware: mouse.dblclick emits a dblclick event but with the wrong
+// target → editor/composer never opens.) A real user's double-click is delivered
+// by the OS without that synthetic-capture retarget; we reproduce the user-visible
+// event by dispatching a bubbling `dblclick` MouseEvent on the true topmost
+// element at the point (document.elementFromPoint), carrying the real clientX/Y so
+// onSurfaceDoubleClick's screenToWorld lands on the intended world coord. This
+// exercises the product's own handler — it is not a product workaround.
+async function dblclickAt(win, x, y) {
+  await win.evaluate(
+    ([px, py]) => {
+      const el = document.elementFromPoint(px, py)
+      if (!el) return
+      el.dispatchEvent(
+        new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: px, clientY: py }),
+      )
+    },
+    [x, y],
+  )
+}
+
 // Drive the smoke assertions. `out` collects [label, ok] like the gate's `checks`.
 // Returns 0 if all passed, 1 if any FAILed (caller sets exitCode).
 async function runSmoke(win) {
@@ -251,74 +331,78 @@ async function runSmoke(win) {
   const probe = { x: vp.x + vp.width * 0.45, y: vp.y + vp.height * 0.45 }
 
   // ── Drag-to-move + commit (§8) + #119 (no commit-flash back to origin) ────────
-  const card = await pickCardNear(win, probe.x, probe.y)
-  if (!card) {
+  // `pickCardNear` chooses WHERE to press (a real card's on-screen center), but
+  // because the seeded cards overlap, the product may select a DIFFERENT (topmost)
+  // card than the one whose center we targeted — so we never measure the picked
+  // card. After mouse.down we read back the card the PRODUCT actually selected
+  // (its ring) via selectedCardId, capture ITS origin, and measure THAT card for
+  // the move / #119 / settle. (Without this the harness measured a stationary
+  // neighbour while the genuinely-dragged topmost card moved — the original FAIL.)
+  const pick = await pickCardNear(win, probe.x, probe.y)
+  if (!pick) {
     assert('drag: a fully-visible card to grab', false)
     return out.filter(([, ok]) => !ok).length > 0 ? 1 : 0
   }
-  const startC = { x: card.x + card.w / 2, y: card.y + card.h / 2 }
+  const startC = { x: pick.x + pick.w / 2, y: pick.y + pick.h / 2 }
   const DELTA = { x: 220, y: -140 } // enough to clear the §8 drag threshold + be visible
   await win.mouse.move(startC.x, startC.y)
   await win.mouse.down()
+  // Which card did the product grab? (topmost under the press — read its ring.)
+  const dragId = await selectedCardId(win)
+  const origin = dragId ? await noteRect(win, dragId) : null
   // A few steps so the move is a real drag, not a teleport (matches send-harness).
   for (let i = 1; i <= 5; i++) {
     await win.mouse.move(startC.x + (DELTA.x * i) / 5, startC.y + (DELTA.y * i) / 5)
   }
   await win.mouse.up()
-  // #119: sample the card's rect across the frames right after mouse.up. If the
-  // commit invalidation flashes, the card snaps back toward its ORIGIN (card.x)
-  // for ≥1 frame before re-settling at the dragged spot. Capture ~12 rAF frames.
-  const flash = await win.evaluate(
-    ([id, frames]) =>
-      new Promise((resolve) => {
-        const xs = []
-        const sample = () => {
-          const el = document.querySelector(`[data-note-id="${id}"]`)
-          xs.push(el ? +el.getBoundingClientRect().x.toFixed(1) : null)
-          if (xs.length >= frames) resolve(xs)
-          else requestAnimationFrame(sample)
-        }
-        requestAnimationFrame(sample)
-      }),
-    [card.id, 12],
-  )
-  console.log('drag x-trajectory (px):', JSON.stringify(flash)) // like send-harness `top trajectory`
-  await win.waitForTimeout(400) // let the commit settle
-  const settled = await noteRect(win, card.id)
-  const movedX = settled ? settled.x - card.x : 0
-  const movedY = settled ? settled.y - card.y : 0
-  // Allow generous tolerance: the drag delta is in SCREEN px at zoom 1, so the card
-  // should land ≈DELTA away. Half-delta floor proves it moved and STAYED moved.
-  assert(
-    'drag-to-move commit: card landed ≈ drag delta and stayed (§8)',
-    settled !== null && Math.abs(movedX - DELTA.x) < 80 && Math.abs(movedY - DELTA.y) < 80,
-  )
-  // #119: the origin is card.x. A flash is any sampled frame whose x is back near
-  // the origin (within 40px) while the settled position is far from it (the card
-  // genuinely moved). If it never moved we skip (movedX≈0 ⇒ no meaningful origin).
-  const originX = card.x
-  const reallyMoved = Math.abs(movedX) > 80
-  const flashed = reallyMoved && flash.some((x) => x !== null && Math.abs(x - originX) < 40)
-  assert('#119 no drag-commit flash: card never snapped back to origin post-up', !flashed)
+  if (!dragId || !origin) {
+    assert('drag: product selected a single card on press', false)
+  } else {
+    const originX = origin.x
+    // #119: sample the dragged card's rect across the frames right after mouse.up.
+    // If the commit invalidation flashes, the card snaps back toward its ORIGIN
+    // for ≥1 frame before re-settling at the dragged spot. Capture ~12 rAF frames.
+    const flash = await win.evaluate(
+      ([id, frames]) =>
+        new Promise((resolve) => {
+          const xs = []
+          const sample = () => {
+            const el = document.querySelector(`[data-note-id="${id}"]`)
+            xs.push(el ? +el.getBoundingClientRect().x.toFixed(1) : null)
+            if (xs.length >= frames) resolve(xs)
+            else requestAnimationFrame(sample)
+          }
+          requestAnimationFrame(sample)
+        }),
+      [dragId, 12],
+    )
+    console.log('drag x-trajectory (px):', JSON.stringify(flash)) // like send-harness `top trajectory`
+    await win.waitForTimeout(400) // let the commit settle
+    const settled = await noteRect(win, dragId)
+    const movedX = settled ? settled.x - originX : 0
+    const movedY = settled ? settled.y - origin.y : 0
+    // The drag delta is in SCREEN px at zoom 1, so the card should land ≈DELTA away.
+    assert(
+      'drag-to-move commit: card landed ≈ drag delta and stayed (§8)',
+      settled !== null && Math.abs(movedX - DELTA.x) < 80 && Math.abs(movedY - DELTA.y) < 80,
+    )
+    // #119: a flash is any sampled frame whose x is back near the origin (within
+    // 40px) while the settled position is far from it (the card genuinely moved).
+    const reallyMoved = Math.abs(movedX) > 80
+    const flashed = reallyMoved && flash.some((x) => x !== null && Math.abs(x - originX) < 40)
+    assert('#119 no drag-commit flash: card never snapped back to origin post-up', !flashed)
+  }
+  // Clear the post-drag selection so it does not bleed into the marquee assertion.
+  await win.keyboard.press('Escape')
+  await win.waitForTimeout(150)
 
   // ── Marquee select (§8): rubber-band ≥2 cards → ≥2 selection rings ────────────
-  // Find an empty surface point (no card under it) inside the viewport to start the
-  // marquee, then drag a wide rect. Scan a coarse grid for an empty spot.
-  const emptyPt = await win.evaluate(() => {
-    const vpEl = document.querySelector('[data-canvas-viewport]')
-    if (!vpEl) return null
-    const v = vpEl.getBoundingClientRect()
-    for (let gy = 0.2; gy <= 0.8; gy += 0.1) {
-      for (let gx = 0.2; gx <= 0.8; gx += 0.1) {
-        const px = v.left + v.width * gx
-        const py = v.top + v.height * gy
-        const top = document.elementFromPoint(px, py)
-        // empty iff the topmost element is not inside any card shell
-        if (top && !top.closest('[data-note-id]')) return { x: px, y: py }
-      }
-    }
-    return null
-  })
+  // Start the band on a point the PRODUCT treats as empty surface (findEmptyPoint
+  // trials the product's own marquee classification — see its doc), then drag a
+  // wide rect. A DOM elementFromPoint scan was the original bug: it found points
+  // the product's spatial index still considered occupied (keep-alive + unmeasured-
+  // height rows), so the press began a card drag and no marquee ever appeared.
+  const emptyPt = await findEmptyPoint(win, vp)
   if (!emptyPt) {
     assert('marquee: an empty surface point to start the band', false)
   } else {
@@ -360,7 +444,7 @@ async function runSmoke(win) {
     assert('#121: a fully-visible card to double-click', false)
   } else {
     const ec = { x: editCard.x + editCard.w / 2, y: editCard.y + editCard.h / 2 }
-    await win.mouse.dblclick(ec.x, ec.y)
+    await dblclickAt(win, ec.x, ec.y)
     await win.waitForTimeout(300)
     const editorOpen = (await win.locator('[data-canvas-card-editor]').count()) > 0
     const afterEdit = await win.locator('[data-note-id]').count()
@@ -379,29 +463,21 @@ async function runSmoke(win) {
   // never increases. Double-click-create (the plan's offered substitute) creates a
   // genuinely new note → [data-note-id] count +1, proving the placement wiring.
   const beforeCreate = await win.locator('[data-note-id]').count()
-  const createPt = await win.evaluate(() => {
-    const vpEl = document.querySelector('[data-canvas-viewport]')
-    if (!vpEl) return null
-    const v = vpEl.getBoundingClientRect()
-    for (let gy = 0.25; gy <= 0.75; gy += 0.1) {
-      for (let gx = 0.25; gx <= 0.75; gx += 0.1) {
-        const px = v.left + v.width * gx
-        const py = v.top + v.height * gy
-        const top = document.elementFromPoint(px, py)
-        if (top && !top.closest('[data-note-id]')) return { x: px, y: py }
-      }
-    }
-    return null
-  })
+  // The empty point MUST be empty per the product's spatial index, not the DOM:
+  // onSurfaceDoubleClick early-returns when `index.search(point)` is non-empty
+  // (CanvasStage.tsx:891), so a DOM-empty-but-index-occupied point opened no
+  // composer — the original [data-canvas-create] timeout. findEmptyPoint uses the
+  // product's own marquee classification, which shares that index hit-test.
+  const createPt = await findEmptyPoint(win, vp)
   if (!createPt) {
     assert('placement: an empty point to double-click-create', false)
   } else {
-    await win.mouse.dblclick(createPt.x, createPt.y)
+    await dblclickAt(win, createPt.x, createPt.y)
     await win.locator('[data-canvas-create]').waitFor({ state: 'visible', timeout: 4000 })
-    // The create composer's textarea (Composer.tsx) — type then Enter submits
-    // (Composer onKeyDown: Enter without shift → onSubmit, Composer.tsx:163).
+    // The create composer's textarea (Composer.tsx) — fill (which focuses it; no
+    // explicit click, which would re-enter the setPointerCapture retarget) then
+    // Enter submits (Composer onKeyDown: Enter without shift → onSubmit, Composer.tsx:163).
     const ta = win.locator('[data-canvas-create] textarea')
-    await ta.click()
     await ta.fill('Smoke placed note')
     await win.keyboard.press('Enter')
     await win.waitForTimeout(500) // create txn + invalidate + refreshCanvas + remount
