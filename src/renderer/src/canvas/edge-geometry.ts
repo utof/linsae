@@ -64,7 +64,7 @@ export function arrowhead(s: Segment, size: number): Arrowhead {
   const ux = dx / len
   const uy = dy / len // unit along the segment toward the tip
   const back = size
-  const spread = size * 0.6
+  const spread = size * 0.6 // barb half-width ≈ 0.6× the back-offset (visual constant)
   const bx = s.x2 - ux * back
   const by = s.y2 - uy * back
   // perpendicular = (-uy, ux)

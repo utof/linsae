@@ -46,4 +46,15 @@ describe('arrowhead', () => {
     expect(a.right.x).toBeLessThan(10)
     expect(a.left.y).toBeCloseTo(-a.right.y)
   })
+  it('keeps barbs symmetric about a non-axis-aligned segment', () => {
+    // 45° segment (0,0)→(10,10): barbs mirror across the line y=x, so left and
+    // right swap coordinates. This constrains the perpendicular math that the
+    // horizontal case leaves under-determined (uy=0 hides ux/uy sign errors).
+    const a = arrowhead({ x1: 0, y1: 0, x2: 10, y2: 10 }, 4)
+    expect(a.tip).toEqual({ x: 10, y: 10 })
+    expect(a.left.x).toBeCloseTo(a.right.y)
+    expect(a.left.y).toBeCloseTo(a.right.x)
+    expect(a.left.x).toBeLessThan(10)
+    expect(a.left.y).toBeLessThan(10)
+  })
 })
