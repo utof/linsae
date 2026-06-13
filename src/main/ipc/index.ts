@@ -46,7 +46,7 @@ export function registerAllIpc(
   attachmentsDir: string,
 ): void {
   registerNotesIpc(db, nd)
-  registerCanvasIpc(db)
+  registerCanvasIpc(db, nd)
   registerSystemIpc(notesDir, logsDir, reconcileSkipped)
   registerMediaIpc(db, attachmentsDir)
   registerYoutubeAuthIpc()

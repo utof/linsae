@@ -97,6 +97,7 @@ export interface MockApi {
     getState: ReturnType<typeof vi.fn>
     setState: ReturnType<typeof vi.fn>
     recentOnCanvas: ReturnType<typeof vi.fn>
+    createNoteAt: ReturnType<typeof vi.fn>
   }
   system: {
     revealNotesFolder: ReturnType<typeof vi.fn>
@@ -167,6 +168,15 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
       getState: vi.fn(async () => ({ camera_x: 0, camera_y: 0, zoom: 1 })),
       setState: vi.fn(async () => undefined),
       recentOnCanvas: vi.fn(async () => []),
+      createNoteAt: vi.fn(async () => ({
+        id: 'created-1',
+        slug: 'created-1',
+        body: '',
+        type: 'claim',
+        created_at: 0,
+        updated_at: 0,
+        deleted_at: null,
+      })),
     },
     system: {
       revealNotesFolder: vi.fn(async () => ({ ok: true })),

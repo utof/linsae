@@ -311,3 +311,12 @@ export const CanvasRecentInputSchema = z.object({
   ...CanvasKey,
   limit: z.number().int().min(1).max(50).default(8),
 })
+
+/** canvas:createNoteAt input (spec §7 single-timestamp create-on-canvas). */
+export const CanvasCreateNoteAtInputSchema = z.object({
+  ...CanvasKey,
+  body: z.string().min(1),
+  type: NoteTypeSchema.default('claim'),
+  x: z.number().finite(),
+  y: z.number().finite(),
+})

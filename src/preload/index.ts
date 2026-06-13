@@ -28,6 +28,7 @@ import type {
   AttachmentsListInputSchema,
   AttachToNoteInputSchema,
   BacklinksInputSchema,
+  CanvasCreateNoteAtInputSchema,
   CanvasEdgesInputSchema,
   CanvasGetStateInputSchema,
   CanvasListLayoutsInputSchema,
@@ -102,6 +103,8 @@ const api = {
       ipcRenderer.invoke('canvas:setState', i),
     recentOnCanvas: (i: z.input<typeof CanvasRecentInputSchema>): Promise<RecentEntry[]> =>
       ipcRenderer.invoke('canvas:recentOnCanvas', i),
+    createNoteAt: (i: z.input<typeof CanvasCreateNoteAtInputSchema>): Promise<Note> =>
+      ipcRenderer.invoke('canvas:createNoteAt', i),
   },
   youtube: {
     capture: (

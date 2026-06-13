@@ -12,7 +12,16 @@
  * @see docs/canvas-vision.md §Locked principles 2-4
  */
 import type Database from 'better-sqlite3'
+import { uuidv7 } from 'uuidv7'
 import type { CanvasLayoutRow, RecentEntry } from '../../../shared/canvas'
+import type { Note, NoteType } from '../../../shared/types'
+import type { NoteFrontmatter } from '../../files/frontmatter'
+import type { NotesDir } from '../../files/notes-dir'
+import { slugFromBody } from '../../text/slug'
+import { extractWikilinks } from '../../text/wikilinks'
+import { replaceLinksForNote } from './links'
+import { getNote } from './notes'
+import { appendRevision } from './revisions'
 
 type DB = Database.Database
 
@@ -199,4 +208,56 @@ export function recentOnCanvas(db: DB, i: Key & { limit: number }): RecentEntry[
        ORDER BY at DESC LIMIT @limit`,
     )
     .all(i) as RecentEntry[]
+}
+
+/**
+ * Create a note AND place it on the canvas in ONE transaction with ONE
+ * timestamp (spec §7). This is the single channel that can satisfy the §2
+ * recency rule's 'created' detection: notes.created_at = notes.updated_at =
+ * node_layouts.placed_at = created_at, all the same ms. Composing
+ * notes:create + canvas:placeNote renderer-side CANNOT (each stamps its own
+ * Date.now()). File-first / DB-second, exactly like saveNote.
+ * @see docs/specs/v0.4-canvas-mvp.md §7 §2
+ * @see src/main/save-note.ts (the create-branch this mirrors)
+ */
+export function createNoteAt(
+  db: DB,
+  nd: NotesDir,
+  i: Key & { body: string; type: NoteType; x: number; y: number },
+): Note {
+  const now = Date.now()
+  const id = uuidv7()
+  const slug = slugFromBody(i.body) || id
+
+  // Dup-slug pre-check (create only) — same rationale as save-note.ts:159.
+  if (slug !== id) {
+    const collision = db
+      .prepare('SELECT 1 FROM notes WHERE slug = ? AND deleted_at IS NULL LIMIT 1')
+      .get(slug)
+    if (collision) throw new Error(`a note named "${slug}" already exists`)
+  }
+
+  const links = extractWikilinks(i.body)
+  const fm: NoteFrontmatter = { id, slug, type: i.type, created_at: now, updated_at: now }
+
+  // 1. File first (atomic tmp + fsync + rename).
+  nd.writeNote(fm, i.body)
+
+  // 2. DB second — notes + links + revision + the placed layout row, one txn,
+  //    one `now` (so created_at = updated_at = placed_at).
+  return db.transaction(() => {
+    db.prepare(
+      `INSERT INTO notes (id, slug, body, type, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(id, slug, i.body, i.type, now, now)
+    db.prepare(
+      `INSERT INTO node_layouts
+         (canvas_id, arrangement_id, note_id, x, y, created_at, placed_at, updated_at)
+       VALUES (@canvasId, @arrangementId, @noteId, @x, @y, @now, @now, @now)`,
+    ).run({ canvasId: i.canvasId, arrangementId: i.arrangementId, noteId: id, x: i.x, y: i.y, now })
+    replaceLinksForNote(db, id, links)
+    appendRevision(db, { revisionId: uuidv7(), noteId: id, body: i.body, type: i.type })
+    // Non-null: we just inserted it.
+    return getNote(db, id) as Note
+  })()
 }

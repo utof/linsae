@@ -195,6 +195,10 @@ export const api = {
     /** Recently edited/placed/created notes for the canvas recent popover. */
     recentOnCanvas: (i: CanvasKey & { limit?: number }): Promise<RecentEntry[]> =>
       window.api.canvas.recentOnCanvas(i),
+    /** Create a note AND place it at (x,y) in one transaction (single timestamp). */
+    createNoteAt: (
+      i: CanvasKey & { body: string; type?: Note['type']; x: number; y: number },
+    ): Promise<Note> => window.api.canvas.createNoteAt(i),
   },
   /**
    * YouTube IPC facade: screenshot capture and oEmbed metadata fetch.

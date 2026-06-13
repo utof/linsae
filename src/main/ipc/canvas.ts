@@ -6,6 +6,7 @@
 import type Database from 'better-sqlite3'
 import { ipcMain } from 'electron'
 import {
+  CanvasCreateNoteAtInputSchema,
   CanvasEdgesInputSchema,
   CanvasGetStateInputSchema,
   CanvasListLayoutsInputSchema,
@@ -20,6 +21,7 @@ import {
 import { canvasEdges } from '../db/queries/canvas-edges'
 import { getCanvasState, setCanvasState } from '../db/queries/canvas-state'
 import {
+  createNoteAt,
   listLayouts,
   moveNotes,
   placeNote,
@@ -29,6 +31,7 @@ import {
   shelveNote,
   unplaceNotes,
 } from '../db/queries/layouts'
+import type { NotesDir } from '../files/notes-dir'
 
 type DB = Database.Database
 
@@ -36,9 +39,13 @@ type DB = Database.Database
  * Wires the canvas:* channels. Called once from `registerAllIpc`.
  * Why: same thin posture as registerNotesIpc/registerMediaIpc — handlers
  * contain zero logic so the wrappers' colocated tests are the real coverage.
- * @see docs/specs/v0.4-canvas-mvp.md §2
+ * Takes `nd` (the NotesDir) because `canvas:createNoteAt` writes a markdown
+ * file first / DB second, exactly like the notes channels (spec §7).
+ * @param db - Open better-sqlite3 Database.
+ * @param nd - {@link NotesDir} pointed at the user's notes directory.
+ * @see docs/specs/v0.4-canvas-mvp.md §2 §7
  */
-export function registerCanvasIpc(db: DB): void {
+export function registerCanvasIpc(db: DB, nd: NotesDir): void {
   ipcMain.handle('canvas:listLayouts', (_e, input) =>
     listLayouts(db, CanvasListLayoutsInputSchema.parse(input)),
   )
@@ -72,5 +79,8 @@ export function registerCanvasIpc(db: DB): void {
   })
   ipcMain.handle('canvas:recentOnCanvas', (_e, input) =>
     recentOnCanvas(db, CanvasRecentInputSchema.parse(input)),
+  )
+  ipcMain.handle('canvas:createNoteAt', (_e, input) =>
+    createNoteAt(db, nd, CanvasCreateNoteAtInputSchema.parse(input)),
   )
 }
