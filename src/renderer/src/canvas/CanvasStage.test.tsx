@@ -867,8 +867,11 @@ describe('CanvasStage', () => {
     // Regression guard for the §13 violation: CanvasStage's undo lived in a bare
     // useRef(emptyUndo()), so the AnimatePresence mode="wait" view toggle (which
     // UNMOUNTS the stage) wiped the stack — ⌘Z after a toggle-back did nothing.
-    // useSpatialUndoStore now write-throughs the stack to the query cache (the
-    // camera's survival mechanism), so a remount on the SAME client restores it.
+    // useSpatialUndoStore now write-throughs the stack to a query-cache entry
+    // (pinned gcTime:Infinity so the observer-less entry isn't GC-evicted — see
+    // useSpatialUndoStore's long-feed-park test), so a remount on the SAME client
+    // restores it. This test pins the SHORT-park path (immediate toggle-back); the
+    // >gcTime survival is the hook's fake-timer test.
     //
     // We can't reliably fire ⌘Z here: react-hotkeys-hook v5's `mod` resolution is
     // platform-flaky under happy-dom (no prior test drives a global useHotkeys

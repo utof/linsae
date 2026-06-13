@@ -8,17 +8,27 @@
  * toggle back → ⌘Z silently does nothing. Spec §13 says the stack is "per
  * window, dies on close"; a view toggle is NOT a window close. This hook makes
  * the {@link UndoState} AND its timestamp side-map survive a same-session remount
- * by mirroring {@link useCanvasCamera}'s mechanism: a write-through to a
- * react-query cache entry keyed by `canvasId`, flushed unconditionally on unmount
- * and `beforeunload`, re-read on mount.
+ * via a react-query cache entry keyed by `canvasId`: a write-through flushed
+ * unconditionally on unmount and `beforeunload`, re-read on mount.
  *
- * KEY DIFFERENCE from the camera: the camera ALSO persists to SQLite for
- * cross-restart survival; the undo stack must NOT — §13 says it dies on window
- * close (= page reload, which clears the in-memory query cache). So this is an
- * in-memory cache entry ONLY: no queryFn, no IPC, no disk.
+ * What actually keeps the entry alive across a long feed park is **`gcTime:
+ * Infinity`** (set via `setQueryDefaults` below), NOT the write-through. This
+ * entry has NO observer (the hook only uses `useQueryClient`, never `useQuery`)
+ * and NO queryFn, so it is permanently `idle` — react-query v5 garbage-collects
+ * such observer-less idle queries after `gcTime` (default 5 min). `staleTime:
+ * Infinity` does NOT protect: staleTime governs refetch, not eviction. Without
+ * the gcTime pin, parking on the feed for >5 min would silently evict the undo
+ * stack. DO NOT remove the `setQueryDefaults` line.
+ *
+ * KEY DIFFERENCE from the camera: the camera ALSO persists to SQLite, so its
+ * observer re-runs `queryFn: getState` and reads the disk fallback after any
+ * eviction — it gets eviction-immunity for free. This hook has no disk (§13: the
+ * stack dies on window close = page reload, which clears the in-memory cache), so
+ * it must pin `gcTime` explicitly. In-memory cache entry ONLY: no queryFn, no IPC,
+ * no disk.
  *
  * @see docs/specs/v0.4-canvas-mvp.md §13 (spatial undo — per window, dies on close)
- * @see src/renderer/src/canvas/useCanvasCamera.ts (the sibling survival pattern)
+ * @see src/renderer/src/canvas/useCanvasCamera.ts (sibling pattern; disk-backed, so eviction-immune for free)
  */
 import { useQueryClient } from '@tanstack/react-query'
 import { type RefObject, useCallback, useEffect, useRef } from 'react'
@@ -64,11 +74,20 @@ export interface UseSpatialUndoStore {
 export function useSpatialUndoStore(canvasId: string): UseSpatialUndoStore {
   const queryClient = useQueryClient()
 
+  // Pin gcTime:Infinity for the whole `['canvas-undo', …]` prefix BEFORE any
+  // setQueryData write. This entry is observer-less + idle (no useQuery, no
+  // queryFn), so react-query v5 would GC-evict it after the default 5-min gcTime
+  // — silently dropping the stack on a long feed park. setQueryDefaults is
+  // idempotent (overwrites the same defaults), so calling it once per first
+  // render (guarded by the lazy-init below) is safe across remounts.
+  // @see https://tanstack.com/query/v5/docs/reference/QueryClient#queryclientsetquerydefaults
+
   // Lazy init from the survival cache: a same-session remount re-reads the
   // flushed value; a fresh window (cache empty) starts from emptyUndo().
   const undoRef = useRef<UndoState | null>(null)
   const timestampsRef = useRef<LayoutTimestamps | null>(null)
   if (undoRef.current === null) {
+    queryClient.setQueryDefaults(['canvas-undo'], { gcTime: Number.POSITIVE_INFINITY })
     const cached = queryClient.getQueryData<SpatialUndoState>(undoKey(canvasId))
     undoRef.current = cached?.undo ?? emptyUndo()
     timestampsRef.current = cached?.timestamps ?? new Map()
