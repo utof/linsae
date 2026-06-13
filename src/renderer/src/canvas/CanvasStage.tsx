@@ -536,6 +536,7 @@ export function CanvasStage({ onWikilinkClick, resolveSlug }: Props): React.JSX.
                 resolveSlug={resolveSlug}
                 onBeginEdit={handleBeginEdit}
                 editing={editingId === r.note_id}
+                selected={false}
               />
             ))}
             {/* In-place editor: a floating Composer over the hidden card, in the

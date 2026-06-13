@@ -44,6 +44,15 @@ export interface NoteCardProps {
    * @see docs/specs/v0.4-canvas-mvp.md §3 (card editing)
    */
   editing: boolean
+  /**
+   * True when this card is in the canvas selection: paints the v21 focus
+   * treatment — a 2px `--accent` ring + soft `--shadow-2` halo via box-shadow
+   * only, so selecting causes no layout shift (same anti-jiggle rationale as
+   * NoteBubble's focused rail, which draws its accent edge as an inset shadow).
+   * @see docs/specs/v0.4-canvas-mvp.md §8 (selection)
+   * @see src/renderer/src/feed/NoteBubble.tsx (focused rail anti-jiggle)
+   */
+  selected: boolean
 }
 
 /** Width of every canvas card in world px (spec §3). */
@@ -71,6 +80,7 @@ export const NoteCard = memo(function NoteCard({
   resolveSlug,
   onBeginEdit,
   editing,
+  selected,
 }: NoteCardProps) {
   const queryClient = useQueryClient()
 
@@ -147,6 +157,9 @@ export const NoteCard = memo(function NoteCard({
         border: '1px solid var(--border-1)',
         borderRadius: 'var(--r-3)',
         boxSizing: 'border-box',
+        // Selection ring: accent outline + soft halo, box-shadow only (no
+        // border/outline) so selecting never shifts layout (spec §8 anti-jiggle).
+        boxShadow: selected ? '0 0 0 2px var(--accent), var(--shadow-2)' : undefined,
         padding: '12px 14px 10px',
       }}
     >

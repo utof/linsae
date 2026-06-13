@@ -47,6 +47,7 @@ const defaultProps: NoteCardProps = {
   resolveSlug: () => false,
   onBeginEdit: () => {},
   editing: false,
+  selected: false,
 }
 
 /**
@@ -109,5 +110,23 @@ describe('NoteCard', () => {
     await waitFor(() => {
       expect(screen.getByText(/Hello/)).toBeTruthy()
     })
+  })
+
+  it('(d) paints the accent selection ring on the shell when selected', () => {
+    const note = makeNote()
+    mockApi.notes.get.mockResolvedValue(note)
+    const { container } = renderCard({ selected: true }, { seedNotes: [note] })
+    const shell = container.firstChild as HTMLElement
+    // Ring is a box-shadow (no layout shift); the accent ring token is present.
+    expect(shell.style.boxShadow).toContain('var(--accent)')
+    expect(shell.style.boxShadow).toContain('var(--shadow-2)')
+  })
+
+  it('(e) draws no ring on the shell when not selected', () => {
+    const note = makeNote()
+    mockApi.notes.get.mockResolvedValue(note)
+    const { container } = renderCard({ selected: false }, { seedNotes: [note] })
+    const shell = container.firstChild as HTMLElement
+    expect(shell.style.boxShadow).toBe('')
   })
 })
