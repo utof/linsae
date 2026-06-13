@@ -1403,6 +1403,52 @@ describe('CanvasStage', () => {
     })
   })
 
+  it('(mm) #132: a jittery empty-click whose tiny marquee overlaps a card still CLEARS', async () => {
+    // The #132 regression: with a selection, a plain EMPTY-surface click that has
+    // a few px of pointer jitter between down and up opens a TINY marquee. If that
+    // box happens to overlap a card, the live marquee-replace path REPLACES the
+    // selection with that card instead of clearing — the multi-selection shrinks
+    // rather than deselecting. The slop threshold must classify a sub-threshold
+    // move as a CLICK (clear), not a marquee. (Distinct from (ff), whose tiny box
+    // hit nothing so it "cleared" by accident.)
+    //
+    // Setup mirrors (gg): card A visible+selected at the origin; card B is a
+    // PHANTOM in the full index near a culled point. The jitter click lands on
+    // that culled point → hitVisibleAt is null → routes to the surface (marquee),
+    // and the tiny marquee overlaps B in the full index — the exact shrink path.
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([
+      row('vis', 0, 0, 1000),
+      row('phantom', 5000, 5000, 2000),
+    ])
+    mockApi.notes.get.mockImplementation(async ({ id }: { id: string }) => {
+      if (id === 'vis') return note('vis', 'vis', 'Visible A body')
+      if (id === 'phantom') return note('phantom', 'phantom', 'Phantom B body')
+      return null
+    })
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(screen.queryByText('Visible A body')).toBeTruthy()
+    })
+    const surface = container.querySelector('[data-canvas-world]') as HTMLElement
+    // Select the visible card A (down+up at the origin).
+    fireEvent.pointerDown(surface, { button: 0, clientX: 0, clientY: 0 })
+    fireEvent.pointerUp(surface, { button: 0, clientX: 0, clientY: 0 })
+    await waitFor(() => {
+      expect(screen.queryByText(/1 selected/i)).toBeTruthy()
+    })
+    // Jittery empty click at the phantom point (5000,5000): down → 1px move → up.
+    // The tiny marquee {5000,5000 .. 5001,5001} overlaps phantom B in the full
+    // index. Pre-fix the marquee-replace path reselects B (selection shrinks/swaps
+    // to B); post-fix the sub-slop move is a click → the selection CLEARS.
+    fireEvent.pointerDown(surface, { button: 0, clientX: 5000, clientY: 5000 })
+    fireEvent.pointerMove(surface, { clientX: 5001, clientY: 5001 })
+    fireEvent.pointerUp(surface, { button: 0, clientX: 5001, clientY: 5001 })
+    await waitFor(() => {
+      expect(screen.queryByText(/selected/i)).toBeNull()
+    })
+  })
+
   // ---- Task 9: drawn-edge selection + deletion -------------------------------
   //
   // The pure hit-test math (nearestDrawnEdge) is unit-tested in
