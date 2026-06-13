@@ -18,6 +18,20 @@
  * @see docs/plans/v0.4-canvas-mvp-3-placement-chrome.md Task 7
  * @see docs/specs/v0.4-canvas-mvp.md §8
  */
+const verbStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  border: 0,
+  background: 'transparent',
+  borderRadius: 6,
+  padding: '4px 8px',
+  fontFamily: 'var(--font-sans)',
+  fontSize: 12,
+  color: 'var(--fg-1)',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+}
+
 export function CanvasSelectionBar({
   count,
   onRemove,
@@ -58,41 +72,13 @@ export function CanvasSelectionBar({
         style={{ width: 1, height: 16, background: 'var(--border-0)', margin: '0 2px' }}
         aria-hidden="true"
       />
-      <button
-        type="button"
-        onClick={onRemove}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          border: 0,
-          background: 'transparent',
-          borderRadius: 6,
-          padding: '4px 8px',
-          fontFamily: 'var(--font-sans)',
-          fontSize: 12,
-          color: 'var(--fg-1)',
-          cursor: 'pointer',
-          whiteSpace: 'nowrap',
-        }}
-      >
+      <button type="button" onClick={onRemove} style={verbStyle}>
         remove from canvas
       </button>
       <button
         type="button"
         onClick={onDeleteRequest}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          border: 0,
-          background: 'transparent',
-          borderRadius: 6,
-          padding: '4px 8px',
-          fontFamily: 'var(--font-sans)',
-          fontSize: 12,
-          color: 'var(--fg-danger, #E5484D)',
-          cursor: 'pointer',
-          whiteSpace: 'nowrap',
-        }}
+        style={{ ...verbStyle, color: 'var(--status-wtf)' }}
       >
         delete note…
       </button>
