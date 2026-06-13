@@ -1770,6 +1770,10 @@ export function CanvasStage({
                     void createMut
                       .mutateAsync({ body, type: 'claim', x: dropWorld.x, y: dropWorld.y })
                       .then((note) => connectTo(note.id))
+                      // Terminal no-op catch: the picker is already closed, so a
+                      // rejected create-note has nothing to update here — its failure
+                      // surfaces via react-query mutation state, not this chain.
+                      .catch(() => {})
                     setEdgeTargetPicker(null)
                   }}
                   onClose={() => setEdgeTargetPicker(null)}

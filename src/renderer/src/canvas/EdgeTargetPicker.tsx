@@ -118,8 +118,9 @@ export function EdgeTargetPicker({
   // Tracks the currently highlighted Command.Item value (= note id or CREATE_VALUE).
   const [highlighted, setHighlighted] = useState('')
 
-  // Candidate list = all live notes (capped at 500, §2). React-query cached on
-  // ['notes'] — the same key CanvasStage's create/save mutations invalidate.
+  // Candidate list = all live notes. The data layer caps `notes:list` at 500
+  // (§2), not this component. React-query cached on ['notes'] — the same key
+  // CanvasStage's create/save mutations invalidate.
   const { data: notes = [] } = useQuery({ queryKey: ['notes'], queryFn: () => api.notes.list() })
   const candidates = useMemo(() => notes.map((n) => ({ id: n.id, title: noteTitle(n) })), [notes])
   const results = useMemo(() => fuzzyMatch(query, candidates), [query, candidates])
