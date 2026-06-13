@@ -21,8 +21,9 @@
 //            viewport: gate p95 ≤ 33.4ms, mean ≥ 55fps, zero frames > 100ms.
 //   steady — small oscillation inside an already-mounted region (no new mounts):
 //            gate p95 ≤ 18ms.
-//   dot    — forceTier:'dot' + 10k synthetic dots + unclamp zoom, oscillate:
-//            gate p95 ≤ 18ms.
+//   dot    — forceTier:'dot' + 10k synthetic dots + unclamp zoom, then zoom FAR
+//            and center on the dot field so ~all 10k are VISIBLE, oscillate:
+//            gate p95 ≤ 18ms (measures 10k visible dots — #124).
 // Each phase runs 3×; the verdict uses the MEDIAN run by mean fps (pinned
 // protocol). Prints vsync p50 + GPU status FIRST and ABORTS (exit 1) if vsync
 // isn't ~16.7ms (15–18ms tolerance) or the GPU is software-rendered; ALSO aborts
@@ -53,6 +54,13 @@ const GATES = {
 const SEED = 42
 const COUNT = 500
 const WORLD = { w: 5000, h: 3300 }
+// Mirrors CanvasStage SYNTHETIC_DOT_SPREAD: the 10k synthetic dots scatter over
+// a DOT_SPREAD×DOT_SPREAD world field. The dot phase zooms FAR (zoom ≈ 0.1, the
+// spike's baseZ) and centers on the field so ~all 10k dots are on-screen — the
+// gate then measures 10k VISIBLE dots (spec §3), not the ~1 dot visible at the
+// zoom-1 camera inherited from the steady phase. @issue utof/linsae#124
+const DOT_SPREAD = 10000
+const DOT_ZOOM = 0.1
 const CARD_W = 360 // CanvasStage CARD_WIDTH
 const CARD_H = 140 // CanvasStage DEFAULT_CARD_HEIGHT
 const RUNS = 3
@@ -122,7 +130,9 @@ async function seedViaIpc(win) {
 // ---- one phase: drive the bridge camera along a cosine path for durationMs,
 // recording a rAF timestamp each frame, then reduce with stats(). `mode` picks
 // the path: 'churn' = wide pan, 'steady'/'dot' = tiny oscillation about current
-// cam (the runner forces the dot tier before the 'dot' phase). setCamera is the
+// cam. Before the 'dot' phase the runner forces the dot tier AND sets a FAR zoom
+// centered on the synthetic field (DOT_ZOOM), so the dot oscillation happens
+// there — `base = getCamera()` reads zoom 0.1 with ~10k dots visible. setCamera is the
 // UNCLAMPED Dispatch (clamping lives only in the gesture helpers, which the bridge
 // never touches), so {x,y,zoom} are written verbatim. Runs entirely in the page so
 // the rAF clock and the setCamera writes share a frame (the spike's runChoreo).
@@ -705,6 +715,27 @@ try {
           await app.close()
           process.exit(1)
         }
+        // Zoom FAR + center on the synthetic dot field so ~all 10k dots are
+        // on-screen — without this the dot phase oscillates at the zoom-1 camera
+        // inherited from the steady phase, where the 10k dots (spread over
+        // DOT_SPREAD world px) put only ~1 dot on-canvas and the gate is hollow
+        // (#124). The camera is top-left-anchored (camera.ts), so centering the
+        // [0,DOT_SPREAD]² field needs cam = field-center − half-viewport-in-world.
+        // unclampZoom is already on (set above), so zoom 0.1 is written verbatim.
+        // runPhase reads this back as `base` and oscillates ±60 world px about it.
+        await win.evaluate(
+          ([spread, zoom]) => {
+            const w = window.innerWidth
+            const h = window.innerHeight
+            window.__canvasHarness?.setCamera({
+              x: spread / 2 - w / 2 / zoom,
+              y: spread / 2 - h / 2 / zoom,
+              zoom,
+            })
+          },
+          [DOT_SPREAD, DOT_ZOOM],
+        )
+        await win.waitForTimeout(300) // let the far-zoom underlay redraw settle
       }
       const runs = []
       for (let r = 0; r < RUNS; r++) {

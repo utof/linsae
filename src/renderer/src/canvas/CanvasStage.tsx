@@ -217,8 +217,16 @@ const EMPTY: never[] = []
  */
 const SYNTHETIC_DOT_COUNT = 10_000
 
-/** World-space spread (px) the synthetic dots are scattered across. */
-const SYNTHETIC_DOT_SPREAD = 100_000
+/**
+ * World-space spread (px) the synthetic dots are scattered across. Matches the
+ * spike's validated field scale (scripts/spike-canvas/page/dots.js:24-25, a
+ * 10k×6.6k field at baseZ 0.1) so a sane far zoom (~0.1) fits the whole field
+ * on-screen — the dot gate then measures ~10k VISIBLE dots, the spike's
+ * representative scenario. The prior 100_000 needed an absurd ~0.01 zoom to fit
+ * (the perf harness never zoomed there, so the gate measured ~1 visible dot —
+ * the §3 dot gate was hollow). @issue utof/linsae#124
+ */
+const SYNTHETIC_DOT_SPREAD = 10_000
 
 /**
  * Module-level, generated once: 10k synthetic (x, y) world-coordinate pairs for
@@ -460,10 +468,23 @@ export function CanvasStage({
   }, [placedLayouts, devLod.syntheticDots])
 
   /**
-   * Dot-tier UnderlayLayer (spec §12): draws every position as one ~3px
-   * screen-constant disc. A single `beginPath()` batches all arcs, then one
-   * `fill()` paints them — the perf canary for the §16 ink seam. Reuses the
-   * generic UnderlayLayer contract (no underlay special-casing).
+   * Dot-tier UnderlayLayer (spec §12): draws every VISIBLE position as one
+   * ~3px screen-constant square via per-dot `fillRect`, the spike-validated
+   * primitive that hit 60fps with 10k dots (scripts/spike-canvas/page/dots.js:37).
+   *
+   * Why fillRect, not a batched `beginPath()`/arc/`fill()`: the arc path built
+   * all 10k subpaths every frame regardless of visibility (no cull) and filled
+   * them as one path over the whole field's bbox — measured 5.4fps / p95 533ms
+   * at the dot tier (#124, gate p95 ≤ 18ms). Axis-aligned `fillRect`s skip the
+   * transcendental arc cost and the giant single-path fill.
+   *
+   * Off-screen cull (spike dots.js:36): the underlay transform is
+   * `setTransform(dpr*z, …, -cam.x*z*dpr, -cam.y*z*dpr)`, so the visible world
+   * rect is `[cam.x, cam.x + canvas.width/(dpr*z)]` × the height analogue;
+   * `getTransform().a === dpr*z` recovers the scale without re-deriving dpr.
+   * Skipping off-field dots keeps zoomed-in production (dot tier is zoom < 0.15,
+   * §12) cheap. Reuses the generic UnderlayLayer contract (no special-casing).
+   * @issue utof/linsae#124
    */
   const dotsLayer: UnderlayLayer = useMemo(() => {
     const positions = dotPositions
@@ -475,19 +496,22 @@ export function CanvasStage({
             getComputedStyle(document.documentElement).getPropertyValue('--fg-2').trim() ||
             'rgba(0,0,0,0.45)'
         }
-        const r = DOT_SCREEN_RADIUS / drawCamera.zoom // screen-constant radius
+        const r = DOT_SCREEN_RADIUS / drawCamera.zoom // screen-constant half-size
+        const scale = ctx.getTransform().a || drawCamera.zoom // = dpr * zoom
+        const worldW = ctx.canvas.width / scale
+        const worldH = ctx.canvas.height / scale
+        const minX = drawCamera.x - r
+        const maxX = drawCamera.x + worldW + r
+        const minY = drawCamera.y - r
+        const maxY = drawCamera.y + worldH + r
         ctx.fillStyle = dotColorRef.current
-        ctx.beginPath()
         for (let i = 0; i < positions.length; i += 2) {
           // Non-null: i and i+1 are always in bounds (length is even by construction).
           const x = positions[i] as number
           const y = positions[i + 1] as number
-          // moveTo before each arc so the implicit line from the previous arc's
-          // end isn't part of the path (a single subpath would web all dots).
-          ctx.moveTo(x + r, y)
-          ctx.arc(x, y, r, 0, Math.PI * 2)
+          if (x < minX || x > maxX || y < minY || y > maxY) continue // off-screen
+          ctx.fillRect(x - r, y - r, r + r, r + r)
         }
-        ctx.fill()
       },
     }
   }, [dotPositions])
