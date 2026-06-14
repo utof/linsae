@@ -31,4 +31,8 @@ describe('noteTitle', () => {
     expect(noteTitle({ ...base, body: '' })).toBe('fallback-slug')
     expect(noteTitle({ ...base, body: '   \n\n  ' })).toBe('fallback-slug')
   })
+  it('delegates to shared deriveTitle with slug fallback (parity after rewire)', () => {
+    expect(noteTitle({ body: '# **Bold** t', slug: 's' })).toBe('Bold t')
+    expect(noteTitle({ body: '   ', slug: 'fallback-slug' })).toBe('fallback-slug')
+  })
 })
