@@ -81,6 +81,7 @@ describe('runMigrations', () => {
     expect(tableNames).toContain('note_actions')
     expect(tableNames).toContain('notes_fts')
     expect(tableNames).toContain('_migrations')
+    expect(tableNames).toContain('app_settings')
   })
 
   it('records the migration in _migrations', () => {
@@ -89,11 +90,12 @@ describe('runMigrations', () => {
     const rows = db.prepare('SELECT name FROM _migrations ORDER BY name').all() as {
       name: string
     }[]
-    expect(rows).toHaveLength(4)
+    expect(rows).toHaveLength(5)
     expect(rows[0]!.name).toBe('0001_init.sql')
     expect(rows[1]!.name).toBe('0002_video_threads.sql')
     expect(rows[2]!.name).toBe('0003_canvas.sql')
     expect(rows[3]!.name).toBe('0004_fts_slug_prefix.sql')
+    expect(rows[4]!.name).toBe('0005_app_settings.sql')
   })
 
   it('is idempotent — running twice does not error or duplicate records', () => {
@@ -101,7 +103,7 @@ describe('runMigrations', () => {
     runMigrations(db)
 
     const rows = db.prepare('SELECT name FROM _migrations').all() as { name: string }[]
-    expect(rows).toHaveLength(4)
+    expect(rows).toHaveLength(5)
   })
 
   it('creates FTS5 virtual table notes_fts', () => {

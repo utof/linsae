@@ -51,6 +51,8 @@ import type {
   ResolveInputSchema,
   SaveOverlayInputSchema,
   SearchRunInputSchema,
+  SettingsGetInputSchema,
+  SettingsSetInputSchema,
   VideoSourcesGetInputSchema,
   VideoSourcesUpsertInputSchema,
 } from '../shared/zod-schemas'
@@ -186,6 +188,12 @@ const api = {
         ipcRenderer.invoke('system:windowToggleMaximize'),
       close: (): Promise<{ ok: true }> => ipcRenderer.invoke('system:windowClose'),
     },
+  },
+  settings: {
+    get: (i: z.input<typeof SettingsGetInputSchema>): Promise<{ value: unknown }> =>
+      ipcRenderer.invoke('settings:get', i),
+    set: (i: z.input<typeof SettingsSetInputSchema>): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('settings:set', i),
   },
   // Harness flag (spec §3 / §17): true ONLY when the Playwright perf harness
   // launched the app with LINSAE_HARNESS=1 (scripts/canvas-perf-harness.mjs).

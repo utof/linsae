@@ -369,3 +369,11 @@ export const CanvasDeleteEdgeInputSchema = z.object({
   toSlug: z.string().min(1),
   edgeType: EdgeTypeSchema, // reserved types rejected here too (server-side §2 guard)
 })
+
+// ── v0.5 settings + recency ───────────────────────────────────────────────
+export const SettingsGetInputSchema = z.object({ key: z.string().min(1).max(120) })
+export const SettingsSetInputSchema = z.object({
+  key: z.string().min(1).max(120),
+  // value is any JSON-serialisable thing; the query layer JSON-encodes it.
+  value: z.unknown(),
+})

@@ -359,6 +359,13 @@ export const api = {
       durationSec: number | null
     } | null> => window.api.videoSources.get({ videoId }),
   },
+  settings: {
+    /** Read a JSON-decoded setting value (null if unset). @see src/main/ipc/notes.ts */
+    get: (key: string): Promise<{ value: unknown }> => window.api.settings.get({ key }),
+    /** Upsert a setting (value JSON-encoded server-side). */
+    set: (key: string, value: unknown): Promise<{ ok: true }> =>
+      window.api.settings.set({ key, value }),
+  },
   system: {
     /**
      * Open the notes directory in the OS file manager.
