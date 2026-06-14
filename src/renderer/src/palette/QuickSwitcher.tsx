@@ -7,7 +7,7 @@
  *
  * Why `shouldFilter={false}`: `fuzzyMatch` already filters + ranks (and yields the
  * `matched` indices for `<mark>` highlighting); cmdk's built-in filter would
- * re-order our results (same rationale as Picker.tsx / CommandPalette.tsx).
+ * re-order our results (same rationale as Picker.tsx / ContentSearch.tsx).
  *
  * Why gate rows on `query.trim().length > 0`: `fuzzyMatch('  ')` returns ALL
  * candidates (fuzzy.ts:49 trims), so without the trim gate a whitespace query
@@ -109,7 +109,7 @@ export function QuickSwitcher({ open, onJump, onClose }: Props) {
   const rows = hasQuery ? results : recent.map((r) => ({ ...r, matched: [] as number[] }))
 
   // Reset the query when the switcher closes so the next open starts empty
-  // (matches CommandPalette.tsx / v21 palette UX).
+  // (matches ContentSearch.tsx / v21 palette UX).
   useEffect(() => {
     if (!open) setQuery('')
   }, [open])

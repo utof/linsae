@@ -218,7 +218,7 @@ export function getPlayer(): PlayerInstance {
   wrapper = document.createElement('div')
   wrapper.id = 'yt-player-wrapper'
   // position:fixed + bounds synced to the host (syncBounds). z-index:1 sits above
-  // ThreadView's normal content but below every overlay (CommandPalette=100,
+  // ThreadView's normal content but below every overlay (command palettes=100,
   // BacklinksPane=10, modals/meters≥1000). Parked OFF-SCREEN (not display:none) until
   // mounted — display/visibility changes can clear a <webview> guestInstanceId
   // (electron#7700); off-screen keeps the guest alive.

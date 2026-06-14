@@ -101,7 +101,7 @@ export function CommandMenu({ open, onClose }: Props) {
   const results = useMemo(() => fuzzyMatch(query, candidates), [query, candidates])
 
   // Reset the query when the menu closes so the next open starts empty
-  // (matches QuickSwitcher.tsx / CommandPalette.tsx UX).
+  // (matches QuickSwitcher.tsx / ContentSearch.tsx UX).
   useEffect(() => {
     if (!open) setQuery('')
   }, [open])

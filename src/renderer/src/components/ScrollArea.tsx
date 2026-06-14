@@ -10,7 +10,7 @@ import {
 
 /**
  * Custom scrollbar overlay — replaces native Chromium scrollbars on every
- * internal scroll surface (Feed, CommandPalette results, BacklinksPane).
+ * internal scroll surface (Feed, ContentSearch results, BacklinksPane).
  *
  * Why custom (not a library): every native-scrollbar library evaluated
  * (overlayscrollbars-react, @radix-ui/react-scroll-area, simplebar-react,
@@ -94,7 +94,7 @@ interface ThumbGeometry {
  * a `<div>` thumb placed in their own layout.
  *
  * Surfaces that own their scroll container directly (BacklinksPane,
- * CommandPalette) should use `<ScrollArea>` below instead — it does the
+ * ContentSearch) should use `<ScrollArea>` below instead — it does the
  * wiring for you.
  */
 /**
@@ -103,7 +103,7 @@ interface ThumbGeometry {
  *   projects against `scrollEl.scrollHeight`, which is now precise for
  *   the feed (tanstack-virtual's inner-spacer CSS height equals the
  *   virtualizer's exact total) and trivially precise for ScrollArea-
- *   wrapped surfaces (BacklinksPane, CommandPalette). The earlier
+ *   wrapped surfaces (BacklinksPane, ContentSearch). The earlier
  *   `totalHeight` override that worked around OSS Virtuoso's
  *   estimate-then-measure scrollHeight swap (saga commit 6c8de79) was
  *   removed when we migrated off Virtuoso — see ADR 0005.
@@ -437,7 +437,7 @@ interface ScrollAreaProps {
 
 /**
  * Drop-in scrollable wrapper for surfaces that own their own scroll
- * container (BacklinksPane, CommandPalette). The outer div is the
+ * container (BacklinksPane, ContentSearch). The outer div is the
  * positioning anchor; the inner div owns the scrolling; the absolute
  * thumb is rendered as a sibling of the scroll content.
  *

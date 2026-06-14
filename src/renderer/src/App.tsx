@@ -14,7 +14,8 @@ import { Feed } from './feed/Feed'
 import { api } from './lib/api'
 import { noteTitle } from './lib/note-title'
 import { parseYouTubeUrl } from './lib/parse-youtube-url'
-import { CommandPalette } from './palette/CommandPalette'
+import { CommandMenu } from './palette/CommandMenu'
+import { ContentSearch } from './palette/ContentSearch'
 import { QuickSwitcher } from './palette/QuickSwitcher'
 import { Dock } from './panes/Dock'
 import { ShelfContext } from './panes/ShelfPane'
@@ -39,7 +40,7 @@ const WaveTuner = import.meta.env.DEV
 
 /**
  * Root shell for v0.1 — composes Topbar, Feed, Composer, BacklinksPane, and
- * CommandPalette around the rolling-feed query/mutation surface.
+ * the command-search palettes (⌘K/⌘O/⌘P) around the rolling-feed query/mutation surface.
  *
  * Why a dual resolver for wikilinks: render-pass dangling styling needs a
  * synchronous answer for every `[[slug]]` in the markdown, so we build a
@@ -85,11 +86,10 @@ export function App() {
     queryFn: () => api.notes.list(),
   })
   const [focusedId, setFocusedId] = useState<string | null>(null)
-  const [paletteOpen, setPaletteOpen] = useState(false)
-  // Single-open coordinator for the v0.5 command-search surfaces. Task 8 wires
-  // the `title` slot (⌘O quick-switcher); Task 12 migrates the legacy ⌘K
-  // (`paletteOpen`) + the new ⌘P onto `command`/`content` so only one surface is
-  // ever open. @see docs/specs/v0.5-command-search.md §4
+  // Single-open coordinator for the v0.5 command-search surfaces: `command` →
+  // ⌘K CommandMenu, `title` → ⌘O QuickSwitcher, `content` → ⌘P ContentSearch.
+  // At most one is ever open. The base-command registration that fills ⌘K is
+  // Task 12. @see docs/specs/v0.5-command-search.md §4
   type ActivePalette = 'none' | 'command' | 'title' | 'content'
   const [activePalette, setActivePalette] = useState<ActivePalette>('none')
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -323,17 +323,27 @@ export function App() {
     'mod+k',
     (e) => {
       e.preventDefault()
-      setPaletteOpen((o) => !o)
+      setActivePalette((p) => (p === 'command' ? 'none' : 'command'))
     },
     { enableOnFormTags: ['textarea', 'input'] },
   )
   // ⌘O → quick-switcher toggle (spec §5). Toggles the `title` slot of the
-  // single-open coordinator (full ⌘K/⌘P coordination lands in Task 12).
+  // single-open coordinator.
   useHotkeys(
     'mod+o',
     (e) => {
       e.preventDefault()
       setActivePalette((p) => (p === 'title' ? 'none' : 'title'))
+    },
+    { enableOnFormTags: ['textarea', 'input'] },
+  )
+  // ⌘P → content-search toggle (spec §6). Toggles the `content` slot — the
+  // FTS5 surface, jumping with the ⌘O `jump`-access verb (onSwitcherJump).
+  useHotkeys(
+    'mod+p',
+    (e) => {
+      e.preventDefault()
+      setActivePalette((p) => (p === 'content' ? 'none' : 'content'))
     },
     { enableOnFormTags: ['textarea', 'input'] },
   )
@@ -387,14 +397,10 @@ export function App() {
         setSettingsOpen(false)
         return
       }
-      if (paletteOpen) {
-        setPaletteOpen(false)
-        return
-      }
-      // ⌘O switcher (and Task-12 ⌘K/⌘P) close before clearing feed focus.
-      // QuickSwitcher's own Command.Input esc stopPropagation's, so this rung
-      // covers the case where focus already left the input — both paths set
-      // 'none', so it is idempotent.
+      // ⌘K / ⌘O / ⌘P surfaces (all on `activePalette`) close before clearing
+      // feed focus. Each surface's own Command.Input esc stopPropagation's, so
+      // this rung covers the case where focus already left the input — both
+      // paths set 'none', so it is idempotent.
       if (activePalette !== 'none') {
         setActivePalette('none')
         return
@@ -404,7 +410,7 @@ export function App() {
       }
     },
     { enableOnFormTags: ['textarea', 'input'] },
-    [settingsOpen, paletteOpen, activePalette, focusedId],
+    [settingsOpen, activePalette, focusedId],
   )
   // DEV: toggle the reveal-animation playground (mod+shift+R).
   useHotkeys(
@@ -563,7 +569,7 @@ export function App() {
         }}
       >
         <WindowFrame
-          onOpenPalette={() => setPaletteOpen(true)}
+          onOpenPalette={() => setActivePalette('command')}
           onOpenSettings={() => setSettingsOpen(true)}
           view={viewMode}
           onViewChange={setViewMode}
@@ -816,15 +822,16 @@ export function App() {
             />
           </div>
         )}
-        <CommandPalette
-          open={paletteOpen}
-          onClose={() => setPaletteOpen(false)}
-          onJump={setFocusedId}
-        />
+        <CommandMenu open={activePalette === 'command'} onClose={() => setActivePalette('none')} />
         <QuickSwitcher
           open={activePalette === 'title'}
           onJump={onSwitcherJump}
           onClose={() => setActivePalette('none')}
+        />
+        <ContentSearch
+          open={activePalette === 'content'}
+          onClose={() => setActivePalette('none')}
+          onJump={onSwitcherJump}
         />
         <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
         {DEV_PLAYGROUND && revealOpen && RevealPlayground && (
