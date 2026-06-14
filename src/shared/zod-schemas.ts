@@ -398,4 +398,7 @@ export const NotesRecordAccessInputSchema = z.object({
   noteId: z.string().min(1),
   kind: z.enum(['open', 'edit', 'jump']),
 })
+/** The access-kind union, single-sourced from the zod enum above so the
+ * channel parser and the renderer `recordAccess` signature can never drift. */
+export type AccessKind = z.infer<typeof NotesRecordAccessInputSchema>['kind']
 // notes:listTitles takes no input.

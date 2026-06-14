@@ -52,6 +52,13 @@ describe('note_access recency', () => {
     const r = recentNotes(db, { mode: 'frecent', limit: 5 }, now)
     expect(r[0]!.id).toBe(b.id) // 5×2 = 10 beats 1×4 = 4
   })
+  it('saveNote(update) bumps note_access (edit kind)', () => {
+    const n = saveNote(db, nd, { mode: 'create', body: '# A\n\nx', type: 'claim' })
+    expect(db.prepare('SELECT count(*) c FROM note_access').get()).toMatchObject({ c: 0 })
+    saveNote(db, nd, { mode: 'update', id: n.id, body: '# A\n\ny', type: 'claim' })
+    const row = db.prepare('SELECT frequency FROM note_access WHERE note_id = ?').get(n.id)
+    expect(row).toMatchObject({ frequency: 1 })
+  })
   it('listTitles returns ALL live notes (uncapped — past 500)', () => {
     // Seed directly into the DB (no file I/O) to stay within the 180s timeout.
     // listTitles only reads notes rows; file round-trip is not the concern here.

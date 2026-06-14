@@ -25,6 +25,7 @@ import type {
   SearchHit,
   SourceLocator,
 } from '../../../shared/types'
+import type { AccessKind } from '../../../shared/zod-schemas'
 
 /** Opaque canvas/arrangement key shared by most canvas IPC calls (spec §2). */
 type CanvasKey = { canvasId: string; arrangementId: string }
@@ -120,7 +121,7 @@ export const api = {
       window.api.notes.recent({ mode, limit }),
     /** Bump a note's access row (open/edit/jump). Fire-and-forget at call sites.
      * @see docs/specs/v0.5-command-search.md §7 */
-    recordAccess: (noteId: string, kind: 'open' | 'edit' | 'jump'): Promise<{ ok: true }> =>
+    recordAccess: (noteId: string, kind: AccessKind): Promise<{ ok: true }> =>
       window.api.notes.recordAccess({ noteId, kind }),
   },
   search: {

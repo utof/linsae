@@ -400,6 +400,7 @@ export function App() {
    * branch is not rendered (see JSX below).
    */
   const openThread = (id: string) => {
+    void api.notes.recordAccess(id, 'open')
     setFocusedId(null)
     setEditingNoteId(null)
     setThreadNoteId(id)
@@ -476,6 +477,7 @@ export function App() {
   // card. CanvasStage owns the camera, so App signals via a jump request (a
   // {id, nonce} bump) the stage consumes. Stable (only stable setters in scope).
   const onJumpToCard = useCallback((id: string) => {
+    void api.notes.recordAccess(id, 'jump')
     setViewMode('canvas')
     setJumpTo((j) => ({ id, nonce: (j?.nonce ?? 0) + 1 }))
   }, [])

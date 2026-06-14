@@ -52,6 +52,9 @@ export function recentNotes(
   now: number = Date.now(),
 ): NoteTitleRow[] {
   const cap = Math.max(opts.limit * 5, 50)
+  // Candidate cap is recency-ordered for BOTH modes: in `frecent` a very-high-
+  // frequency but old note can fall outside the top-`cap` recent rows before the
+  // JS frecency sort — a deliberate, plan-sanctioned approximation (plan:53).
   const accessed = db
     .prepare(
       `SELECT n.id, n.body, n.slug, a.last_accessed_at AS last, a.frequency AS freq
