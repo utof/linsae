@@ -490,6 +490,10 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
       setPostError(null)
       void queryClient.invalidateQueries({ queryKey: ['notes'] })
       void queryClient.invalidateQueries({ queryKey: ['thread', noteId] })
+      // ⌘O switcher feed + recent empty-state (spec §3: invalidate on create). The
+      // ['note-recent'] prefix matches both recencyMode variants.
+      void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
+      void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
     },
     // Surface failures (duplicate slug, empty-body gate, etc.) inline in the
     // composer instead of failing silently — same contract as the feed.

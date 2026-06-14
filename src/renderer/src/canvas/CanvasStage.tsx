@@ -738,6 +738,10 @@ export function CanvasStage({
       void queryClient.invalidateQueries({ queryKey: ['notes'] })
       void queryClient.invalidateQueries({ queryKey: ['note'] })
       void queryClient.invalidateQueries({ queryKey: ['canvas-edges', ROOT_CANVAS_ID] })
+      // ⌘O switcher feed + recent empty-state (spec §3: invalidate on save). The
+      // ['note-recent'] prefix matches both recencyMode variants.
+      void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
+      void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
       setEditError(null)
       setEditingId(null)
     },
@@ -1233,6 +1237,10 @@ export function CanvasStage({
     onSuccess: (note, vars) => {
       void queryClient.invalidateQueries({ queryKey: ['notes'] })
       void queryClient.invalidateQueries({ queryKey: ['note'] })
+      // ⌘O switcher feed + recent empty-state (spec §3: invalidate on create). The
+      // ['note-recent'] prefix matches both recencyMode variants.
+      void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
+      void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
       refreshCanvas()
       // The note stays in the feed on undo — only the layout row is removed (§13),
       // so the create place op records `from:'absent'`.
@@ -1342,7 +1350,17 @@ export function CanvasStage({
     if (!ok) return
     for (const id of ids) void api.notes.delete(id)
     clearSelection()
-  }, [selectedIds, clearSelection])
+    // Refresh every surface the delete touches (parity with commitEdit/createMut
+    // above): the feed (['notes']/['note']) AND the ⌘O switcher feed + recent
+    // empty-state (spec §3: invalidate on delete). Without this the canvas
+    // multi-delete left both the feed and the switcher listing the dead notes
+    // (push-based cache — query-client.ts staleTime:Infinity). The ['note-recent']
+    // prefix matches both recencyMode variants.
+    void queryClient.invalidateQueries({ queryKey: ['notes'] })
+    void queryClient.invalidateQueries({ queryKey: ['note'] })
+    void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
+    void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
+  }, [selectedIds, clearSelection, queryClient])
 
   // ---- Canvas key map (spec §15). CanvasStage only mounts on the canvas view
   // (App.tsx AnimatePresence), so every binding here is implicitly canvas-scoped —

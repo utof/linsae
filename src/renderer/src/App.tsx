@@ -280,6 +280,12 @@ export function App() {
     void queryClient.invalidateQueries({ queryKey: ['notes'] })
     void queryClient.invalidateQueries({ queryKey: ['note'] }) // every ['note', id]
     void queryClient.invalidateQueries({ queryKey: ['canvas-edges'] })
+    // ⌘O switcher feed + recent empty-state (spec §3: note-titles invalidated on
+    // create/save/delete). Push-based cache (query-client.ts staleTime:Infinity)
+    // never auto-refetches, so the switcher goes stale without this. The
+    // ['note-recent'] prefix matches both mode variants (recent | frecent).
+    void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
+    void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
   }
 
   /**
@@ -314,6 +320,10 @@ export function App() {
         // the composer regardless of whether oEmbed succeeds.
         setSuccessCount((c) => c + 1)
         void queryClient.invalidateQueries({ queryKey: ['notes'] })
+        // Switcher feed + recent empty-state (spec §3) — this create path does not
+        // go through invalidate(), so mirror its ['note-titles']/['note-recent'] keys.
+        void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
+        void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
         // oEmbed + upsert are fail-soft: if either rejects the note still exists
         // and the card shows the raw video id as its title.
         const o = await api.youtube.fetchOEmbed(videoId)

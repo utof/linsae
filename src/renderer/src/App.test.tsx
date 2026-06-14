@@ -402,6 +402,56 @@ describe('App — base command registration (⌘K)', () => {
   })
 })
 
+describe('App — switcher freshness (note-titles / note-recent invalidation)', () => {
+  afterEach(() => useCommandStore.getState().reset())
+
+  /**
+   * Freshness regression (spec §3 / blocker): creating a note must invalidate the
+   * ⌘O switcher's `['note-titles']` feed AND the recent empty-state `['note-recent']`,
+   * so the live switcher reflects the new note. The push-based cache (staleTime:
+   * Infinity, refetchOnWindowFocus:false) only refetches on explicit invalidation.
+   *
+   * The switcher is kept OPEN across the mutation so its `['note-titles']` +
+   * `['note-recent']` observers stay mounted+enabled — the ONLY thing that can
+   * trigger a second listTitles/recent call is `invalidate()` touching those keys.
+   * (A close→reopen would refetch on re-enable regardless of invalidation, which
+   * would not distinguish the fix; hence we hold it open.) Without the fix, create
+   * invalidates only `['notes']`/`['note']`/`['canvas-edges']` → listTitles/recent
+   * stay at one call → this test fails.
+   */
+  it('a note create (switcher open) re-fetches note-titles AND note-recent', async () => {
+    mockApi.notes.list.mockResolvedValue([FEED_NOTE])
+    mockApi.notes.create.mockResolvedValue({ ...FEED_NOTE, id: 'n2', body: 'fresh note' })
+    renderWithProviders(<App />)
+
+    // Wait for the base commands to register so we can drive search.title's run().
+    await waitFor(() => expect(useCommandStore.getState().commands().length).toBeGreaterThan(0))
+
+    // Open ⌘O — listTitles + recent fetch once each (enabled: open). Keep it open.
+    await act(async () => {
+      useCommandStore.getState().registry.get('search.title')?.run?.()
+    })
+    await waitFor(() => expect(mockApi.notes.listTitles).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mockApi.notes.recent).toHaveBeenCalledTimes(1))
+
+    // Create a note through the real composer textarea (behind the open dialog,
+    // so aria-hidden — query the DOM node directly rather than by role) → the real
+    // createMut.onSuccess → invalidate().
+    const ta = document.querySelector<HTMLTextAreaElement>('.composer-textarea')
+    if (!ta) throw new Error('composer textarea not found')
+    fireEvent.change(ta, { target: { value: 'fresh note' } })
+    await act(async () => {
+      fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+    })
+    await waitFor(() => expect(mockApi.notes.create).toHaveBeenCalled())
+
+    // invalidate() must now mark ['note-titles'] + ['note-recent'] stale; both
+    // observers are still mounted+enabled, so react-query re-fetches each once more.
+    await waitFor(() => expect(mockApi.notes.listTitles).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(mockApi.notes.recent).toHaveBeenCalledTimes(2))
+  })
+})
+
 describe('App — sendInFlight append-coupled clear', () => {
   it('arms sendInFlight on submit and clears it once the append lands (not on a fixed timer)', async () => {
     // Seed one note so Feed renders (not the "nothing yet" fallback).
