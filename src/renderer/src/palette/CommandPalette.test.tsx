@@ -26,6 +26,7 @@ describe('CommandPalette', () => {
           updated_at: 1,
           deleted_at: null,
         },
+        title: 'spectral',
         snippet: '<mark>spectral</mark> sequences',
         rank: -1,
       },

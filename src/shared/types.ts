@@ -29,6 +29,8 @@ export interface Note {
 
 export interface SearchHit {
   note: Note
+  /** Display title (deriveTitle(body), slug fallback) — spec §6. */
+  title: string
   snippet: string
   rank: number
 }

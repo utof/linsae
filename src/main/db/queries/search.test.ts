@@ -19,9 +19,24 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { openDb } from '../client'
 import { runMigrations } from '../migrate'
 import { createNote, softDeleteNote } from './notes'
-import { searchNotes } from './search'
+import { buildMatch, searchNotes } from './search'
 
 type DB = Database.Database
+
+describe('buildMatch — per-token prefix, last token only', () => {
+  it('single token gets the trailing prefix star OUTSIDE the quote', () => {
+    expect(buildMatch('annot')).toBe('"annot"*')
+  })
+  it('multi-token: earlier tokens exact-phrase, last token prefixed', () => {
+    expect(buildMatch('foo bar')).toBe('"foo" "bar"*')
+  })
+  it('punctuation-only / empty collapses to empty (caller short-circuits)', () => {
+    expect(buildMatch('   ')).toBe('')
+  })
+  it('a token of only punctuation is dropped, not turned into a bare *', () => {
+    expect(buildMatch('hi ((')).toBe('"hi"*') // trailing junk token removed; "hi" becomes the last
+  })
+})
 
 let db: DB
 beforeEach(() => {
