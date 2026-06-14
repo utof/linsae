@@ -18,7 +18,13 @@
  */
 
 import type { CanvasCamera, CanvasEdge, CanvasLayoutRow, RecentEntry } from '../../../shared/canvas'
-import type { Attachment, Note, SearchHit, SourceLocator } from '../../../shared/types'
+import type {
+  Attachment,
+  Note,
+  NoteTitleRow,
+  SearchHit,
+  SourceLocator,
+} from '../../../shared/types'
 
 /** Opaque canvas/arrangement key shared by most canvas IPC calls (spec §2). */
 type CanvasKey = { canvasId: string; arrangementId: string }
@@ -105,6 +111,17 @@ export const api = {
      * @see src/main/ipc/notes.ts
      */
     delete: (id: string): Promise<Note> => window.api.notes.delete({ id }),
+    /** ALL live note titles, uncapped — the ⌘O switcher feed (#130 cap fix).
+     * @see docs/specs/v0.5-command-search.md §3 */
+    listTitles: (): Promise<NoteTitleRow[]> => window.api.notes.listTitles(),
+    /** Recent/frecent notes for the ⌘O/⌘P empty-state.
+     * @see docs/specs/v0.5-command-search.md §3 */
+    recent: (mode: 'recent' | 'frecent', limit = 15): Promise<NoteTitleRow[]> =>
+      window.api.notes.recent({ mode, limit }),
+    /** Bump a note's access row (open/edit/jump). Fire-and-forget at call sites.
+     * @see docs/specs/v0.5-command-search.md §7 */
+    recordAccess: (noteId: string, kind: 'open' | 'edit' | 'jump'): Promise<{ ok: true }> =>
+      window.api.notes.recordAccess({ noteId, kind }),
   },
   search: {
     /**

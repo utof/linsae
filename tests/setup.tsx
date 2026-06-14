@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, type RenderOptions, type RenderResult, render } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, vi } from 'vitest'
-import type { Attachment, Note, SearchHit } from '../src/shared/types'
+import type { Attachment, Note, NoteTitleRow, SearchHit } from '../src/shared/types'
 
 // happy-dom defaults the document to quirks mode, but KaTeX (react-markdown +
 // rehype-katex) throws "KaTeX doesn't work in quirks mode" unless
@@ -57,6 +57,12 @@ export interface MockApi {
     create: ReturnType<typeof vi.fn>
     update: ReturnType<typeof vi.fn>
     delete: ReturnType<typeof vi.fn>
+    /** listTitles mock — added in v0.5 for QuickSwitcher. @see docs/specs/v0.5-command-search.md §3 */
+    listTitles: ReturnType<typeof vi.fn>
+    /** recent mock — added in v0.5 for frecency empty-state. @see docs/specs/v0.5-command-search.md §3 */
+    recent: ReturnType<typeof vi.fn>
+    /** recordAccess mock — added in v0.5 for access log. @see docs/specs/v0.5-command-search.md §7 */
+    recordAccess: ReturnType<typeof vi.fn>
   }
   search: { run: ReturnType<typeof vi.fn> }
   links: {
@@ -134,6 +140,9 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
       create: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
+      listTitles: vi.fn(async (): Promise<NoteTitleRow[]> => []),
+      recent: vi.fn(async (): Promise<NoteTitleRow[]> => []),
+      recordAccess: vi.fn(async () => ({ ok: true as const })),
     },
     search: { run: vi.fn(async (): Promise<SearchHit[]> => []) },
     links: {

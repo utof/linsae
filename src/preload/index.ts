@@ -22,7 +22,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { z } from 'zod'
 import type { CanvasCamera, CanvasEdge, CanvasLayoutRow, RecentEntry } from '../shared/canvas'
-import type { Attachment, Note, SearchHit } from '../shared/types'
+import type { Attachment, Note, NoteTitleRow, SearchHit } from '../shared/types'
 import type {
   AttachmentRemoveInputSchema,
   AttachmentsListInputSchema,
@@ -47,6 +47,8 @@ import type {
   NoteIdSchema,
   NotesCreateInputSchema,
   NotesListInputSchema,
+  NotesRecentInputSchema,
+  NotesRecordAccessInputSchema,
   NotesUpdateInputSchema,
   ResolveInputSchema,
   SaveOverlayInputSchema,
@@ -69,6 +71,11 @@ const api = {
       ipcRenderer.invoke('notes:update', i),
     delete: (i: z.input<typeof NoteIdSchema>): Promise<Note> =>
       ipcRenderer.invoke('notes:delete', i),
+    listTitles: (): Promise<NoteTitleRow[]> => ipcRenderer.invoke('notes:listTitles'),
+    recent: (i: z.input<typeof NotesRecentInputSchema>): Promise<NoteTitleRow[]> =>
+      ipcRenderer.invoke('notes:recent', i),
+    recordAccess: (i: z.input<typeof NotesRecordAccessInputSchema>): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('notes:recordAccess', i),
   },
   search: {
     run: (i: z.input<typeof SearchRunInputSchema>): Promise<SearchHit[]> =>

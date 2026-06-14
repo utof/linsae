@@ -13,7 +13,6 @@ import { api } from './api'
 
 /** Shared stub that satisfies all window.api namespaces used in this file. */
 function makeWindowApi(overrides: Record<string, unknown> = {}): void {
-  // @ts-expect-error test stub
   window.api = {
     youtube: {
       capture: vi.fn(),
@@ -26,9 +25,18 @@ function makeWindowApi(overrides: Record<string, unknown> = {}): void {
     },
     attachments: { list: vi.fn(), attachToNote: vi.fn(), remove: vi.fn() },
     videoSources: { upsert: vi.fn(), get: vi.fn() },
-    notes: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+    notes: {
+      list: vi.fn(),
+      get: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+      listTitles: vi.fn(),
+      recent: vi.fn(),
+      recordAccess: vi.fn(),
+    },
     ...overrides,
-  }
+  } as unknown as typeof window.api
 }
 
 describe('api.youtube/attachments/videoSources facade', () => {
@@ -76,7 +84,16 @@ describe('api.youtube/attachments/videoSources facade', () => {
   it('notes.create forwards source_kind/source_locator/commentOn when given', async () => {
     const create = vi.fn().mockResolvedValue({ id: 'n1' })
     makeWindowApi({
-      notes: { list: vi.fn(), get: vi.fn(), create, update: vi.fn(), delete: vi.fn() },
+      notes: {
+        list: vi.fn(),
+        get: vi.fn(),
+        create,
+        update: vi.fn(),
+        delete: vi.fn(),
+        listTitles: vi.fn(),
+        recent: vi.fn(),
+        recordAccess: vi.fn(),
+      },
     })
     await api.notes.create('body', 'claim', {
       source_kind: 'youtube',

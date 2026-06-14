@@ -20,6 +20,8 @@ import {
   NoteIdSchema,
   NotesCreateInputSchema,
   NotesListInputSchema,
+  NotesRecentInputSchema,
+  NotesRecordAccessInputSchema,
   NotesUpdateInputSchema,
   ResolveInputSchema,
   SearchRunInputSchema,
@@ -28,6 +30,7 @@ import {
 } from '../../shared/zod-schemas'
 import { backlinks, commentsForVideo } from '../db/queries/links'
 import { getNote, listNotes } from '../db/queries/notes'
+import { listTitles, recentNotes, recordAccess } from '../db/queries/recency'
 import { resolveWikilink } from '../db/queries/resolver'
 import { searchNotes } from '../db/queries/search'
 import { getSetting, setSetting } from '../db/queries/settings'
@@ -122,6 +125,16 @@ export function registerNotesIpc(db: DB, nd: NotesDir): void {
   ipcMain.handle('settings:set', (_e, input) => {
     const i = SettingsSetInputSchema.parse(input)
     setSetting(db, i.key, i.value)
+    return { ok: true as const }
+  })
+  ipcMain.handle('notes:listTitles', () => listTitles(db))
+  ipcMain.handle('notes:recent', (_e, input) => {
+    const i = NotesRecentInputSchema.parse(input)
+    return recentNotes(db, i)
+  })
+  ipcMain.handle('notes:recordAccess', (_e, input) => {
+    const i = NotesRecordAccessInputSchema.parse(input)
+    recordAccess(db, i.noteId)
     return { ok: true as const }
   })
 }

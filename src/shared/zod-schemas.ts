@@ -377,3 +377,25 @@ export const SettingsSetInputSchema = z.object({
   // value is any JSON-serialisable thing; the query layer JSON-encodes it.
   value: z.unknown(),
 })
+
+/**
+ * Input schema for `notes:recent` — recent/frecent note feed for ⌘O/⌘P empty-state.
+ * `mode` defaults to 'frecent'; `limit` defaults to 15 (spec §3 §7).
+ * @see docs/specs/v0.5-command-search.md §3
+ */
+export const NotesRecentInputSchema = z.object({
+  mode: z.enum(['recent', 'frecent']).default('frecent'),
+  limit: z.number().int().min(1).max(50).default(15),
+})
+
+/**
+ * Input schema for `notes:recordAccess` — bump a note's access row.
+ * `kind` is parsed (Zod enum guards the channel) but not branched on in v0.5;
+ * every kind bumps identically. Kept for forward-compat (spec §7).
+ * @see docs/specs/v0.5-command-search.md §7
+ */
+export const NotesRecordAccessInputSchema = z.object({
+  noteId: z.string().min(1),
+  kind: z.enum(['open', 'edit', 'jump']),
+})
+// notes:listTitles takes no input.
