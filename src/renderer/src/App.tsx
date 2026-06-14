@@ -16,6 +16,7 @@ import { noteTitle } from './lib/note-title'
 import { parseYouTubeUrl } from './lib/parse-youtube-url'
 import { CommandMenu } from './palette/CommandMenu'
 import { ContentSearch } from './palette/ContentSearch'
+import { type Command, useCommandStore } from './palette/command-store'
 import { QuickSwitcher } from './palette/QuickSwitcher'
 import { Dock } from './panes/Dock'
 import { ShelfContext } from './panes/ShelfPane'
@@ -37,6 +38,12 @@ const RevealPlayground = DEV_PLAYGROUND
 const WaveTuner = import.meta.env.DEV
   ? lazy(() => import('./dev/WaveTuner').then((m) => ({ default: m.WaveTuner })))
   : null
+
+// Single-open coordinator for the v0.5 command-search surfaces: `command` → ⌘K
+// CommandMenu, `title` → ⌘O QuickSwitcher, `content` → ⌘P ContentSearch. At most
+// one is ever open. Hoisted to module scope so it reads as the coordinator type
+// the three palettes share. @see docs/specs/v0.5-command-search.md §4
+type ActivePalette = 'none' | 'command' | 'title' | 'content'
 
 /**
  * Root shell for v0.1 — composes Topbar, Feed, Composer, BacklinksPane, and
@@ -86,11 +93,6 @@ export function App() {
     queryFn: () => api.notes.list(),
   })
   const [focusedId, setFocusedId] = useState<string | null>(null)
-  // Single-open coordinator for the v0.5 command-search surfaces: `command` →
-  // ⌘K CommandMenu, `title` → ⌘O QuickSwitcher, `content` → ⌘P ContentSearch.
-  // At most one is ever open. The base-command registration that fills ⌘K is
-  // Task 12. @see docs/specs/v0.5-command-search.md §4
-  type ActivePalette = 'none' | 'command' | 'title' | 'content'
   const [activePalette, setActivePalette] = useState<ActivePalette>('none')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null)
@@ -197,6 +199,54 @@ export function App() {
   useEffect(() => {
     setSubmitError(null)
   }, [editingNoteId, draftBody])
+
+  // Base command set (spec §4). Registered on mount; each run() either flips
+  // `activePalette` (the two search doors) or calls an existing App verb. The
+  // effect re-runs on `viewMode` change so the `when` gates re-evaluate and the
+  // run() closures stay current. Contextual (canvas/feed) commands are future
+  // work. New-note does `setViewMode('feed')` first because the create-mode
+  // <Composer> only renders in feed view (App JSX below) — so a canvas ⌘K "New
+  // note" is observable instead of silently arming an off-screen draft.
+  // ⌘J recent-notes is gated to canvas (mirrors the ⌘J hotkey's
+  // `enabled: viewMode==='canvas'`); the popover is a canvas affordance.
+  // @see docs/specs/v0.5-command-search.md §4
+  useEffect(() => {
+    const store = useCommandStore.getState()
+    const base: Command[] = [
+      {
+        id: 'search.title',
+        label: 'Search by title',
+        hint: '⌘O',
+        run: () => setActivePalette('title'),
+      },
+      {
+        id: 'search.content',
+        label: 'Search by content',
+        hint: '⌘P',
+        run: () => setActivePalette('content'),
+      },
+      {
+        id: 'note.new',
+        label: 'New note',
+        run: () => {
+          setViewMode('feed')
+          setDraftBody('')
+        },
+      },
+      {
+        id: 'view.recent',
+        label: 'Recent notes',
+        hint: '⌘J',
+        when: () => viewMode === 'canvas',
+        run: () => setRecentOpen((o) => !o),
+      },
+      { id: 'app.settings', label: 'Open settings', run: () => setSettingsOpen(true) },
+    ]
+    for (const c of base) store.register(c)
+    return () => {
+      for (const c of base) store.unregister(c.id)
+    }
+  }, [viewMode])
 
   // Remove the static boot splash (index.html #boot-splash) once the notes
   // query has settled. The splash paints on the first frame — before the JS

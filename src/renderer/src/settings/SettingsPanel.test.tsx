@@ -9,13 +9,15 @@
  * @see src/renderer/src/lib/anim-pref.ts
  */
 
-import { fireEvent, screen } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { installMockApi, renderWithProviders } from '../../../../tests/setup'
+import { installMockApi, type MockApi, renderWithProviders } from '../../../../tests/setup'
 import { getFeedEntrance } from '../lib/anim-pref'
 
+let mockApi: MockApi
+
 beforeEach(() => {
-  installMockApi({
+  mockApi = installMockApi({
     youtube: {
       capture: vi.fn(async () => ({
         id: '',
@@ -62,5 +64,26 @@ describe('SettingsPanel — feed entrance animation picker', () => {
     // The bound select re-renders to the new pref (reactive value binding, not a hardcoded
     // value): guards against value={entrance} being dropped or hardcoded.
     expect(select).toHaveValue('flip')
+  })
+})
+
+describe('SettingsPanel — SearchSection recency-mode toggle', () => {
+  it('defaults to frecent (absence-default) and changing it calls settings.set', async () => {
+    renderWithProviders(<SettingsPanel open onClose={() => {}} />)
+
+    const select = await screen.findByRole('combobox', { name: /recent-notes order/i })
+    // useSetting returns the absence-default 'frecent' (mock settings.get → { value: null }).
+    await waitFor(() => expect(select).toHaveValue('frecent'))
+
+    fireEvent.change(select, { target: { value: 'recent' } })
+
+    // useSetSetting.mutate → api.settings.set('notes.recencyMode', 'recent')
+    // → window.api.settings.set({ key, value }).
+    await waitFor(() => {
+      expect(mockApi.settings.set).toHaveBeenCalledWith({
+        key: 'notes.recencyMode',
+        value: 'recent',
+      })
+    })
   })
 })

@@ -22,9 +22,10 @@
  */
 
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../tests/setup'
 import type { Note } from '../../shared/types'
+import { useCommandStore } from './palette/command-store'
 
 // ── Mock ThreadView to a lightweight sentinel ──────────────────────────────
 // This avoids loading usePlayer / playerSingleton / iframe machinery in jsdom.
@@ -358,6 +359,46 @@ describe('App — ThreadView nav (mutual exclusivity)', () => {
     // Feed and composer must be absent while thread B is open.
     expect(screen.queryByTestId('feed-sentinel')).not.toBeInTheDocument()
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  })
+})
+
+describe('App — base command registration (⌘K)', () => {
+  afterEach(() => useCommandStore.getState().reset())
+
+  it('registers the base command set on mount with the expected shape', async () => {
+    renderWithProviders(<App />)
+    // Wait for the registration effect to flush (it runs after the first commit).
+    await waitFor(() => expect(useCommandStore.getState().commands().length).toBeGreaterThan(0))
+
+    const cmds = useCommandStore.getState().commands()
+    const byId = new Map(cmds.map((c) => [c.id, c]))
+    expect([...byId.keys()].sort()).toEqual(
+      ['app.settings', 'note.new', 'search.content', 'search.title', 'view.recent'].sort(),
+    )
+    // The two search doors carry their hotkey hints (rendered on the ⌘K rows).
+    expect(byId.get('search.title')?.hint).toBe('⌘O')
+    expect(byId.get('search.content')?.hint).toBe('⌘P')
+    // `view.recent` is canvas-gated; App starts in feed view, so its when() is false.
+    expect(byId.get('view.recent')?.when?.()).toBe(false)
+  })
+
+  it('running search.title opens the QuickSwitcher (flips activePalette to title)', async () => {
+    renderWithProviders(<App />)
+    await waitFor(() => expect(useCommandStore.getState().commands().length).toBeGreaterThan(0))
+
+    // The QuickSwitcher is not mounted until its slot is active.
+    expect(screen.queryByPlaceholderText('jump to a note by title…')).toBeNull()
+
+    // Invoke the REAL registered command's run() — exercises the App-wired closure.
+    const run = useCommandStore.getState().registry.get('search.title')?.run
+    expect(run).toBeTypeOf('function')
+    await act(async () => {
+      run?.()
+    })
+
+    // ContentSearch must NOT also open — the single-open coordinator guarantees it.
+    expect(await screen.findByPlaceholderText('jump to a note by title…')).toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('type to search your notes.')).toBeNull()
   })
 })
 
