@@ -15,6 +15,7 @@ import { api } from './lib/api'
 import { noteTitle } from './lib/note-title'
 import { parseYouTubeUrl } from './lib/parse-youtube-url'
 import { CommandPalette } from './palette/CommandPalette'
+import { QuickSwitcher } from './palette/QuickSwitcher'
 import { Dock } from './panes/Dock'
 import { ShelfContext } from './panes/ShelfPane'
 import { SettingsPanel } from './settings/SettingsPanel'
@@ -85,6 +86,12 @@ export function App() {
   })
   const [focusedId, setFocusedId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  // Single-open coordinator for the v0.5 command-search surfaces. Task 8 wires
+  // the `title` slot (⌘O quick-switcher); Task 12 migrates the legacy ⌘K
+  // (`paletteOpen`) + the new ⌘P onto `command`/`content` so only one surface is
+  // ever open. @see docs/specs/v0.5-command-search.md §4
+  type ActivePalette = 'none' | 'command' | 'title' | 'content'
+  const [activePalette, setActivePalette] = useState<ActivePalette>('none')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null)
   // Dev-overlay state — MUST be called unconditionally (rules of hooks); the store
@@ -320,6 +327,16 @@ export function App() {
     },
     { enableOnFormTags: ['textarea', 'input'] },
   )
+  // ⌘O → quick-switcher toggle (spec §5). Toggles the `title` slot of the
+  // single-open coordinator (full ⌘K/⌘P coordination lands in Task 12).
+  useHotkeys(
+    'mod+o',
+    (e) => {
+      e.preventDefault()
+      setActivePalette((p) => (p === 'title' ? 'none' : 'title'))
+    },
+    { enableOnFormTags: ['textarea', 'input'] },
+  )
   // View toggle: mod+1 → feed, mod+2 → canvas (spec §6). Fires from inside the
   // composer too (enableOnFormTags) so the user can switch without leaving text.
   useHotkeys(
@@ -374,12 +391,20 @@ export function App() {
         setPaletteOpen(false)
         return
       }
+      // ⌘O switcher (and Task-12 ⌘K/⌘P) close before clearing feed focus.
+      // QuickSwitcher's own Command.Input esc stopPropagation's, so this rung
+      // covers the case where focus already left the input — both paths set
+      // 'none', so it is idempotent.
+      if (activePalette !== 'none') {
+        setActivePalette('none')
+        return
+      }
       if (focusedId) {
         setFocusedId(null)
       }
     },
     { enableOnFormTags: ['textarea', 'input'] },
-    [settingsOpen, paletteOpen, focusedId],
+    [settingsOpen, paletteOpen, activePalette, focusedId],
   )
   // DEV: toggle the reveal-animation playground (mod+shift+R).
   useHotkeys(
@@ -480,6 +505,14 @@ export function App() {
     void api.notes.recordAccess(id, 'jump')
     setViewMode('canvas')
     setJumpTo((j) => ({ id, nonce: (j?.nonce ?? 0) + 1 }))
+  }, [])
+  // ⌘O switcher jump: focus the note in the feed (the existing focus path, view-
+  // agnostic) and record a `jump` access. NOT onJumpToCard — ⌘O is a vault-wide
+  // title door whose hits are mostly unplaced; feed-focus mirrors the old ⌘K verb.
+  // @see docs/plans/v0.5-command-search.md "Jump-verb decision"
+  const onSwitcherJump = useCallback((id: string) => {
+    void api.notes.recordAccess(id, 'jump')
+    setFocusedId(id)
   }, [])
   // shelf row, unplaced, feed-direction (ShelfContext): scroll + flash the note
   // in the feed via the existing focus path. Stable (setFocusedId is a setter).
@@ -787,6 +820,11 @@ export function App() {
           open={paletteOpen}
           onClose={() => setPaletteOpen(false)}
           onJump={setFocusedId}
+        />
+        <QuickSwitcher
+          open={activePalette === 'title'}
+          onJump={onSwitcherJump}
+          onClose={() => setActivePalette('none')}
         />
         <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
         {DEV_PLAYGROUND && revealOpen && RevealPlayground && (
