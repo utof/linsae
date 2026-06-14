@@ -22,7 +22,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { z } from 'zod'
 import type { CanvasCamera, CanvasEdge, CanvasLayoutRow, RecentEntry } from '../shared/canvas'
-import type { Attachment, Note, SearchHit } from '../shared/types'
+import type { Attachment, Note, NoteTitleRow, SearchHit } from '../shared/types'
 import type {
   AttachmentRemoveInputSchema,
   AttachmentsListInputSchema,
@@ -47,10 +47,14 @@ import type {
   NoteIdSchema,
   NotesCreateInputSchema,
   NotesListInputSchema,
+  NotesRecentInputSchema,
+  NotesRecordAccessInputSchema,
   NotesUpdateInputSchema,
   ResolveInputSchema,
   SaveOverlayInputSchema,
   SearchRunInputSchema,
+  SettingsGetInputSchema,
+  SettingsSetInputSchema,
   VideoSourcesGetInputSchema,
   VideoSourcesUpsertInputSchema,
 } from '../shared/zod-schemas'
@@ -67,6 +71,11 @@ const api = {
       ipcRenderer.invoke('notes:update', i),
     delete: (i: z.input<typeof NoteIdSchema>): Promise<Note> =>
       ipcRenderer.invoke('notes:delete', i),
+    listTitles: (): Promise<NoteTitleRow[]> => ipcRenderer.invoke('notes:listTitles'),
+    recent: (i: z.input<typeof NotesRecentInputSchema>): Promise<NoteTitleRow[]> =>
+      ipcRenderer.invoke('notes:recent', i),
+    recordAccess: (i: z.input<typeof NotesRecordAccessInputSchema>): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('notes:recordAccess', i),
   },
   search: {
     run: (i: z.input<typeof SearchRunInputSchema>): Promise<SearchHit[]> =>
@@ -186,6 +195,12 @@ const api = {
         ipcRenderer.invoke('system:windowToggleMaximize'),
       close: (): Promise<{ ok: true }> => ipcRenderer.invoke('system:windowClose'),
     },
+  },
+  settings: {
+    get: (i: z.input<typeof SettingsGetInputSchema>): Promise<{ value: unknown }> =>
+      ipcRenderer.invoke('settings:get', i),
+    set: (i: z.input<typeof SettingsSetInputSchema>): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('settings:set', i),
   },
   // Harness flag (spec §3 / §17): true ONLY when the Playwright perf harness
   // launched the app with LINSAE_HARNESS=1 (scripts/canvas-perf-harness.mjs).

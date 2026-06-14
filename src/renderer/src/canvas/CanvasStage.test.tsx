@@ -1058,6 +1058,57 @@ describe('CanvasStage', () => {
     )
   })
 
+  it('(y2) "delete note…" invalidates the feed AND ⌘O switcher feeds (note-titles/note-recent)', async () => {
+    // Blocker regression (spec §3): the canvas multi-select "delete everywhere"
+    // (onDeleteRequest) previously invalidated NOTHING, so after a canvas delete
+    // the ⌘O switcher (and the feed) still listed the dead notes. Drive the real
+    // delete through the SelectionBar's "delete note…" button with confirm=true,
+    // and assert the delete invalidates ['notes'], ['note'], ['note-titles'] AND
+    // ['note-recent'] (the four keys the other CanvasStage mutation sites use).
+    // A QueryClient we own lets us spy on invalidateQueries directly — no mounted
+    // switcher observer is needed (we assert the invalidate CALL, not a refetch),
+    // and this genuinely FAILS pre-fix (onDeleteRequest invalidated nothing).
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([row('e-note', 0, 0, 1000)])
+    mockApi.notes.get.mockResolvedValue(note('e-note', 'e', 'Delete me everywhere'))
+    mockApi.notes.delete.mockResolvedValue(note('e-note', 'e', 'Delete me everywhere'))
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
+    // happy-dom does not implement window.confirm — assign a stub the handler reads.
+    const confirmStub = vi.fn(() => true)
+    const prevConfirm = window.confirm
+    window.confirm = confirmStub as unknown as typeof window.confirm
+    try {
+      render(
+        <QueryClientProvider client={qc}>
+          <CanvasStage {...noopProps} />
+        </QueryClientProvider>,
+      )
+      await waitFor(() => expect(screen.queryByText('Delete me everywhere')).toBeTruthy())
+
+      // Select the card (pointerDown at world origin hit-tests e-note), then the
+      // SelectionBar's "delete note…" button appears.
+      const surface = document.querySelector('[data-canvas-world]') as HTMLElement
+      fireEvent.pointerDown(surface, { button: 0, clientX: 0, clientY: 0 })
+      fireEvent.pointerUp(surface, { button: 0, clientX: 0, clientY: 0 })
+      const deleteBtn = await screen.findByRole('button', { name: /delete note/i })
+
+      fireEvent.click(deleteBtn)
+
+      // The api facade wraps the call as window.api.notes.delete({ id }).
+      await waitFor(() => expect(mockApi.notes.delete).toHaveBeenCalledWith({ id: 'e-note' }))
+      expect(confirmStub).toHaveBeenCalled()
+      // All four feed keys must be invalidated so the delete is reflected everywhere.
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['notes'] })
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['note'] })
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['note-titles'] })
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['note-recent'] })
+    } finally {
+      window.confirm = prevConfirm
+    }
+  })
+
   it('(z) esc cascade — selection-clear step: esc with a selection clears it (no remove)', async () => {
     await mountSingleCard('Select then esc')
     const surface = document.querySelector('[data-canvas-world]') as HTMLElement

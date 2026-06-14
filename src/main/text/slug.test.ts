@@ -28,4 +28,11 @@ describe('slugFromBody', () => {
   it('returns empty string for empty body', () => {
     expect(slugFromBody('')).toBe('')
   })
+  it('keeps raw markdown chars after the rewire to shared titleLine (parity)', () => {
+    // Parity: the slug strips ONLY the heading marker, never emphasis markup,
+    // so titleLine-delegation must stay byte-identical to the prior impl.
+    expect(slugFromBody('# **Bold**')).toBe('**bold**')
+    expect(slugFromBody('foo  bar')).toBe('foo bar')
+    expect(slugFromBody('   ')).toBe('')
+  })
 })

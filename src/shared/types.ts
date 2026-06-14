@@ -29,8 +29,22 @@ export interface Note {
 
 export interface SearchHit {
   note: Note
+  /** Display title (deriveTitle(body), slug fallback) — spec §6. */
+  title: string
   snippet: string
   rank: number
+}
+
+/**
+ * Lean note title row — shared type for `notes:listTitles` / `notes:recent`
+ * responses and the QuickSwitcher feed. Defined here (not in main) so the
+ * renderer can import it without crossing the process boundary.
+ * Why: ONE type used by recency.ts, preload, api facade, and mock — no drift.
+ * @see docs/specs/v0.5-command-search.md §3
+ */
+export interface NoteTitleRow {
+  id: string
+  title: string
 }
 
 export interface ReconcileReport {

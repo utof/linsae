@@ -1,8 +1,10 @@
 /**
- * `⌘K` / `Ctrl+K` command palette — `cmdk` `Command.Dialog` driven by SQLite
+ * `⌘P` / `Ctrl+P` content search — `cmdk` `Command.Dialog` driven by SQLite
  * FTS5 search. Parent component owns the global keybind and toggles `open`;
  * this component owns the query state, the IPC fetch (via TanStack Query),
- * and the result list rendering.
+ * and the result list rendering. Empty query → recent/frecent rows
+ * (`notes:recent`, mode from the `notes.recencyMode` setting); typing runs FTS
+ * and renders title + `snippet()`-highlighted rows (spec §6).
  *
  * Why `shouldFilter={false}`: FTS5 already ranks results server-side via
  * `bm25()` (see src/main/db/queries/search.ts) and returns `snippet()`-
@@ -25,8 +27,8 @@
  * vectors (`<img onerror=...>`, `<iframe>`) remain possible. Tracked for a
  * follow-up DOMPurify pass; the v0.1 plan accepts this risk explicitly.
  *
- * @see docs/specs/v0.1-rolling-feed-and-search.md §User-facing surfaces (⌘K palette)
- * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 27
+ * @see docs/specs/v0.5-command-search.md §6
+ * @see src/renderer/src/palette/QuickSwitcher.tsx (sibling — same recent/frecent empty-state pipe)
  * @see src/main/db/queries/search.ts
  */
 
@@ -35,6 +37,7 @@ import { Command } from 'cmdk'
 import { useEffect, useState } from 'react'
 import { ScrollArea } from '../components/ScrollArea'
 import { api } from '../lib/api'
+import { useSetting } from '../lib/use-setting'
 
 interface Props {
   open: boolean
@@ -42,12 +45,20 @@ interface Props {
   onJump: (noteId: string) => void
 }
 
-export function CommandPalette({ open, onClose, onJump }: Props) {
+export function ContentSearch({ open, onClose, onJump }: Props) {
   const [query, setQuery] = useState('')
+  const mode = useSetting<'recent' | 'frecent'>('notes.recencyMode', 'frecent')
   const { data: results = [] } = useQuery({
     queryKey: ['search', query],
     queryFn: () => api.search.run(query),
     enabled: query.length > 0,
+  })
+  // Empty-query recents — ordered by the recencyMode setting (recent | frecent).
+  // Same query pattern as QuickSwitcher.tsx for consistency.
+  const { data: recent = [] } = useQuery({
+    queryKey: ['note-recent', mode],
+    queryFn: () => api.notes.recent(mode, 15),
+    enabled: open,
   })
 
   // Reset the query when the palette closes so the next open starts empty
@@ -55,6 +66,11 @@ export function CommandPalette({ open, onClose, onJump }: Props) {
   useEffect(() => {
     if (!open) setQuery('')
   }, [open])
+
+  function select(id: string) {
+    onJump(id)
+    onClose()
+  }
 
   return (
     <Command.Dialog
@@ -100,38 +116,59 @@ export function CommandPalette({ open, onClose, onJump }: Props) {
          renders inside but doesn't own scrolling now. */}
       <ScrollArea style={{ maxHeight: 400 }} scrollStyle={{ padding: 4 }}>
         <Command.List>
-          {query.length === 0 && (
+          {/* Empty query → recent/frecent rows (jump like the FTS rows). */}
+          {query.length === 0 && recent.length === 0 && (
             <Command.Empty style={{ padding: 12, color: 'var(--fg-3)', fontSize: 12 }}>
-              type to search your notes.
+              no recent notes.
             </Command.Empty>
           )}
+          {query.length === 0 &&
+            recent.map((r) => (
+              <Command.Item
+                key={r.id}
+                value={r.id}
+                onSelect={() => select(r.id)}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: 6,
+                  fontSize: 13,
+                  color: 'var(--fg-1)',
+                  cursor: 'pointer',
+                }}
+              >
+                {r.title}
+              </Command.Item>
+            ))}
           {query.length > 0 && results.length === 0 && (
             <Command.Empty style={{ padding: 12, color: 'var(--fg-3)', fontSize: 12 }}>
               no matches.
             </Command.Empty>
           )}
-          {results.map((hit) => (
-            <Command.Item
-              key={hit.note.id}
-              value={hit.note.id}
-              onSelect={() => {
-                onJump(hit.note.id)
-                onClose()
-              }}
-              style={{
-                padding: '8px 12px',
-                borderRadius: 6,
-                fontSize: 13,
-                color: 'var(--fg-1)',
-                cursor: 'pointer',
-              }}
-            >
-              <span
-                // biome-ignore lint/security/noDangerouslySetInnerHtml: snippet() returns pre-tagged <mark> HTML from FTS5; CSP + sandbox mitigate (see TSDoc threat model).
-                dangerouslySetInnerHTML={{ __html: hit.snippet }}
-              />
-            </Command.Item>
-          ))}
+          {query.length > 0 &&
+            results.map((hit) => (
+              <Command.Item
+                key={hit.note.id}
+                value={hit.note.id}
+                onSelect={() => select(hit.note.id)}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 2,
+                  padding: '8px 12px',
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--fg-1)' }}>
+                  {hit.title}
+                </div>
+                <span
+                  style={{ fontSize: 12, color: 'var(--fg-2)' }}
+                  // biome-ignore lint/security/noDangerouslySetInnerHtml: snippet() returns pre-tagged <mark> HTML from FTS5; CSP + sandbox mitigate (see TSDoc threat model).
+                  dangerouslySetInnerHTML={{ __html: hit.snippet }}
+                />
+              </Command.Item>
+            ))}
         </Command.List>
       </ScrollArea>
     </Command.Dialog>

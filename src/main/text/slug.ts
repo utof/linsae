@@ -1,3 +1,5 @@
+import { titleLine } from '../../shared/note-title'
+
 /**
  * Normalizes a raw string into a canonical slug used for wikilink resolution.
  *
@@ -27,11 +29,5 @@ export function normalizeSlug(raw: string): string {
  *   string if the body has no non-empty lines.
  */
 export function slugFromBody(body: string): string {
-  const firstNonEmptyLine = body
-    .split('\n')
-    .map((l) => l.trim())
-    .find((l) => l.length > 0)
-  if (!firstNonEmptyLine) return ''
-  const stripped = firstNonEmptyLine.replace(/^#+\s*/, '')
-  return normalizeSlug(stripped)
+  return normalizeSlug(titleLine(body))
 }

@@ -25,6 +25,7 @@ import type { Note, NoteType, SourceLocator } from '../shared/types'
 import { deleteLayoutsForNote } from './db/queries/layouts'
 import { replaceLinksForNote, setCommentOnEdge } from './db/queries/links'
 import { getNote } from './db/queries/notes'
+import { recordAccess } from './db/queries/recency'
 import { appendRevision } from './db/queries/revisions'
 import type { NoteFrontmatter } from './files/frontmatter'
 import type { NotesDir } from './files/notes-dir'
@@ -224,6 +225,7 @@ export function saveNote(db: DB, nd: NotesDir, input: SaveInput): Note {
            source_kind = ?, source_locator = ? WHERE id = ?`,
       ).run(input.body, input.type, now, sourceKind, sourceLocator, input.id)
       n = getNote(db, input.id)!
+      recordAccess(db, n.id, now) // spec §7: a save counts as an `edit` access
     }
     replaceLinksForNote(db, n.id, links)
     if (input.mode === 'create' && input.commentOn) {

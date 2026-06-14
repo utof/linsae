@@ -14,7 +14,10 @@ import { Feed } from './feed/Feed'
 import { api } from './lib/api'
 import { noteTitle } from './lib/note-title'
 import { parseYouTubeUrl } from './lib/parse-youtube-url'
-import { CommandPalette } from './palette/CommandPalette'
+import { CommandMenu } from './palette/CommandMenu'
+import { ContentSearch } from './palette/ContentSearch'
+import { type Command, useCommandStore } from './palette/command-store'
+import { QuickSwitcher } from './palette/QuickSwitcher'
 import { Dock } from './panes/Dock'
 import { ShelfContext } from './panes/ShelfPane'
 import { SettingsPanel } from './settings/SettingsPanel'
@@ -36,9 +39,15 @@ const WaveTuner = import.meta.env.DEV
   ? lazy(() => import('./dev/WaveTuner').then((m) => ({ default: m.WaveTuner })))
   : null
 
+// Single-open coordinator for the v0.5 command-search surfaces: `command` → ⌘K
+// CommandMenu, `title` → ⌘O QuickSwitcher, `content` → ⌘P ContentSearch. At most
+// one is ever open. Hoisted to module scope so it reads as the coordinator type
+// the three palettes share. @see docs/specs/v0.5-command-search.md §4
+type ActivePalette = 'none' | 'command' | 'title' | 'content'
+
 /**
  * Root shell for v0.1 — composes Topbar, Feed, Composer, BacklinksPane, and
- * CommandPalette around the rolling-feed query/mutation surface.
+ * the command-search palettes (⌘K/⌘O/⌘P) around the rolling-feed query/mutation surface.
  *
  * Why a dual resolver for wikilinks: render-pass dangling styling needs a
  * synchronous answer for every `[[slug]]` in the markdown, so we build a
@@ -84,7 +93,7 @@ export function App() {
     queryFn: () => api.notes.list(),
   })
   const [focusedId, setFocusedId] = useState<string | null>(null)
-  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [activePalette, setActivePalette] = useState<ActivePalette>('none')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null)
   // Dev-overlay state — MUST be called unconditionally (rules of hooks); the store
@@ -191,6 +200,54 @@ export function App() {
     setSubmitError(null)
   }, [editingNoteId, draftBody])
 
+  // Base command set (spec §4). Registered on mount; each run() either flips
+  // `activePalette` (the two search doors) or calls an existing App verb. The
+  // effect re-runs on `viewMode` change so the `when` gates re-evaluate and the
+  // run() closures stay current. Contextual (canvas/feed) commands are future
+  // work. New-note does `setViewMode('feed')` first because the create-mode
+  // <Composer> only renders in feed view (App JSX below) — so a canvas ⌘K "New
+  // note" is observable instead of silently arming an off-screen draft.
+  // ⌘J recent-notes is gated to canvas (mirrors the ⌘J hotkey's
+  // `enabled: viewMode==='canvas'`); the popover is a canvas affordance.
+  // @see docs/specs/v0.5-command-search.md §4
+  useEffect(() => {
+    const store = useCommandStore.getState()
+    const base: Command[] = [
+      {
+        id: 'search.title',
+        label: 'Search by title',
+        hint: '⌘O',
+        run: () => setActivePalette('title'),
+      },
+      {
+        id: 'search.content',
+        label: 'Search by content',
+        hint: '⌘P',
+        run: () => setActivePalette('content'),
+      },
+      {
+        id: 'note.new',
+        label: 'New note',
+        run: () => {
+          setViewMode('feed')
+          setDraftBody('')
+        },
+      },
+      {
+        id: 'view.recent',
+        label: 'Recent notes',
+        hint: '⌘J',
+        when: () => viewMode === 'canvas',
+        run: () => setRecentOpen((o) => !o),
+      },
+      { id: 'app.settings', label: 'Open settings', run: () => setSettingsOpen(true) },
+    ]
+    for (const c of base) store.register(c)
+    return () => {
+      for (const c of base) store.unregister(c.id)
+    }
+  }, [viewMode])
+
   // Remove the static boot splash (index.html #boot-splash) once the notes
   // query has settled. The splash paints on the first frame — before the JS
   // module graph mounts — so the window appears immediately instead of after
@@ -223,6 +280,12 @@ export function App() {
     void queryClient.invalidateQueries({ queryKey: ['notes'] })
     void queryClient.invalidateQueries({ queryKey: ['note'] }) // every ['note', id]
     void queryClient.invalidateQueries({ queryKey: ['canvas-edges'] })
+    // ⌘O switcher feed + recent empty-state (spec §3: note-titles invalidated on
+    // create/save/delete). Push-based cache (query-client.ts staleTime:Infinity)
+    // never auto-refetches, so the switcher goes stale without this. The
+    // ['note-recent'] prefix matches both mode variants (recent | frecent).
+    void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
+    void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
   }
 
   /**
@@ -257,6 +320,10 @@ export function App() {
         // the composer regardless of whether oEmbed succeeds.
         setSuccessCount((c) => c + 1)
         void queryClient.invalidateQueries({ queryKey: ['notes'] })
+        // Switcher feed + recent empty-state (spec §3) — this create path does not
+        // go through invalidate(), so mirror its ['note-titles']/['note-recent'] keys.
+        void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
+        void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
         // oEmbed + upsert are fail-soft: if either rejects the note still exists
         // and the card shows the raw video id as its title.
         const o = await api.youtube.fetchOEmbed(videoId)
@@ -316,7 +383,27 @@ export function App() {
     'mod+k',
     (e) => {
       e.preventDefault()
-      setPaletteOpen((o) => !o)
+      setActivePalette((p) => (p === 'command' ? 'none' : 'command'))
+    },
+    { enableOnFormTags: ['textarea', 'input'] },
+  )
+  // ⌘O → quick-switcher toggle (spec §5). Toggles the `title` slot of the
+  // single-open coordinator.
+  useHotkeys(
+    'mod+o',
+    (e) => {
+      e.preventDefault()
+      setActivePalette((p) => (p === 'title' ? 'none' : 'title'))
+    },
+    { enableOnFormTags: ['textarea', 'input'] },
+  )
+  // ⌘P → content-search toggle (spec §6). Toggles the `content` slot — the
+  // FTS5 surface, jumping with the ⌘O `jump`-access verb (onSwitcherJump).
+  useHotkeys(
+    'mod+p',
+    (e) => {
+      e.preventDefault()
+      setActivePalette((p) => (p === 'content' ? 'none' : 'content'))
     },
     { enableOnFormTags: ['textarea', 'input'] },
   )
@@ -370,8 +457,12 @@ export function App() {
         setSettingsOpen(false)
         return
       }
-      if (paletteOpen) {
-        setPaletteOpen(false)
+      // ⌘K / ⌘O / ⌘P surfaces (all on `activePalette`) close before clearing
+      // feed focus. Each surface's own Command.Input esc stopPropagation's, so
+      // this rung covers the case where focus already left the input — both
+      // paths set 'none', so it is idempotent.
+      if (activePalette !== 'none') {
+        setActivePalette('none')
         return
       }
       if (focusedId) {
@@ -379,7 +470,7 @@ export function App() {
       }
     },
     { enableOnFormTags: ['textarea', 'input'] },
-    [settingsOpen, paletteOpen, focusedId],
+    [settingsOpen, activePalette, focusedId],
   )
   // DEV: toggle the reveal-animation playground (mod+shift+R).
   useHotkeys(
@@ -400,6 +491,7 @@ export function App() {
    * branch is not rendered (see JSX below).
    */
   const openThread = (id: string) => {
+    void api.notes.recordAccess(id, 'open')
     setFocusedId(null)
     setEditingNoteId(null)
     setThreadNoteId(id)
@@ -476,8 +568,17 @@ export function App() {
   // card. CanvasStage owns the camera, so App signals via a jump request (a
   // {id, nonce} bump) the stage consumes. Stable (only stable setters in scope).
   const onJumpToCard = useCallback((id: string) => {
+    void api.notes.recordAccess(id, 'jump')
     setViewMode('canvas')
     setJumpTo((j) => ({ id, nonce: (j?.nonce ?? 0) + 1 }))
+  }, [])
+  // ⌘O switcher jump: focus the note in the feed (the existing focus path, view-
+  // agnostic) and record a `jump` access. NOT onJumpToCard — ⌘O is a vault-wide
+  // title door whose hits are mostly unplaced; feed-focus mirrors the old ⌘K verb.
+  // @see docs/plans/v0.5-command-search.md "Jump-verb decision"
+  const onSwitcherJump = useCallback((id: string) => {
+    void api.notes.recordAccess(id, 'jump')
+    setFocusedId(id)
   }, [])
   // shelf row, unplaced, feed-direction (ShelfContext): scroll + flash the note
   // in the feed via the existing focus path. Stable (setFocusedId is a setter).
@@ -528,7 +629,7 @@ export function App() {
         }}
       >
         <WindowFrame
-          onOpenPalette={() => setPaletteOpen(true)}
+          onOpenPalette={() => setActivePalette('command')}
           onOpenSettings={() => setSettingsOpen(true)}
           view={viewMode}
           onViewChange={setViewMode}
@@ -781,10 +882,16 @@ export function App() {
             />
           </div>
         )}
-        <CommandPalette
-          open={paletteOpen}
-          onClose={() => setPaletteOpen(false)}
-          onJump={setFocusedId}
+        <CommandMenu open={activePalette === 'command'} onClose={() => setActivePalette('none')} />
+        <QuickSwitcher
+          open={activePalette === 'title'}
+          onJump={onSwitcherJump}
+          onClose={() => setActivePalette('none')}
+        />
+        <ContentSearch
+          open={activePalette === 'content'}
+          onClose={() => setActivePalette('none')}
+          onJump={onSwitcherJump}
         />
         <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
         {DEV_PLAYGROUND && revealOpen && RevealPlayground && (

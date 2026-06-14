@@ -18,6 +18,7 @@ import type { FeedEntrance } from '../feed/entrance/types'
 import { setFeedEntrance, useFeedEntrance } from '../lib/anim-pref'
 import { api } from '../lib/api'
 import { setClock24, useClock24 } from '../lib/clock-pref'
+import { useSetSetting, useSetting } from '../lib/use-setting'
 import { isYoutubeChromeShown, setYoutubeChrome } from '../yt/playerSingleton'
 
 interface Props {
@@ -191,6 +192,42 @@ function DisplaySection() {
   )
 }
 
+/** Search preferences: recent-notes ordering (recent vs frecent). First app_settings consumer. */
+function SearchSection() {
+  // First consumer of the SQLite app_settings store (spec §8). `useSetting`
+  // returns the absence-default ('frecent') until a row exists.
+  const mode = useSetting<'recent' | 'frecent'>('notes.recencyMode', 'frecent')
+  const set = useSetSetting('notes.recencyMode')
+  const labelStyle = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    fontSize: 13,
+    color: 'var(--fg-2)',
+    cursor: 'pointer',
+  } as const
+  return (
+    <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--fg-1)' }}>search</h3>
+      <label style={labelStyle}>
+        recent-notes order
+        <select
+          aria-label="recent-notes order"
+          value={mode}
+          onChange={(e) => set.mutate(e.target.value)}
+          style={{ ...btn, padding: '3px 8px' }}
+        >
+          <option value="frecent">frecent (frequency + recency)</option>
+          <option value="recent">recent (last opened)</option>
+        </select>
+      </label>
+      <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: -4 }}>
+        how the recent-notes popover (⌘J) and search empty-state are ordered.
+      </div>
+    </section>
+  )
+}
+
 export function SettingsPanel({ open, onClose }: Props) {
   // Reset the transient status message implicitly by remounting the section each open.
   if (!open) return null
@@ -255,6 +292,7 @@ export function SettingsPanel({ open, onClose }: Props) {
         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 20 }}>
           <YoutubeAccountSection />
           <DisplaySection />
+          <SearchSection />
         </div>
       </div>
     </div>

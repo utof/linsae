@@ -20,14 +20,20 @@ import {
   NoteIdSchema,
   NotesCreateInputSchema,
   NotesListInputSchema,
+  NotesRecentInputSchema,
+  NotesRecordAccessInputSchema,
   NotesUpdateInputSchema,
   ResolveInputSchema,
   SearchRunInputSchema,
+  SettingsGetInputSchema,
+  SettingsSetInputSchema,
 } from '../../shared/zod-schemas'
 import { backlinks, commentsForVideo } from '../db/queries/links'
 import { getNote, listNotes } from '../db/queries/notes'
+import { listTitles, recentNotes, recordAccess } from '../db/queries/recency'
 import { resolveWikilink } from '../db/queries/resolver'
 import { searchNotes } from '../db/queries/search'
+import { getSetting, setSetting } from '../db/queries/settings'
 import type { NotesDir } from '../files/notes-dir'
 import { saveNote } from '../save-note'
 
@@ -111,5 +117,24 @@ export function registerNotesIpc(db: DB, nd: NotesDir): void {
   ipcMain.handle('links:resolve', (_e, input) => {
     const i = ResolveInputSchema.parse(input)
     return resolveWikilink(db, i.slug)
+  })
+  ipcMain.handle('settings:get', (_e, input) => {
+    const i = SettingsGetInputSchema.parse(input)
+    return { value: getSetting(db, i.key) }
+  })
+  ipcMain.handle('settings:set', (_e, input) => {
+    const i = SettingsSetInputSchema.parse(input)
+    setSetting(db, i.key, i.value)
+    return { ok: true as const }
+  })
+  ipcMain.handle('notes:listTitles', () => listTitles(db))
+  ipcMain.handle('notes:recent', (_e, input) => {
+    const i = NotesRecentInputSchema.parse(input)
+    return recentNotes(db, i)
+  })
+  ipcMain.handle('notes:recordAccess', (_e, input) => {
+    const i = NotesRecordAccessInputSchema.parse(input)
+    recordAccess(db, i.noteId)
+    return { ok: true as const }
   })
 }

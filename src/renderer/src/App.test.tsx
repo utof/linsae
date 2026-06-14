@@ -22,9 +22,10 @@
  */
 
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../tests/setup'
 import type { Note } from '../../shared/types'
+import { useCommandStore } from './palette/command-store'
 
 // ── Mock ThreadView to a lightweight sentinel ──────────────────────────────
 // This avoids loading usePlayer / playerSingleton / iframe machinery in jsdom.
@@ -358,6 +359,96 @@ describe('App — ThreadView nav (mutual exclusivity)', () => {
     // Feed and composer must be absent while thread B is open.
     expect(screen.queryByTestId('feed-sentinel')).not.toBeInTheDocument()
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  })
+})
+
+describe('App — base command registration (⌘K)', () => {
+  afterEach(() => useCommandStore.getState().reset())
+
+  it('registers the base command set on mount with the expected shape', async () => {
+    renderWithProviders(<App />)
+    // Wait for the registration effect to flush (it runs after the first commit).
+    await waitFor(() => expect(useCommandStore.getState().commands().length).toBeGreaterThan(0))
+
+    const cmds = useCommandStore.getState().commands()
+    const byId = new Map(cmds.map((c) => [c.id, c]))
+    expect([...byId.keys()].sort()).toEqual(
+      ['app.settings', 'note.new', 'search.content', 'search.title', 'view.recent'].sort(),
+    )
+    // The two search doors carry their hotkey hints (rendered on the ⌘K rows).
+    expect(byId.get('search.title')?.hint).toBe('⌘O')
+    expect(byId.get('search.content')?.hint).toBe('⌘P')
+    // `view.recent` is canvas-gated; App starts in feed view, so its when() is false.
+    expect(byId.get('view.recent')?.when?.()).toBe(false)
+  })
+
+  it('running search.title opens the QuickSwitcher (flips activePalette to title)', async () => {
+    renderWithProviders(<App />)
+    await waitFor(() => expect(useCommandStore.getState().commands().length).toBeGreaterThan(0))
+
+    // The QuickSwitcher is not mounted until its slot is active.
+    expect(screen.queryByPlaceholderText('jump to a note by title…')).toBeNull()
+
+    // Invoke the REAL registered command's run() — exercises the App-wired closure.
+    const run = useCommandStore.getState().registry.get('search.title')?.run
+    expect(run).toBeTypeOf('function')
+    await act(async () => {
+      run?.()
+    })
+
+    // ContentSearch must NOT also open — the single-open coordinator guarantees it.
+    expect(await screen.findByPlaceholderText('jump to a note by title…')).toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('type to search your notes.')).toBeNull()
+  })
+})
+
+describe('App — switcher freshness (note-titles / note-recent invalidation)', () => {
+  afterEach(() => useCommandStore.getState().reset())
+
+  /**
+   * Freshness regression (spec §3 / blocker): creating a note must invalidate the
+   * ⌘O switcher's `['note-titles']` feed AND the recent empty-state `['note-recent']`,
+   * so the live switcher reflects the new note. The push-based cache (staleTime:
+   * Infinity, refetchOnWindowFocus:false) only refetches on explicit invalidation.
+   *
+   * The switcher is kept OPEN across the mutation so its `['note-titles']` +
+   * `['note-recent']` observers stay mounted+enabled — the ONLY thing that can
+   * trigger a second listTitles/recent call is `invalidate()` touching those keys.
+   * (A close→reopen would refetch on re-enable regardless of invalidation, which
+   * would not distinguish the fix; hence we hold it open.) Without the fix, create
+   * invalidates only `['notes']`/`['note']`/`['canvas-edges']` → listTitles/recent
+   * stay at one call → this test fails.
+   */
+  it('a note create (switcher open) re-fetches note-titles AND note-recent', async () => {
+    mockApi.notes.list.mockResolvedValue([FEED_NOTE])
+    mockApi.notes.create.mockResolvedValue({ ...FEED_NOTE, id: 'n2', body: 'fresh note' })
+    renderWithProviders(<App />)
+
+    // Wait for the base commands to register so we can drive search.title's run().
+    await waitFor(() => expect(useCommandStore.getState().commands().length).toBeGreaterThan(0))
+
+    // Open ⌘O — listTitles + recent fetch once each (enabled: open). Keep it open.
+    await act(async () => {
+      useCommandStore.getState().registry.get('search.title')?.run?.()
+    })
+    await waitFor(() => expect(mockApi.notes.listTitles).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mockApi.notes.recent).toHaveBeenCalledTimes(1))
+
+    // Create a note through the real composer textarea (behind the open dialog,
+    // so aria-hidden — query the DOM node directly rather than by role) → the real
+    // createMut.onSuccess → invalidate().
+    const ta = document.querySelector<HTMLTextAreaElement>('.composer-textarea')
+    if (!ta) throw new Error('composer textarea not found')
+    fireEvent.change(ta, { target: { value: 'fresh note' } })
+    await act(async () => {
+      fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+    })
+    await waitFor(() => expect(mockApi.notes.create).toHaveBeenCalled())
+
+    // invalidate() must now mark ['note-titles'] + ['note-recent'] stale; both
+    // observers are still mounted+enabled, so react-query re-fetches each once more.
+    await waitFor(() => expect(mockApi.notes.listTitles).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(mockApi.notes.recent).toHaveBeenCalledTimes(2))
   })
 })
 
