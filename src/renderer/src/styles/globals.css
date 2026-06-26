@@ -5,6 +5,18 @@
  * the body's 8px UA margin pushes our `height: 100vh` shell 8px below the
  * viewport and the window itself starts scrolling. */
 
+/* Border-box every element (matches v21's _shell.css `* { box-sizing:
+ * border-box }`). Without this, the cmdk `Command.Input` (a native <input>
+ * with `width: 100%` + `padding: 12px 16px`) renders at 100% + 32px under
+ * the default content-box model, overflowing the ⌘O/⌘P/⌘K dialog by 32px
+ * on the right. The per-element `boxSizing: 'border-box'` overrides in
+ * Composer / NoteCard / Picker / etc. stay consistent (they already opt in). */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 html,
 body,
 #root {
