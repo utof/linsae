@@ -14,6 +14,15 @@
  * and would frequently drop hits whose body matches via stemming but whose
  * displayed snippet does not contain the literal query.
  *
+ * Why the fuzzy-title fallback: when FTS yields nothing (no body/slug token
+ * matches the query — e.g. `cu` is not a word FTS can prefix-match), ⌘P
+ * falls back to the SAME `fuzzyMatch`-over-`notes:listTitles` feed ⌘O uses,
+ * so the result list is never empty when a title could match. This does NOT
+ * regress content search: FTS still runs first and renders its snippet rows;
+ * the fallback only fires when `results.length === 0`. The two doors stay
+ * distinct (⌘P = content-first, ⌘O = title-first) — the fallback just keeps
+ * ⌘P from showing "no matches." while a title subsequence exists.
+ *
  * Why `dangerouslySetInnerHTML` for snippet rendering: `snippet()` returns
  * pre-tagged HTML wrapping matches with the configured `<mark>...</mark>`
  * delimiters (see src/main/db/queries/search.ts:62). Rendering as text would
@@ -34,10 +43,56 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { Command } from 'cmdk'
-import { useEffect, useState } from 'react'
+import type React from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ScrollArea } from '../components/ScrollArea'
 import { api } from '../lib/api'
+import { fuzzyMatch } from '../lib/fuzzy'
 import { useSetting } from '../lib/use-setting'
+
+// ── Highlight ─────────────────────────────────────────────────────────────────
+
+/**
+ * Render a title with `fuzzyMatch`-matched character indices wrapped in `<mark>`.
+ * Consecutive matched/unmatched runs are coalesced into one node each so the DOM
+ * stays compact. `matched` is sorted ascending (fuzzy.ts walks left-to-right).
+ * Duplicated from QuickSwitcher.tsx by intent (no shared helper yet — locked
+ * decision 4; a tiny private helper is the lower-risk choice).
+ * Why: keeps this file's fallback highlight identical to ⌘O without coupling.
+ */
+function highlight(title: string, matched: number[]): React.ReactNode {
+  if (matched.length === 0) return title
+  const set = new Set(matched)
+  const chars = [...title]
+  const out: React.ReactNode[] = []
+  let run = ''
+  let runMatched = set.has(0)
+  let key = 0
+  const flush = () => {
+    if (run === '') return
+    out.push(
+      runMatched ? (
+        <mark key={key} style={{ background: 'var(--accent-tint)', color: 'inherit' }}>
+          {run}
+        </mark>
+      ) : (
+        <span key={key}>{run}</span>
+      ),
+    )
+    key++
+    run = ''
+  }
+  for (let i = 0; i < chars.length; i++) {
+    const m = set.has(i)
+    if (m !== runMatched) {
+      flush()
+      runMatched = m
+    }
+    run += chars[i]
+  }
+  flush()
+  return out
+}
 
 interface Props {
   open: boolean
@@ -60,6 +115,24 @@ export function ContentSearch({ open, onClose, onJump }: Props) {
     queryFn: () => api.notes.recent(mode, 15),
     enabled: open,
   })
+  // Uncapped title feed — the SAME `['note-titles']` cache key ⌘O uses, so
+  // opening ⌘P after ⌘O (or vice-versa) hits the shared cache (no second
+  // IPC round-trip). Powers the fuzzy-title fallback when FTS yields nothing.
+  const { data: titles = [] } = useQuery({
+    queryKey: ['note-titles'],
+    queryFn: () => api.notes.listTitles(),
+    enabled: open,
+  })
+
+  // Fuzzy-title fallback (⌘O-style): only when FTS returned nothing AND the
+  // trimmed query is non-empty. `fuzzyMatch('  ')` returns ALL candidates
+  // (fuzzy.ts:49 trims internally) — the trim gate prevents a whitespace
+  // query from dumping every title via the fallback.
+  const hasQuery = query.trim().length > 0
+  const fuzzyResults = useMemo(
+    () => (hasQuery && results.length === 0 ? fuzzyMatch(query, titles) : []),
+    [hasQuery, query, results.length, titles],
+  )
 
   // Reset the query when the palette closes so the next open starts empty
   // (matches v21 palette UX; see command-palette.jsx).
@@ -139,7 +212,7 @@ export function ContentSearch({ open, onClose, onJump }: Props) {
                 {r.title}
               </Command.Item>
             ))}
-          {query.length > 0 && results.length === 0 && (
+          {query.length > 0 && results.length === 0 && fuzzyResults.length === 0 && (
             <Command.Empty style={{ padding: 12, color: 'var(--fg-3)', fontSize: 12 }}>
               no matches.
             </Command.Empty>
@@ -167,6 +240,27 @@ export function ContentSearch({ open, onClose, onJump }: Props) {
                   // biome-ignore lint/security/noDangerouslySetInnerHtml: snippet() returns pre-tagged <mark> HTML from FTS5; CSP + sandbox mitigate (see TSDoc threat model).
                   dangerouslySetInnerHTML={{ __html: hit.snippet }}
                 />
+              </Command.Item>
+            ))}
+          {/* Fuzzy-title fallback (⌘O-style): FTS found nothing, so surface
+              subsequence title matches so the list is never empty when a
+              title could match. Highlighted like ⌘O; no snippet (no body hit). */}
+          {query.length > 0 &&
+            results.length === 0 &&
+            fuzzyResults.map((r) => (
+              <Command.Item
+                key={r.id}
+                value={r.id}
+                onSelect={() => select(r.id)}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: 6,
+                  fontSize: 13,
+                  color: 'var(--fg-1)',
+                  cursor: 'pointer',
+                }}
+              >
+                {highlight(r.title, r.matched)}
               </Command.Item>
             ))}
         </Command.List>

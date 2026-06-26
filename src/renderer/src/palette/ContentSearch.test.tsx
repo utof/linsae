@@ -50,4 +50,41 @@ describe('ContentSearch (⌘P)', () => {
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' })
     await waitFor(() => expect(onJump).toHaveBeenCalledWith('1'))
   })
+  it('FTS-empty query falls back to fuzzy title match (⌘O-style), Enter jumps', async () => {
+    // "cu" is not a word FTS can prefix-match in any body, but it IS a
+    // subsequence of the title "claude" (c…u) — the ⌘O fuzzy path. When ⌘P's
+    // FTS returns nothing, it should fall back to that fuzzy title feed so
+    // the result list is never empty when a title could match.
+    const run = vi.fn(async () => [])
+    const listTitles = vi.fn(async () => [{ id: '2', title: 'claude' }])
+    const onJump = vi.fn()
+    installMockApi({
+      search: { run } as never,
+      notes: { recent: vi.fn(async () => []), listTitles } as never,
+    })
+    renderWithProviders(<ContentSearch open onJump={onJump} onClose={vi.fn()} />)
+    const input = await screen.findByRole('combobox')
+    fireEvent.change(input, { target: { value: 'cu' } })
+    // FTS returned nothing → fuzzy-title fallback fires; the title "claude"
+    // (c…u subsequence) renders as a cmdk option with matched chars in <mark>.
+    const rows = await screen.findAllByRole('option')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.textContent).toBe('claude')
+    expect(rows[0]?.querySelector('mark')).toBeTruthy()
+    // The "no matches." empty-state must NOT appear while the fallback has rows.
+    expect(screen.queryByText('no matches.')).not.toBeInTheDocument()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(onJump).toHaveBeenCalledWith('2'))
+  })
+  it('FTS-empty AND fuzzy-empty → "no matches." still shows', async () => {
+    const run = vi.fn(async () => [])
+    const listTitles = vi.fn(async () => [{ id: '2', title: 'claude' }])
+    installMockApi({
+      search: { run } as never,
+      notes: { recent: vi.fn(async () => []), listTitles } as never,
+    })
+    renderWithProviders(<ContentSearch open onJump={vi.fn()} onClose={vi.fn()} />)
+    fireEvent.change(await screen.findByRole('combobox'), { target: { value: 'zzz' } })
+    expect(await screen.findByText('no matches.')).toBeInTheDocument()
+  })
 })
