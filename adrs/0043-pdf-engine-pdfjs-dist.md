@@ -33,13 +33,21 @@ via a thin in-house React component (`src/renderer/src/pdf/PdfReader.tsx`).
 
 ## Security mitigations (CVE-2024-4367 class)
 
-`isEvalSupported: false` is set in the `pdf.js` `getDocument` options. CVE-2024-4367 (arbitrary JS
-execution via a crafted font, patched in pdf.js v4.2.67 / April 2024) requires `isEvalSupported:
-true` (the pdf.js default) — the mitigation kills the eval-based font path. The existing baseline
-(`sandbox:true`, `contextIsolation:true`, `nodeIntegration:false` — `src/main/security.ts:42-53`) is
-the backstop preventing XSS-in-renderer from becoming RCE. CSP keeps `script-src 'self'` (no
-`unsafe-eval`); adds only `worker-src blob:` for the blob-wrapped same-origin pdf.js worker
-(mozilla/pdf.js #9676). `will-attach-webview` stays YouTube-only.
+**Pin pdf.js v6.x and do not downgrade.** CVE-2024-4367 (arbitrary JS execution via a crafted
+font, disclosed April 2024, patched in v4.2.67) required `isEvalSupported: true` — a v4/v5
+`getDocument` option that was the pdf.js default. **`isEvalSupported` was REMOVED in the v5→v6 major
+API cleanup (PR #21245) and is NOT a v6 option** (verified via context7 `/mozilla/pdf.js` + pdf.js
+v6.0.227 source, 2026-06-27 — `isEvalSupported` appears 0 times in the v6 `DocumentInitParameters`
+typedef or `getDocument()` body). The eval-based font path was pruned with the option, so the v6
+mitigation is structural, not opt-out. (Prior research at
+`docs/research/2026-27-06-pdf-libs-and-architecture.md` instructed `isEvalSupported:false` — that is
+a v6 no-op; the research doc is stale on this point and should be amended.)
+
+The existing baseline is the primary mitigation: `sandbox:true`, `contextIsolation:true`,
+`nodeIntegration:false` (`src/main/security.ts:42-53`) — the backstop preventing XSS-in-renderer
+from becoming RCE. CSP keeps `script-src 'self'` (no `unsafe-eval`); adds only `worker-src blob:`
+for the blob-wrapped same-origin pdf.js worker (mozilla/pdf.js #9676). `will-attach-webview` stays
+YouTube-only. Smoke test must verify the blob worker boots under `sandbox:true` + the literal CSP.
 
 ## Alternatives considered
 
@@ -71,9 +79,12 @@ the backstop preventing XSS-in-renderer from becoming RCE. CSP keeps `script-src
   downloads. Pin a current 6.x; track upstream for security releases. A dependabot/renovate config
   is out of scope for v0.6 but noted here.
 - **The v2 (EmbedPDF) swap path is open:** the engine is encapsulated behind
-  `src/renderer/src/pdf/PdfReader.tsx` + `usePdfDocument.ts` + `useExcerptCapture.ts`. A swap
-  touches those three files + the worker config; the IPC surface, schema, and `source_locator`
-  shape are unchanged.
+  `src/renderer/src/pdf/PdfReader.tsx` + `usePdfDocument.ts` + `useExcerptCapture.ts` +
+  `excerptState.ts` (the zustand pending-excerpt store). A swap touches those four files + the
+  worker config; the IPC surface, schema, and `source_locator` shape are unchanged. Note: v6
+  disposal is `loadingTask.destroy()` (NOT `PDFDocumentProxy.destroy()`, which PR #21245 removed);
+  the main-process metadata path imports `pdfjs-dist/legacy/build/pdf.mjs` (`.mjs` not `.js` —
+  v6 is ESM-only).
 
 ## Sources
 
