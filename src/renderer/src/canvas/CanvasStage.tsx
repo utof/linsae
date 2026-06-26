@@ -1641,6 +1641,17 @@ export function CanvasStage({
         position: 'relative',
         background: 'var(--bg-0)',
         outline: 'none',
+        // Why userSelect:none: the viewport hosts the marquee drag (pointerdown
+        // on empty surface → rubber-band). Without this, the browser's native
+        // text selection competes with the marquee — dragging across cards
+        // selects their rendered Markdown text instead of starting the rubber-
+        // band. The marquee logic is correct; it was being visually masked by
+        // the native selection painting over it. Mirrors the established canvas
+        // pattern: EdgeTargetPicker / Picker / StatusBar / ZeroState all set
+        // userSelect:'none' on their roots. Card content is presentational —
+        // editing happens via the edit-mode Composer (a textarea), not native
+        // selection on the rendered Markdown.
+        userSelect: 'none',
       }}
     >
       {ready && (
