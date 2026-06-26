@@ -1386,6 +1386,68 @@ describe('CanvasStage', () => {
     expect(container.querySelector('[data-canvas-centroid-arrow]')).toBeNull()
   })
 
+  // ---- B4 continuous rotation (item 8): the arrow is a single SVG rotated to
+  // the exact atan2 angle to the centroid — NOT a discrete 8-glyph snap. A
+  // panned-far-left camera makes the viewport→centroid vector almost exactly
+  // +x, so the arrow's rotation must be ~0° (modulo the screen-y flip). A
+  // panned-far-DOWN camera makes the centroid almost straight UP, so the
+  // rotation is ~0° again (ArrowUp already points up). A diagonal pan (down-
+  // and-left of the board) yields a non-cardinal angle that the 8-glyph snap
+  // would round to `↗` but the continuous arrow renders as the exact degrees.
+
+  /** Stub viewport + camera + one card at (x,y) world; return the pill's rotation. */
+  async function pillRotationFor(
+    pan: { x: number; y: number },
+    card: { x: number; y: number },
+  ): Promise<number | null> {
+    stubViewportRect(800, 600)
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: pan.x, camera_y: pan.y, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([row('c', card.x, card.y, 1000)])
+    mockApi.notes.get.mockResolvedValue(note('c', 'c', 'Body'))
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(container.querySelector('[data-canvas-centroid-arrow]')).not.toBeNull()
+    })
+    const svg = container.querySelector('[data-canvas-centroid-arrow] svg')
+    if (!svg) return null
+    const transform = (svg.getAttribute('style') || '').match(/rotate\(([-\d.]+)deg\)/)
+    return transform ? Number.parseFloat(transform[1]!) : null
+  }
+
+  it('(ll) B4 continuous: arrow rotates continuously (not 8-glyph snap)', async () => {
+    // Viewport 800x600 at camera (0,0,1): viewport center in world = (400,300).
+    // Card at (5000,0) → centroid to the right of viewport center → near-
+    // horizontal angle → rotation ≈ 90° (ArrowUp rotated 90° points right).
+    // The old 8-glyph snap would render `→` as TEXT; the continuous arrow
+    // renders an SVG with a `rotate(θdeg)` style. A near-horizontal vector must
+    // produce a rotation close to ±90° (NOT exactly 0°, which is the up arrow).
+    const rot = await pillRotationFor({ x: 0, y: 0 }, { x: 5000, y: 0 })
+    expect(rot).not.toBeNull()
+    // ~90° modulo 360 — accept 90±45 (right-ish), EXCLUDING the up-arrow's 0°.
+    // This is the discriminator from the 8-glyph behaviour: a horizontal
+    // centroid must rotate the up-arrow to point sideways, not stay at 0°.
+    const a = ((rot! % 360) + 360) % 360
+    expect(a).toBeGreaterThanOrEqual(45)
+    expect(a).toBeLessThanOrEqual(135)
+  })
+
+  it('(mm) B4 continuous: different centroid positions yield different rotations (continuous, not 8-glyph)', async () => {
+    // The discriminator from the old 8-glyph behaviour: the arrow rotates to
+    // the EXACT atan2 angle, so moving the centroid must change the rotation
+    // smoothly. Two cards at different y (same x) produce different viewport→
+    // centroid vectors → different rotations. The old 8-glyph snap would render
+    // the SAME text glyph for both if both fall in the same octant; the
+    // continuous arrow renders distinct rotations.
+    const rot1 = await pillRotationFor({ x: 0, y: 0 }, { x: 5000, y: 0 })
+    const rot2 = await pillRotationFor({ x: 0, y: 0 }, { x: 5000, y: 3000 })
+    expect(rot1).not.toBeNull()
+    expect(rot2).not.toBeNull()
+    // Two distinct centroid y-values → two distinct rotations (the continuous
+    // property). An 8-glyph snap could map both to the same `→` text and pass
+    // a naive "glyph changed" check; the rotation degrees must actually differ.
+    expect(rot1).not.toBe(rot2)
+  })
+
   // ---- Bug #119 (drag-commit snap-back flash): the timing flash itself is not
   // observable in happy-dom (no real rAF/layout), but the fix is an optimistic
   // query-cache write in commitMoves. We assert the cache holds the new x/y

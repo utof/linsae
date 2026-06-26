@@ -625,9 +625,10 @@ async function runSmoke(win) {
   // We drive it via the bridge (setCamera is the UNCLAMPED Dispatch). LAST in the
   // smoke because it pans the camera off the board — no position-sensitive
   // assertion follows. Selector: data-canvas-centroid-arrow (CanvasStage.tsx:1641).
-  // The arrow glyph (one of → ↘ ↓ ↙ ← ↖ ↑ ↗) is the product's direction signal:
-  // angle = atan2(centroid − viewportCenter) in WORLD coords (CanvasStage.tsx:1611-1627),
-  // rendered as TEXT in the button (CanvasStage.tsx:1660) — no data-angle attr.
+  // The arrow direction signal (item 8): a single SVG rotated continuously to
+  // the exact atan2 angle from viewport center to the placed-cards centroid
+  // (CanvasStage.tsx:1611-1627) — NOT the old 8-glyph (→↘↓↙←↖↑↗) text snap.
+  // The harness reads the rotation degrees off the <svg> style attr.
   const harnessLive = await win.evaluate(() => Boolean(window.__canvasHarness))
   if (!harnessLive) {
     assert('B4: harness bridge present to drive the camera', false)
@@ -674,15 +675,22 @@ async function runSmoke(win) {
       pillPanned > 0,
     )
     if (pillPanned > 0) {
-      // Direction: read the rendered glyph (the product's only direction signal).
-      // Panned far LEFT of the board, the centroid is to the RIGHT → expect `→`.
-      // The dx (~+10000) so dominates |dy| (≲ centroid_y span) that only the `→`
-      // octant ([-22.5°,22.5°)) is reachable — a stable, non-brittle check.
-      const glyph = await pillBtn.evaluate((el) => (el.textContent || '').trim().charAt(0))
-      console.log(`centroid pill glyph (panned far-left): "${glyph}" (expect →)`)
+      // Direction: read the rendered rotation (the product's only direction
+      // signal now — item 8 replaced the 8-glyph snap with a continuously
+      // rotated SVG). Panned far LEFT of the board, the centroid is to the
+      // RIGHT → atan2(dy,dx) ≈ 0 → rotation = 0 + 90 = 90° (ArrowUp rotated
+      // 90° points right). The dx (~+10000) so dominates |dy| (≲ centroid_y
+      // span) that the rotation is unambiguously near 90°.
+      const rot = await pillBtn.evaluate((el) => {
+        const svg = el.querySelector('svg')
+        if (!svg) return null
+        const m = (svg.getAttribute('style') || '').match(/rotate\(([-\d.]+)deg\)/)
+        return m ? Number.parseFloat(m[1]) : null
+      })
+      console.log(`centroid pill rotation (panned far-left): ${rot}° (expect ~90)`)
       assert(
         'B4 centroid arrow points toward the note centroid (→ when panned left)',
-        glyph === '→',
+        rot !== null && Math.abs(rot - 90) < 15,
       )
     }
     // Restore a board-centered view so the run ends on a sane camera.

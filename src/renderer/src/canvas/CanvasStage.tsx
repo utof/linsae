@@ -30,6 +30,7 @@
  * @see src/renderer/src/canvas/useCanvasCamera.ts
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ArrowUp } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import type { CanvasLayoutRow } from '../../../shared/canvas'
@@ -2064,17 +2065,29 @@ function CardEditor({
 
 /**
  * Orientation pill shown when ≥1 card is placed but none intersect the viewport
- * (§14 G2). The arrow glyph is computed from the angle between the viewport
- * center and the placed-cards centroid (world space), giving the user a spatial
- * hint. Click = zoom-to-fit.
+ * (§14 G2). The arrow is a single SVG rotated CONTINUOUSLY to the exact atan2
+ * angle from the viewport center to the placed-cards centroid (world space) —
+ * NOT a discrete 8-glyph snap (→↘↓↙←↖↑↗). Item 8: a continuous arrow that
+ * always adjusts to where the centroid is. Click = zoom-to-fit.
  *
  * Why a child component: reads `placedRects.values()` for the centroid call,
  * which is a Map iterator — not a stable value — so placing the logic here keeps
  * the `centroid` import away from the CanvasStage render body (no extra render).
  *
+ * Why `ArrowUp` + `rotate(θdeg)`: matches the JumpPill (src/renderer/src/thread/
+ * JumpPill.tsx) icon convention; ArrowUp's native heading is "up" (-y), so a
+ * centroid directly above the viewport (dy<0) is rotation 0°, directly right
+ * (dx>0,dy≈0) is +90°, etc. Screen-y is flipped (CSS y grows downward) so we
+ * add 180° to the atan2 result: atan2 returns math-angle (CCW from +x), and
+ * `rotate(θdeg)` is clockwise; the net mapping is rotate = atan2(dy,dx) + 90°
+ * (the +90° turns ArrowUp's "north" into "east" when atan2=0, i.e. centroid
+ * directly to the right). The harness reads the angle off the SVG's style attr
+ * for its smoke assertion (replacing the old glyph-textContent check).
+ *
  * @see docs/specs/v0.4-canvas-mvp.md §14 (G2 centroid arrow)
  * @see src/renderer/src/canvas/selection-geometry.ts (centroid)
  * @see src/renderer/src/canvas/camera.ts (fitCamera)
+ * @see src/renderer/src/thread/JumpPill.tsx (lucide arrow icon convention)
  */
 function CentroidArrow({
   placedLayouts,
@@ -2107,20 +2120,16 @@ function CentroidArrow({
   const vcx = camera.x + viewportSize.w / camera.zoom / 2
   const vcy = camera.y + viewportSize.h / camera.zoom / 2
 
-  // Angle from viewport center to centroid; map to an octant arrow glyph.
+  // Angle from viewport center to centroid (math convention: CCW from +x).
   const dx = c.x - vcx
   const dy = c.y - vcy
-  const angle = Math.atan2(dy, dx) * (180 / Math.PI) // degrees, -180..180
-  // 8-directional arrows mapped from angle: right=0, down=90, left=±180, up=-90.
-  let arrow = '→'
-  if (angle >= -22.5 && angle < 22.5) arrow = '→'
-  else if (angle >= 22.5 && angle < 67.5) arrow = '↘'
-  else if (angle >= 67.5 && angle < 112.5) arrow = '↓'
-  else if (angle >= 112.5 && angle < 157.5) arrow = '↙'
-  else if (angle >= 157.5 || angle < -157.5) arrow = '←'
-  else if (angle >= -157.5 && angle < -112.5) arrow = '↖'
-  else if (angle >= -112.5 && angle < -67.5) arrow = '↑'
-  else arrow = '↗'
+  const mathAngle = Math.atan2(dy, dx) * (180 / Math.PI) // -180..180
+  // CSS `rotate` is clockwise and ArrowUp points "up" (north). When the
+  // centroid is directly to the RIGHT (dx>0, dy≈0, atan2≈0), we want the arrow
+  // to point right → rotate ArrowUp by +90°. When the centroid is directly
+  // ABOVE (dy<0, atan2≈-90°), we want the arrow to point up → rotate 0°. So
+  // the net mapping is rotate = atan2(dy,dx) + 90° (modulo 360).
+  const rotation = (mathAngle + 90 + 360) % 360
 
   return (
     <div
@@ -2153,7 +2162,8 @@ function CentroidArrow({
           whiteSpace: 'nowrap',
         }}
       >
-        <span aria-hidden="true">{arrow}</span> back to your notes
+        <ArrowUp size={14} style={{ transform: `rotate(${rotation}deg)` }} aria-hidden="true" />{' '}
+        back to your notes
       </button>
     </div>
   )
