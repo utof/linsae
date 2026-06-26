@@ -1,4 +1,4 @@
-import { fireEvent, screen } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, renderWithProviders } from '../../../../tests/setup'
 import { CommandMenu } from './CommandMenu'
@@ -49,5 +49,21 @@ describe('CommandMenu', () => {
     renderWithProviders(<CommandMenu open onClose={vi.fn()} />)
     expect(await screen.findByText('Always')).toBeInTheDocument()
     expect(screen.queryByText('Canvas only')).toBeNull()
+  })
+
+  it('Tab moves selection down through commands (item 9)', async () => {
+    installMockApi()
+    useCommandStore.getState().register({ id: 'a', label: 'Alpha cmd', run: vi.fn() })
+    useCommandStore.getState().register({ id: 'b', label: 'Beta cmd', run: vi.fn() })
+    renderWithProviders(<CommandMenu open onClose={vi.fn()} />)
+    const rows = await screen.findAllByRole('option')
+    expect(rows).toHaveLength(2)
+    function selectedId(): string | null {
+      const sel = rows.find((r) => r.getAttribute('aria-selected') === 'true')
+      return sel?.getAttribute('data-value') ?? null
+    }
+    await waitFor(() => expect(selectedId()).toBe('a'))
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Tab' })
+    await waitFor(() => expect(selectedId()).toBe('b'))
   })
 })

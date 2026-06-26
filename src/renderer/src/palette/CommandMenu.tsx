@@ -120,6 +120,23 @@ export function CommandMenu({ open, onClose }: Props) {
     if (e.key === 'Enter' && highlighted) {
       e.preventDefault()
       runById(highlighted)
+      return
+    }
+    // Tab / Shift+Tab move selection down / up the command list (item 9). See
+    // QuickSwitcher.handleKeyDown for the re-dispatch rationale (cmdk owns
+    // ArrowUp/ArrowDown; we translate Tab → the same arrow path).
+    if (e.key === 'Tab') {
+      e.preventDefault()
+      const root = e.currentTarget.closest('[cmdk-root]')
+      if (root) {
+        root.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: e.shiftKey ? 'ArrowUp' : 'ArrowDown',
+            bubbles: true,
+            cancelable: true,
+          }),
+        )
+      }
     }
   }
 

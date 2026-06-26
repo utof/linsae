@@ -87,4 +87,48 @@ describe('ContentSearch (⌘P)', () => {
     fireEvent.change(await screen.findByRole('combobox'), { target: { value: 'zzz' } })
     expect(await screen.findByText('no matches.')).toBeInTheDocument()
   })
+  it('Tab moves selection down through FTS results (item 9)', async () => {
+    const run = vi.fn(async () => [
+      {
+        note: {
+          id: '1',
+          slug: 'a',
+          body: 'x',
+          type: 'claim',
+          created_at: 0,
+          updated_at: 0,
+          deleted_at: null,
+        },
+        title: 'Apple',
+        snippet: 'has <mark>ap</mark>',
+        rank: -1,
+      },
+      {
+        note: {
+          id: '2',
+          slug: 'b',
+          body: 'y',
+          type: 'claim',
+          created_at: 0,
+          updated_at: 0,
+          deleted_at: null,
+        },
+        title: 'Apricot',
+        snippet: 'has <mark>ap</mark>',
+        rank: -2,
+      },
+    ])
+    installMockApi({ search: { run } as never, notes: { recent: vi.fn(async () => []) } as never })
+    renderWithProviders(<ContentSearch open onJump={vi.fn()} onClose={vi.fn()} />)
+    fireEvent.change(await screen.findByRole('combobox'), { target: { value: 'ap' } })
+    const rows = await screen.findAllByRole('option')
+    expect(rows).toHaveLength(2)
+    function selectedId(): string | null {
+      const sel = rows.find((r) => r.getAttribute('aria-selected') === 'true')
+      return sel?.getAttribute('data-value') ?? null
+    }
+    await waitFor(() => expect(selectedId()).toBe('1'))
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Tab' })
+    await waitFor(() => expect(selectedId()).toBe('2'))
+  })
 })

@@ -128,6 +128,31 @@ export function QuickSwitcher({ open, onJump, onClose }: Props) {
     if (e.key === 'Enter' && highlighted) {
       e.preventDefault()
       select(highlighted)
+      return
+    }
+    // Tab / Shift+Tab move selection down / up the result list (item 9). cmdk
+    // owns ArrowUp/ArrowDown internally (its root onKeyDown) and Tab is NOT in
+    // that map, so we translate Tab → ArrowDown / Shift+Tab → ArrowUp and re-
+    // dispatch from the cmdk root, which does the actual selection move. Why
+    // re-dispatch instead of calling cmdk's internal step directly: the step
+    // function is not exposed; a synthesized Arrow event on the cmdk root
+    // reuses the SAME code path (looping, clamp, aria-activedescendant), so
+    // Tab stays consistent with Arrow behavior for free (including wraparound
+    // if the user ever enables `loop`). focus never leaves the <input> (cmdk
+    // uses aria-activedescendant), so typing continues to land in the field —
+    // no manual refocus needed.
+    if (e.key === 'Tab') {
+      e.preventDefault()
+      const root = e.currentTarget.closest('[cmdk-root]')
+      if (root) {
+        root.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: e.shiftKey ? 'ArrowUp' : 'ArrowDown',
+            bubbles: true,
+            cancelable: true,
+          }),
+        )
+      }
     }
   }
 

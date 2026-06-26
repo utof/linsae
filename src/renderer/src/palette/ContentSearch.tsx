@@ -145,6 +145,30 @@ export function ContentSearch({ open, onClose, onJump }: Props) {
     onClose()
   }
 
+  // Esc closes; Enter jumps to the highlighted row; Tab / Shift+Tab move
+  // selection down / up the result list (item 9). See QuickSwitcher.handleKeyDown
+  // for the Tab → Arrow re-dispatch rationale (cmdk owns ArrowUp/ArrowDown).
+  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Escape') {
+      e.stopPropagation()
+      onClose()
+      return
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault()
+      const root = e.currentTarget.closest('[cmdk-root]')
+      if (root) {
+        root.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: e.shiftKey ? 'ArrowUp' : 'ArrowDown',
+            bubbles: true,
+            cancelable: true,
+          }),
+        )
+      }
+    }
+  }
+
   return (
     <Command.Dialog
       open={open}
@@ -171,6 +195,7 @@ export function ContentSearch({ open, onClose, onJump }: Props) {
       <Command.Input
         value={query}
         onValueChange={setQuery}
+        onKeyDown={handleKeyDown}
         placeholder="type to search your notes."
         style={{
           width: '100%',

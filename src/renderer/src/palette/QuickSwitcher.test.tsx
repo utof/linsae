@@ -94,4 +94,41 @@ describe('QuickSwitcher', () => {
     fireEvent.keyDown(input, { key: 'Escape' })
     expect(onClose).toHaveBeenCalled()
   })
+
+  it('Tab moves selection down; Shift+Tab moves up (item 9)', async () => {
+    // Two candidate titles so the list has ≥2 rows to move between. Use a
+    // short query that matches BOTH titles so the list renders ≥2 rows (an
+    // empty query gates on recents — which are empty here — so no rows).
+    const onJump = vi.fn()
+    const listTitles = vi.fn(async () => [
+      { id: '1', title: 'Apple' },
+      { id: '2', title: 'Apricot' },
+    ])
+    installMockApi({ notes: { listTitles, recent: vi.fn(async () => []) } as never })
+    renderWithProviders(<QuickSwitcher open onJump={onJump} onClose={vi.fn()} />)
+
+    await waitFor(() => expect(listTitles).toHaveBeenCalled())
+    const input = await screen.findByRole('combobox')
+    // 'ap' matches both Apple and Apricot (subsequence) → 2 rows.
+    fireEvent.change(input, { target: { value: 'ap' } })
+    const rows = await screen.findAllByRole('option')
+    expect(rows).toHaveLength(2)
+
+    // cmdk's first item is selected by default. Pressing Tab must move selection
+    // DOWN to the second row; Shift+Tab back UP to the first. Observe via the
+    // aria-selected attribute on each option.
+    function selectedId(): string | null {
+      const sel = rows.find((r) => r.getAttribute('aria-selected') === 'true')
+      return sel?.getAttribute('data-value') ?? null
+    }
+    await waitFor(() => expect(selectedId()).toBe('1'))
+
+    // Tab → move selection DOWN to the second row.
+    fireEvent.keyDown(input, { key: 'Tab' })
+    await waitFor(() => expect(selectedId()).toBe('2'))
+
+    // Shift+Tab → move selection back UP to the first row.
+    fireEvent.keyDown(input, { key: 'Tab', shiftKey: true })
+    await waitFor(() => expect(selectedId()).toBe('1'))
+  })
 })
