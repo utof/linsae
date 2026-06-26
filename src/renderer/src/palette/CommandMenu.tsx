@@ -123,20 +123,21 @@ export function CommandMenu({ open, onClose }: Props) {
       return
     }
     // Tab / Shift+Tab move selection down / up the command list (item 9). See
-    // QuickSwitcher.handleKeyDown for the re-dispatch rationale (cmdk owns
-    // ArrowUp/ArrowDown; we translate Tab → the same arrow path).
-    if (e.key === 'Tab') {
+    // QuickSwitcher.handleKeyDown for why we set `highlighted` directly instead
+    // of re-dispatching a synthesized Arrow event (the re-dispatched event's
+    // target is the cmdk root DIV, not the input, which leaks to document
+    // listeners like Feed's ArrowDown scroll handler).
+    if (e.key === 'Tab' && results.length > 0) {
       e.preventDefault()
-      const root = e.currentTarget.closest('[cmdk-root]')
-      if (root) {
-        root.dispatchEvent(
-          new KeyboardEvent('keydown', {
-            key: e.shiftKey ? 'ArrowUp' : 'ArrowDown',
-            bubbles: true,
-            cancelable: true,
-          }),
-        )
-      }
+      const idx = results.findIndex((r) => r.id === highlighted)
+      const next = e.shiftKey
+        ? idx <= 0
+          ? results.length - 1
+          : idx - 1
+        : idx < 0 || idx >= results.length - 1
+          ? 0
+          : idx + 1
+      setHighlighted(results[next]!.id)
     }
   }
 

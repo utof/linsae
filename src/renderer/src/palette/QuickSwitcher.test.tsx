@@ -131,4 +131,40 @@ describe('QuickSwitcher', () => {
     fireEvent.keyDown(input, { key: 'Tab', shiftKey: true })
     await waitFor(() => expect(selectedId()).toBe('1'))
   })
+
+  it('Tab does NOT leak a re-dispatched ArrowDown to document listeners (item 9 regression)', async () => {
+    // Regression guard for the previous broken implementation: re-dispatching
+    // a synthesized ArrowDown event on the cmdk root created a NEW native event
+    // whose target was the root DIV (not the input). Document-level listeners
+    // that guard on isTypingTarget (e.g. Feed's ArrowDown scroll handler) would
+    // see a non-typing target and run — scrolling the feed instead of the
+    // palette. The fix computes the next selection directly (no re-dispatch), so
+    // no spurious ArrowDown ever reaches the document.
+    const listTitles = vi.fn(async () => [
+      { id: '1', title: 'Apple' },
+      { id: '2', title: 'Apricot' },
+    ])
+    installMockApi({ notes: { listTitles, recent: vi.fn(async () => []) } as never })
+    renderWithProviders(<QuickSwitcher open onJump={vi.fn()} onClose={vi.fn()} />)
+
+    const input = await screen.findByRole('combobox')
+    fireEvent.change(input, { target: { value: 'ap' } })
+    await screen.findAllByRole('option')
+
+    // Capture every keydown that reaches the document. If the fix re-dispatches
+    // a synthetic ArrowDown, it shows up here with target = the cmdk root DIV.
+    const seen: { key: string; targetTag: string | null }[] = []
+    const listener = (e: KeyboardEvent) => {
+      seen.push({ key: e.key, targetTag: (e.target as HTMLElement | null)?.tagName ?? null })
+    }
+    document.addEventListener('keydown', listener)
+    fireEvent.keyDown(input, { key: 'Tab' })
+    await new Promise((r) => setTimeout(r, 0))
+    document.removeEventListener('keydown', listener)
+
+    // The ONLY keydown the document should see is the original Tab (target=INPUT).
+    // No synthesized ArrowDown with target=DIV should leak.
+    const leakedArrow = seen.find((s) => s.key === 'ArrowDown' && s.targetTag !== 'INPUT')
+    expect(leakedArrow).toBeUndefined()
+  })
 })

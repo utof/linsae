@@ -102,6 +102,9 @@ interface Props {
 
 export function ContentSearch({ open, onClose, onJump }: Props) {
   const [query, setQuery] = useState('')
+  // Tracks the currently highlighted Command.Item value (= note id). Controlled
+  // so Tab/Shift+Tab can move selection directly without re-dispatching events.
+  const [highlighted, setHighlighted] = useState('')
   const mode = useSetting<'recent' | 'frecent'>('notes.recencyMode', 'frecent')
   const { data: results = [] } = useQuery({
     queryKey: ['search', query],
@@ -133,6 +136,18 @@ export function ContentSearch({ open, onClose, onJump }: Props) {
     () => (hasQuery && results.length === 0 ? fuzzyMatch(query, titles) : []),
     [hasQuery, query, results.length, titles],
   )
+  // The ordered list of note ids currently rendered as rows (recents when
+  // empty; FTS hits when typed; fuzzy fallback when FTS is empty). Drives
+  // Tab/Shift+Tab direct-selection (no event re-dispatch).
+  const rowIds = useMemo(
+    () =>
+      hasQuery
+        ? results.length > 0
+          ? results.map((h) => h.note.id)
+          : fuzzyResults.map((r) => r.id)
+        : recent.map((r) => r.id),
+    [hasQuery, results, fuzzyResults, recent],
+  )
 
   // Reset the query when the palette closes so the next open starts empty
   // (matches v21 palette UX; see command-palette.jsx).
@@ -147,25 +162,31 @@ export function ContentSearch({ open, onClose, onJump }: Props) {
 
   // Esc closes; Enter jumps to the highlighted row; Tab / Shift+Tab move
   // selection down / up the result list (item 9). See QuickSwitcher.handleKeyDown
-  // for the Tab → Arrow re-dispatch rationale (cmdk owns ArrowUp/ArrowDown).
+  // for why we set `highlighted` directly instead of re-dispatching a synthesized
+  // Arrow event (the re-dispatched event's target is the cmdk root DIV, not the
+  // input, which leaks to document listeners like Feed's ArrowDown scroll handler).
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape') {
       e.stopPropagation()
       onClose()
       return
     }
-    if (e.key === 'Tab') {
+    if (e.key === 'Enter' && highlighted) {
       e.preventDefault()
-      const root = e.currentTarget.closest('[cmdk-root]')
-      if (root) {
-        root.dispatchEvent(
-          new KeyboardEvent('keydown', {
-            key: e.shiftKey ? 'ArrowUp' : 'ArrowDown',
-            bubbles: true,
-            cancelable: true,
-          }),
-        )
-      }
+      select(highlighted)
+      return
+    }
+    if (e.key === 'Tab' && rowIds.length > 0) {
+      e.preventDefault()
+      const idx = rowIds.indexOf(highlighted)
+      const next = e.shiftKey
+        ? idx <= 0
+          ? rowIds.length - 1
+          : idx - 1
+        : idx < 0 || idx >= rowIds.length - 1
+          ? 0
+          : idx + 1
+      setHighlighted(rowIds[next]!)
     }
   }
 
@@ -177,6 +198,8 @@ export function ContentSearch({ open, onClose, onJump }: Props) {
       }}
       label="search"
       shouldFilter={false}
+      value={highlighted}
+      onValueChange={setHighlighted}
       style={{
         position: 'fixed',
         top: '20%',
