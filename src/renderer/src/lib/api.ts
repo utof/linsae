@@ -60,19 +60,25 @@ export const api = {
      * default authoring mode in the composer (spec §Composer); explicit
      * `'question'` is only used in question-mode.
      *
-     * `source` carries the optional YouTube-annotation fields added in v0.2:
-     * `source_kind` / `source_locator` link the note to a media position;
-     * `commentOn` sets the parent video slug for thread-child notes.
-     * Undefined fields are omitted (not passed as `undefined`) to satisfy
-     * `exactOptionalPropertyTypes` and the Zod `optional()` contract.
+     * `source` carries the optional media-annotation fields (YouTube/PDF — PDF
+     * added in v0.6, YouTube since v0.2): `source_kind` / `source_locator` link
+     * the note to a media position; `commentOn` sets the parent video slug for
+     * thread-child notes. Undefined fields are omitted (not passed as
+     * `undefined`) to satisfy `exactOptionalPropertyTypes` and the Zod
+     * `optional()` contract.
      *
      * @see src/main/ipc/notes.ts
      * @see docs/specs/v0.2-youtube-annotation.md §Data model
+     * @see docs/specs/v0.6-pdf-slim-slice.md
      */
     create: (
       body: string,
       type: Note['type'] = 'claim',
-      source?: { source_kind?: 'youtube'; source_locator?: SourceLocator; commentOn?: string },
+      source?: {
+        source_kind?: 'youtube' | 'pdf'
+        source_locator?: SourceLocator
+        commentOn?: string
+      },
     ): Promise<Note> =>
       window.api.notes.create({
         body,
@@ -85,19 +91,20 @@ export const api = {
      * Update an existing note's body / type. Why no default for `type`:
      * updates always carry an explicit type — the composer round-trips it.
      *
-     * `source` carries optional YouTube-annotation fields added in v0.2:
+     * `source` carries optional media-annotation fields (YouTube/PDF):
      * `source_kind` / `source_locator` (no `commentOn` — threads don't
      * move parents post-creation). Undefined fields are omitted to satisfy
      * `exactOptionalPropertyTypes`.
      *
      * @see src/main/ipc/notes.ts
      * @see docs/specs/v0.2-youtube-annotation.md §Data model
+     * @see docs/specs/v0.6-pdf-slim-slice.md
      */
     update: (
       id: string,
       body: string,
       type: Note['type'],
-      source?: { source_kind?: 'youtube'; source_locator?: SourceLocator },
+      source?: { source_kind?: 'youtube' | 'pdf'; source_locator?: SourceLocator },
     ): Promise<Note> =>
       window.api.notes.update({
         id,

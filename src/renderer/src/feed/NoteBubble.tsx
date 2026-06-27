@@ -242,7 +242,7 @@ export function NoteBubble({
   const isSource =
     note.type === 'source' &&
     note.source_kind === 'youtube' &&
-    note.source_locator?.video_id != null
+    note.source_locator?.media === 'youtube'
   if (isSource) {
     return (
       <MediaFeedNoteContainer

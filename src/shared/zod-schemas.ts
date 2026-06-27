@@ -31,20 +31,39 @@ import { z } from 'zod'
  */
 const NoteTypeSchema = z.enum(['claim', 'question', 'source'])
 
-/**
- * SourceLocator — what external thing a note is anchored to (JSON TEXT in
- * notes.source_locator). Media-agnostic (spec §Forward direction); v0.2.0 =
- * youtube only; `t` (sec) omitted for anchorless comment-notes.
- * @see docs/specs/v0.2-youtube-annotation.md §Data model
- * Why: not exported — its only current consumer is the Notes create/update
- * schemas in this file. Re-export when a cross-file consumer lands (Plan 3 /
- * reconcile validation) per the export-with-consumer (knip) discipline.
- */
-const SourceLocatorSchema = z.object({
+/** The youtube branch of SourceLocatorSchema — `t` (sec) omitted for anchorless comment-notes. */
+const YoutubeLocatorSchema = z.object({
   media: z.literal('youtube'),
   video_id: z.string().min(1),
   t: z.number().nonnegative().optional(),
 })
+/** The pdf branch of SourceLocatorSchema — W3C text+position selectors over a PDF page. */
+const PdfLocatorSchema = z.object({
+  media: z.literal('pdf'),
+  pdf_id: z.string().min(1),
+  page: z.number().int().positive(),
+  rect: z.tuple([z.number(), z.number(), z.number(), z.number()]),
+  quote: z.string(),
+  prefix: z.string(),
+  suffix: z.string(),
+  textStart: z.number().int().nonnegative().optional(),
+  textEnd: z.number().int().nonnegative().optional(),
+})
+/**
+ * SourceLocator — what external thing a note is anchored to (JSON TEXT in
+ * notes.source_locator). Media-agnostic (spec §Forward direction); the `media`
+ * discriminant is the `youtube | pdf` discriminated union at v0.6 (was
+ * youtube-only through v0.5). The widening is backward-compatible — every
+ * existing youtube locator still validates.
+ * @see docs/specs/v0.2-youtube-annotation.md §Data model
+ * @see docs/specs/v0.6-pdf-slim-slice.md
+ * Why exported: consumed cross-file by zod-schemas.pdf.test.ts (and the Notes
+ * create/update schemas below) per the export-with-consumer (knip) discipline.
+ */
+export const SourceLocatorSchema = z.discriminatedUnion('media', [
+  YoutubeLocatorSchema,
+  PdfLocatorSchema,
+])
 
 /**
  * Input schema for the `notes:list` IPC channel.
@@ -77,7 +96,7 @@ export const NotesCreateInputSchema = z
   .object({
     body: z.string(),
     type: NoteTypeSchema.default('claim'),
-    source_kind: z.literal('youtube').optional(),
+    source_kind: z.enum(['youtube', 'pdf']).optional(),
     source_locator: SourceLocatorSchema.optional(),
     commentOn: z.string().min(1).optional(),
   })
@@ -101,7 +120,7 @@ export const NotesUpdateInputSchema = z
     id: z.string().min(1),
     body: z.string(),
     type: NoteTypeSchema,
-    source_kind: z.literal('youtube').optional(),
+    source_kind: z.enum(['youtube', 'pdf']).optional(),
     source_locator: SourceLocatorSchema.optional(),
   })
   .superRefine((v, ctx) => {

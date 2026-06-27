@@ -101,7 +101,7 @@ export function useThreadNotes(videoNoteId: string, sortMode: SortMode): UseThre
   const derived = useMemo(() => {
     const items: ThreadItem[] = data.map(({ note, attachment }) => ({
       id: note.id,
-      t: note.source_locator?.t ?? null,
+      t: note.source_locator?.media === 'youtube' ? (note.source_locator.t ?? null) : null,
       createdAt: note.created_at,
       note,
       attachment,
