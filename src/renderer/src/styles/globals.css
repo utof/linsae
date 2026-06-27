@@ -66,6 +66,20 @@ body,
   margin-bottom: 0;
 }
 
+/* Highlight the active cmdk row. cmdk tracks the keyboard/pointer selection by
+ * toggling `aria-selected="true"` on the active `[cmdk-item]` (verified against
+ * cmdk 1.1.1 source: the root onKeyDown arrow handler + controlled `value` both
+ * set it), but ships NO styling — and an inline `style` on `<Command.Item>`
+ * cannot target an attribute-state selector, so the selection moved invisibly:
+ * ↑/↓/Tab navigation looked broken even though the selection state was correct.
+ * One rule covers every cmdk surface (⌘O QuickSwitcher, ⌘P ContentSearch, ⌘K
+ * CommandMenu, the `/` Picker, EdgeTargetPicker). `--bg-2` is the v21 selected-
+ * /hover-row token (see v21-app/command-palette.jsx). The items set their own
+ * border-radius inline, so the fill is clipped to their rounded corners. */
+[cmdk-item][aria-selected="true"] {
+  background: var(--bg-2);
+}
+
 /* Hide native scrollbars on every surface wrapped by `<ScrollArea>` (or
  * via the `useScrollThumb` hook directly — Feed). The custom
  * thumb overlay in src/renderer/src/components/ScrollArea.tsx renders
