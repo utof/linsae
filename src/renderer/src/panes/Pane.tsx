@@ -13,6 +13,14 @@ export interface Pane {
   id: string
   title: string
   homeDock: 'left' | 'right'
+  /**
+   * Whether this pane holds primary content (a PDF reader, a doc) or a utility
+   * sidebar (the Shelf). Drives the dock's width clamp: `content` panes get a
+   * wider 400–900 px band, `utility` panes the original 220–400 px (see Dock).
+   * Optional + defaults to `'utility'` so v0.4 pane registrations stay valid.
+   * @see docs/plans/v0.6-pdf-slim-slice.md §Task 7
+   */
+  kind?: 'utility' | 'content'
   render: () => ReactNode
 }
 
