@@ -159,10 +159,14 @@ export function App() {
   // command registry. Declared here (above the command-registration effect) so
   // it is in scope for that effect's dep array. @see spec §6
   const onOpenPdf = useCallback(async () => {
-    const { filePaths } = await api.system.chooseFile([{ name: 'PDF', extensions: ['pdf'] }])
-    if (!filePaths[0]) return
-    const result = await api.pdf.import(filePaths[0])
-    void openPdf(result.pdfId)
+    try {
+      const { filePaths } = await api.system.chooseFile([{ name: 'PDF', extensions: ['pdf'] }])
+      if (!filePaths[0]) return
+      const result = await api.pdf.import(filePaths[0])
+      await openPdf(result.pdfId)
+    } catch (err) {
+      console.error('[App] Open PDF failed', err)
+    }
   }, [openPdf])
 
   // Send-in-progress flag: true from the moment the user submits a new note until
