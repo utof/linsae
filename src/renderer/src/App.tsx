@@ -20,6 +20,7 @@ import { type Command, useCommandStore } from './palette/command-store'
 import { QuickSwitcher } from './palette/QuickSwitcher'
 import { Dock } from './panes/Dock'
 import { ShelfContext } from './panes/ShelfPane'
+import { useExcerptStore } from './pdf/excerptState'
 import { useOpenPdf, usePdfOpenId } from './pdf/usePdfOpenId'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { ThreadView } from './thread/ThreadView'
@@ -168,6 +169,49 @@ export function App() {
       console.error('[App] Open PDF failed', err)
     }
   }, [openPdf])
+
+  // ── PDF excerpt → canvas ghost-placement bridge (spec §7) ─────────────────
+  // The right-dock PDF pane captures a text selection into excerptState; the
+  // "Excerpt →" affordance flips `armed`. We watch `armed` (NOT `pending`) so a
+  // note is created + canvas placement armed ONLY on that explicit click —
+  // watching `pending` would persist a note on every selection and orphan one
+  // on re-selection (round-2 review B3). Mirrors the feed→canvas onPlaceOnCanvas
+  // precedent: resolve the note id first, then set `placing`. No view switch —
+  // the PDF dock coexists with the canvas (spec §6: it is not a third viewMode),
+  // so the user excerpts while already in canvas view.
+  const pendingExcerpt = useExcerptStore((s) => s.pending)
+  const armed = useExcerptStore((s) => s.armed)
+  const clearExcerpt = useExcerptStore((s) => s.clear)
+  useEffect(() => {
+    if (!armed || !pendingExcerpt) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const note = await api.notes.create(pendingExcerpt.text, 'source', {
+          source_kind: 'pdf',
+          source_locator: pendingExcerpt.locator,
+        })
+        // A clear()/re-selection between arm and resolve flips the deps and runs
+        // this cleanup (cancelled=true), so a late create never sets a stale ghost.
+        if (cancelled) return
+        setPlacing({ noteId: note.id, title: pendingExcerpt.text })
+      } catch (err) {
+        console.error('[App] excerpt note create failed', err)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [armed, pendingExcerpt])
+  // Shared placement teardown: clears the canvas ghost AND the excerpt store.
+  // Passed to CanvasStage (fires on canvas-click commit AND its capture-phase
+  // esc) and reused by App's esc ladder for the focus-outside-canvas case.
+  // clearExcerpt() is a no-op for non-PDF placement (feed/shelf), so one shared
+  // handler is safe. @see docs/specs/v0.6-pdf-slim-slice.md §7
+  const onPlacingDone = useCallback(() => {
+    setPlacing(null)
+    clearExcerpt()
+  }, [clearExcerpt])
 
   // Send-in-progress flag: true from the moment the user submits a new note until
   // shortly after it has glided into place. The Feed reads it to suppress the
@@ -463,9 +507,9 @@ export function App() {
     { enabled: viewMode === 'canvas' },
     [viewMode],
   )
-  // App's global esc ladder (settings → palette → focused pane). Each rung guards
-  // on its OWN state boolean, so this is a no-op when none of App's overlays are
-  // open. This is a BUBBLE-phase document listener (react-hotkeys-hook's default).
+  // App's global esc ladder (settings → palette → placement → focused pane). Each
+  // rung guards on its OWN state boolean, so this is a no-op when none of App's
+  // overlays are open. This is a BUBBLE-phase document listener (react-hotkeys-hook's default).
   // The canvas esc cascade (CanvasStage) is a CAPTURE-phase listener on the canvas
   // viewport node: an esc dispatched inside the canvas is seen by the viewport
   // capture handler DURING the capture descent — before the event can bubble up to
@@ -489,12 +533,20 @@ export function App() {
         setActivePalette('none')
         return
       }
+      // One-shot placement (incl. a PDF excerpt armed from the right dock): Esc
+      // cancels it when focus is OUTSIDE the canvas viewport (e.g. the PDF pane).
+      // Inside the canvas, CanvasStage's capture-phase esc handler consumes it
+      // first — calling this same onPlacingDone — so the two never double-fire.
+      if (placing) {
+        onPlacingDone()
+        return
+      }
       if (focusedId) {
         setFocusedId(null)
       }
     },
     { enableOnFormTags: ['textarea', 'input'] },
-    [settingsOpen, activePalette, focusedId],
+    [settingsOpen, activePalette, focusedId, placing, onPlacingDone],
   )
   // DEV: toggle the reveal-animation playground (mod+shift+R).
   useHotkeys(
@@ -769,7 +821,7 @@ export function App() {
                         onWikilinkClick={onWikilinkClick}
                         resolveSlug={resolveSlug}
                         placing={placing}
-                        onPlacingDone={() => setPlacing(null)}
+                        onPlacingDone={onPlacingDone}
                         onCameraChange={handleCameraChange}
                         fitSignal={fitSignal}
                         resetSignal={resetSignal}
