@@ -12,7 +12,8 @@
     "src/preload/index.d.ts",
     "src/renderer/src/env.d.ts",
     "src/renderer/src/topbar/Topbar.tsx",
-    "src/renderer/src/pdf/usePdfDocument.ts"
+    "src/renderer/src/pdf/usePdfDocument.ts",
+    "src/renderer/src/pdf/PdfReader.tsx"
   ],
   "ignoreDependencies": [
     "@rolldown/plugin-babel",
