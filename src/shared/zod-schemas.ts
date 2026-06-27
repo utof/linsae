@@ -437,3 +437,15 @@ export const PdfOpenInputSchema = z.object({
 export const PdfListRecentInputSchema = z.object({
   limit: z.number().int().positive().max(100).default(20),
 })
+
+/**
+ * `system:chooseFile` input — optional native open-dialog filters. Whole input
+ * is optional so a caller can open an unfiltered picker. Used by the "Open
+ * PDF…" command to pick a `.pdf` off disk before `pdf:import`.
+ * @see docs/specs/v0.6-pdf-slim-slice.md §6
+ */
+export const ChooseFileInputSchema = z
+  .object({
+    filters: z.array(z.object({ name: z.string(), extensions: z.array(z.string()) })).optional(),
+  })
+  .optional()

@@ -1,15 +1,17 @@
 /**
  * IPC handler registration for system / OS-shell channels.
  *
- * Why: These handlers wrap Electron `shell` and Node `fs` calls — there is no
- * renderer-supplied input to validate, so no Zod schema is involved.
+ * Why: Most handlers wrap Electron `shell` / `dialog` and Node `fs` calls with
+ * no renderer-supplied input to validate. The exception is `system:chooseFile`,
+ * which validates its optional dialog filters via `ChooseFileInputSchema`.
  *
  * @see docs/specs/v0.1-rolling-feed-and-search.md §IPC channels at v0.1
  * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 20 Step 2
  */
 
 import { existsSync, mkdirSync } from 'node:fs'
-import { BrowserWindow, ipcMain, shell } from 'electron'
+import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { ChooseFileInputSchema } from '../../shared/zod-schemas'
 
 /**
  * Registers `system:revealNotesFolder`, `system:openLogsFolder`, and
@@ -47,6 +49,22 @@ export function registerSystemIpc(
     return { ok: true }
   })
   ipcMain.handle('system:getReconcileSkipped', async () => reconcileSkipped)
+
+  // Native open-file picker (used by the "Open PDF…" command before pdf:import).
+  // Validates the optional filters with Zod (this is the one system: channel that
+  // takes renderer input). Modal to the calling window when one is resolvable —
+  // mirrors youtube:importCookies. `filters` is spread conditionally so an absent
+  // value is never sent as `undefined` (exactOptionalPropertyTypes).
+  ipcMain.handle('system:chooseFile', async (e, input) => {
+    const i = ChooseFileInputSchema.parse(input)
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const opts: Electron.OpenDialogOptions = {
+      properties: ['openFile'],
+      ...(i?.filters ? { filters: i.filters } : {}),
+    }
+    const result = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    return { filePaths: result.filePaths }
+  })
 
   // Window controls for the frameless BrowserWindow (frame: false in
   // src/main/index.ts). Resolved per-call via BrowserWindow.fromWebContents

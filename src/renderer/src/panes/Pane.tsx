@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { PdfReader } from '../pdf/PdfReader'
 import { ShelfPaneBody } from './ShelfPane'
 
 /**
@@ -24,9 +25,10 @@ export interface Pane {
   render: () => ReactNode
 }
 
-/** The v0.4 pane registry — one entry. */
+/** The pane registry — the v0.4 Shelf plus the v0.6 PDF reader (home right). */
 export const PANES: Pane[] = [
   { id: 'shelf', title: 'shelf', homeDock: 'left', render: () => <ShelfPaneBody /> },
+  { id: 'pdf', title: 'pdf', homeDock: 'right', kind: 'content', render: () => <PdfReader /> },
 ]
 
 /** Resolve a pane by id (undefined if unknown). */

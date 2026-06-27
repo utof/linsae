@@ -373,7 +373,14 @@ describe('App — base command registration (⌘K)', () => {
     const cmds = useCommandStore.getState().commands()
     const byId = new Map(cmds.map((c) => [c.id, c]))
     expect([...byId.keys()].sort()).toEqual(
-      ['app.settings', 'note.new', 'search.content', 'search.title', 'view.recent'].sort(),
+      [
+        'app.settings',
+        'note.new',
+        'pdf.open',
+        'search.content',
+        'search.title',
+        'view.recent',
+      ].sort(),
     )
     // The two search doors carry their hotkey hints (rendered on the ⌘K rows).
     expect(byId.get('search.title')?.hint).toBe('⌘O')

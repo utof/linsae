@@ -450,6 +450,17 @@ export const api = {
      */
     getReconcileSkipped: (): Promise<number> => window.api.system.getReconcileSkipped(),
     /**
+     * Open a native file picker. Pass dialog `filters` (e.g. `[{ name: 'PDF',
+     * extensions: ['pdf'] }]`); they are repackaged into the `{ filters }`
+     * payload the preload bridge expects. Returns the chosen absolute paths
+     * (empty array if the user cancelled).
+     * @see src/main/ipc/system.ts (system:chooseFile)
+     */
+    chooseFile: (
+      filters?: { name: string; extensions: string[] }[],
+    ): Promise<{ filePaths: string[] }> =>
+      window.api.system.chooseFile(filters ? { filters } : undefined),
+    /**
      * Window controls for the custom frameless title bar — used by
      * `WindowFrame` to drive minimize / maximize-toggle / close.
      * @see src/renderer/src/topbar/WindowFrame.tsx

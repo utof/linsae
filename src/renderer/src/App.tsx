@@ -20,6 +20,7 @@ import { type Command, useCommandStore } from './palette/command-store'
 import { QuickSwitcher } from './palette/QuickSwitcher'
 import { Dock } from './panes/Dock'
 import { ShelfContext } from './panes/ShelfPane'
+import { useOpenPdf, usePdfOpenId } from './pdf/usePdfOpenId'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { ThreadView } from './thread/ThreadView'
 import { WindowFrame } from './topbar/WindowFrame'
@@ -146,6 +147,24 @@ export function App() {
   // body-preservation contract).
   const [successCount, setSuccessCount] = useState(0)
 
+  // Right-dock PDF reader (spec §6): the open-pdf id is persisted in the
+  // app_settings store so the dock restores on boot. `pdfPaneOpen` mounts the
+  // right <Dock>; `openPdf(null)` (Dock onClose) clears it.
+  const pdfOpenId = usePdfOpenId()
+  const openPdf = useOpenPdf()
+  const pdfPaneOpen = pdfOpenId !== null
+  // Open PDF…: native picker → content-addressed import → set the open-pdf id
+  // (the right dock mounts + the next boot restores from `pdf.openDocId`).
+  // openPdf is stable (useOpenPdf memoizes), so this stays stable for the
+  // command registry. Declared here (above the command-registration effect) so
+  // it is in scope for that effect's dep array. @see spec §6
+  const onOpenPdf = useCallback(async () => {
+    const { filePaths } = await api.system.chooseFile([{ name: 'PDF', extensions: ['pdf'] }])
+    if (!filePaths[0]) return
+    const result = await api.pdf.import(filePaths[0])
+    void openPdf(result.pdfId)
+  }, [openPdf])
+
   // Send-in-progress flag: true from the moment the user submits a new note until
   // shortly after it has glided into place. The Feed reads it to suppress the
   // virtualizer's own auto-scroll (`anchorTo:'end'` / `followOnAppend`) during the
@@ -241,12 +260,13 @@ export function App() {
         run: () => setRecentOpen((o) => !o),
       },
       { id: 'app.settings', label: 'Open settings', run: () => setSettingsOpen(true) },
+      { id: 'pdf.open', label: 'Open PDF…', run: onOpenPdf },
     ]
     for (const c of base) store.register(c)
     return () => {
       for (const c of base) store.unregister(c.id)
     }
-  }, [viewMode])
+  }, [viewMode, onOpenPdf])
 
   // Remove the static boot splash (index.html #boot-splash) once the notes
   // query has settled. The splash paints on the first frame — before the JS
@@ -849,6 +869,19 @@ export function App() {
                   )}
                 </AnimatePresence>
               </main>
+              {/* Right dock (spec §6) — the PDF reader, sits RIGHT of <main> so
+                the layout reads [left dock][center stage][right dock: pdf].
+                Mounts only when a PDF is open (`pdf.openDocId` set). */}
+              {pdfPaneOpen && (
+                <Dock
+                  open
+                  paneId="pdf"
+                  side="right"
+                  onClose={() => {
+                    void openPdf(null)
+                  }}
+                />
+              )}
               {focusedId && (
                 <BacklinksPane
                   focusedNoteId={focusedId}

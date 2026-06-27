@@ -42,6 +42,7 @@ import type {
   CanvasSetStateInputSchema,
   CanvasShelveNoteInputSchema,
   CaptureInputSchema,
+  ChooseFileInputSchema,
   CommentsOfInputSchema,
   FetchOEmbedInputSchema,
   NoteIdSchema,
@@ -208,6 +209,8 @@ const api = {
     revealNotesFolder: (): Promise<{ ok: true }> => ipcRenderer.invoke('system:revealNotesFolder'),
     openLogsFolder: (): Promise<{ ok: true }> => ipcRenderer.invoke('system:openLogsFolder'),
     getReconcileSkipped: (): Promise<number> => ipcRenderer.invoke('system:getReconcileSkipped'),
+    chooseFile: (i: z.input<typeof ChooseFileInputSchema>): Promise<{ filePaths: string[] }> =>
+      ipcRenderer.invoke('system:chooseFile', i),
     // Window controls for the frameless BrowserWindow — invoked from the
     // custom WindowFrame's min/max/close buttons (see src/renderer/src/topbar/
     // WindowFrame.tsx). Main resolves the target window via

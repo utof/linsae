@@ -7,10 +7,11 @@ import { describe, expect, it } from 'vitest'
 import { getPane, PANES } from './Pane'
 
 describe('Pane registry', () => {
-  it('registers exactly one pane in v0.4 (Shelf, home left)', () => {
-    expect(PANES).toHaveLength(1)
-    expect(PANES[0]?.id).toBe('shelf')
-    expect(PANES[0]?.homeDock).toBe('left')
+  it('registers the Shelf (home left) and the v0.6 PDF reader (home right, content)', () => {
+    expect(PANES).toHaveLength(2)
+    expect(getPane('shelf')?.homeDock).toBe('left')
+    expect(getPane('pdf')?.homeDock).toBe('right')
+    expect(getPane('pdf')?.kind).toBe('content')
   })
   it('getPane resolves by id', () => {
     expect(getPane('shelf')?.title).toBeTypeOf('string')

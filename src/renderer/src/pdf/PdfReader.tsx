@@ -4,25 +4,19 @@ import { useEffect, useRef, useState } from 'react'
 import { useExcerptStore } from './excerptState'
 import { useExcerptCapture } from './useExcerptCapture'
 import { usePdfDocument } from './usePdfDocument'
-
-export interface PdfReaderProps {
-  /**
-   * The open PDF id, or null for the empty state. Prop-based here so Task 12
-   * typechecks WITHOUT `usePdfOpenId` (which Task 13 creates — round-2 review
-   * B4). Task 13 switches this to read `usePdfOpenId()` internally and drops the
-   * prop, keeping the `PANES` array static.
-   */
-  pdfId: string | null
-}
+import { usePdfOpenId } from './usePdfOpenId'
 
 /**
  * The right-dock content pane body: renders the current page's canvas + the
  * pdf.js text layer (a DOM overlay of selection-able text — WITHOUT it,
  * `getSelection()` returns empty and excerpt-drag cannot work). Wires
  * selection→excerpt capture; an explicit "Excerpt →" affordance arms placement.
+ * Reads the open-pdf id from the persisted `pdf.openDocId` setting so the
+ * `PANES` registration stays static (no prop threading).
  * @see docs/specs/v0.6-pdf-slim-slice.md §4, §7
  */
-export function PdfReader({ pdfId }: PdfReaderProps): React.JSX.Element {
+export function PdfReader(): React.JSX.Element {
+  const pdfId = usePdfOpenId()
   const { data: doc } = usePdfDocument(pdfId)
   const [page, setPage] = useState<PDFPageProxy | null>(null)
   const [viewport, setViewport] = useState<PageViewport | null>(null)
