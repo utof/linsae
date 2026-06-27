@@ -1,25 +1,33 @@
-# Lefthook v2 pre-commit hooks (order matches CLAUDE.md ## Precommit).
+# Lefthook v2 pre-commit hooks (see CLAUDE.md ## Precommit).
 # See: https://lefthook.dev/configuration/
+#
+# `parallel: true` — the independent checks (biome / typecheck / test / knip /
+# design-tokens) share no mutable state (biome runs `lint:check`, not `--write`,
+# so it never re-stages), so they run concurrently and the gate's wall-clock is
+# max() not sum(). The native rebuild + the test run are kept SEQUENTIAL inside
+# the single `test` command (the suite needs the Node-ABI `.node` to exist first).
 #
 # Docs-only commits (markdown — docs/, adrs/, *.md) skip the heavy steps
 # (typecheck/rebuild/test/knip) via `scripts/staged-has-code.sh`: none of them
 # can be affected by prose, and it spares ~2min + a native rebuild per ADR/docs
 # commit. The hook still runs (we never --no-verify); biome + design-tokens
 # (both trivial) stay on for every commit.
+#
+# The full suite still runs on every CODE commit — only the redundant per-commit
+# native rebuild was made conditional (the `ensure-node-abi.mjs` probe skips it
+# when the binding is already Node-ABI, which it always is in the dev loop).
 pre-commit:
-  parallel: false
+  parallel: true
   commands:
     biome:
       run: pnpm lint:check
     typecheck:
       run: if ./scripts/staged-has-code.sh; then pnpm typecheck; else echo "↳ docs-only commit — skipping typecheck"; fi
-    # `pnpm dev` leaves better-sqlite3 in Electron ABI; vitest runs under Node, so
-    # rebuild for Node before the tests (#24). Skipped on docs-only commits — no
-    # tests run, and skipping also preserves the Electron binding for `pnpm dev`.
-    rebuild:
-      run: if ./scripts/staged-has-code.sh; then pnpm rebuild:node; else echo "↳ docs-only commit — skipping rebuild"; fi
+    # rebuild (probe-gated — ~80ms no-op when already Node-ABI; full rebuild only
+    # after `pnpm dev` left it Electron-ABI) THEN the full vitest suite, sequential
+    # within this one command so the .node is ready before the tests dlopen it.
     test:
-      run: if ./scripts/staged-has-code.sh; then pnpm test; else echo "↳ docs-only commit — skipping test"; fi
+      run: if ./scripts/staged-has-code.sh; then node scripts/ensure-node-abi.mjs && pnpm test; else echo "↳ docs-only commit — skipping rebuild+test"; fi
     knip:
       run: if ./scripts/staged-has-code.sh; then pnpm knip; else echo "↳ docs-only commit — skipping knip"; fi
     design-tokens:
