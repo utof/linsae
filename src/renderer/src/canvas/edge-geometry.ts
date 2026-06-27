@@ -23,6 +23,27 @@ function exitT(r: WorldRect, dx: number, dy: number): number {
   return Math.min(tx, ty)
 }
 
+/**
+ * The point on a rect's border where the ray from its center toward `p` exits.
+ * Used by the live edge-draw rubber-band so the line starts (and snap-ends) at a
+ * card's EDGE instead of its center — the center sits behind the opaque card, so
+ * an unclipped line looks like it emerges from inside the note (spec §3). Returns
+ * the center when `p` IS the center (degenerate; the caller draws a zero-length
+ * stub, same as edgeSegment's null case).
+ */
+export function borderPointToward(
+  r: WorldRect,
+  p: { x: number; y: number },
+): { x: number; y: number } {
+  const cx = r.x + r.w / 2
+  const cy = r.y + r.h / 2
+  const dx = p.x - cx
+  const dy = p.y - cy
+  if (dx === 0 && dy === 0) return { x: cx, y: cy }
+  const t = exitT(r, dx, dy)
+  return { x: cx + dx * t, y: cy + dy * t }
+}
+
 export function edgeSegment(from: WorldRect, to: WorldRect): Segment | null {
   const c1 = { x: from.x + from.w / 2, y: from.y + from.h / 2 }
   const c2 = { x: to.x + to.w / 2, y: to.y + to.h / 2 }

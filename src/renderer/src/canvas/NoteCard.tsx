@@ -132,8 +132,16 @@ export const NoteCard = memo(function NoteCard({
     const el = shellRef.current
     if (!el) return
     const ro = new ResizeObserver((entries) => {
-      const h = entries[0]?.contentRect.height
-      if (h !== undefined && h > 0) onMeasured(noteId, h)
+      const entry = entries[0]
+      if (!entry) return
+      // Report the BORDER-box height (padding + border included) so the edge-clip
+      // rect (placedRects) matches the card's VISIBLE box. `contentRect.height` is
+      // the content box — it omits the shell's padding/border, which shrank the
+      // rect below the visible card and made committed-edge arrowheads clip INSIDE
+      // the note (bottom-most especially). placedRects.w already uses the border-
+      // box CARD_WIDTH, so the height must use the border box to agree with it.
+      const h = entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height
+      if (h > 0) onMeasured(noteId, h)
     })
     ro.observe(el)
     return () => ro.disconnect()

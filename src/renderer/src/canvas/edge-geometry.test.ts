@@ -4,10 +4,32 @@
  */
 import { describe, expect, it } from 'vitest'
 import type { CanvasEdge } from '../../../shared/canvas'
-import { arrowhead, edgeSegment, nearestDrawnEdge, pointToSegmentDistance } from './edge-geometry'
+import {
+  arrowhead,
+  borderPointToward,
+  edgeSegment,
+  nearestDrawnEdge,
+  pointToSegmentDistance,
+} from './edge-geometry'
 import type { WorldRect } from './spatial-index'
 
 const rect = (x: number, y: number) => ({ x, y, w: 100, h: 100 })
+
+describe('borderPointToward', () => {
+  // rect(0,0): center (50,50), borders x∈[0,100], y∈[0,100].
+  it('exits the right border toward a point to the right', () => {
+    expect(borderPointToward(rect(0, 0), { x: 200, y: 50 })).toEqual({ x: 100, y: 50 })
+  })
+  it('exits the bottom border toward a point below', () => {
+    expect(borderPointToward(rect(0, 0), { x: 50, y: 200 })).toEqual({ x: 50, y: 100 })
+  })
+  it('exits the corner toward a 45° point', () => {
+    expect(borderPointToward(rect(0, 0), { x: 150, y: 150 })).toEqual({ x: 100, y: 100 })
+  })
+  it('returns the center for a degenerate (center) target', () => {
+    expect(borderPointToward(rect(0, 0), { x: 50, y: 50 })).toEqual({ x: 50, y: 50 })
+  })
+})
 
 describe('edgeSegment', () => {
   it('clips both endpoints to the card borders', () => {

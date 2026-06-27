@@ -51,7 +51,7 @@ import {
 } from './camera'
 import { setCanvasDevLod, useCanvasDevLod } from './dev-lod'
 import { EdgeTargetPicker } from './EdgeTargetPicker'
-import { arrowhead, edgeSegment, nearestDrawnEdge } from './edge-geometry'
+import { arrowhead, borderPointToward, edgeSegment, nearestDrawnEdge } from './edge-geometry'
 import { edgeKind, TYPE_PILL_MIN_ZOOM } from './edge-style'
 import {
   type CanvasHarnessBridge,
@@ -462,6 +462,21 @@ export function CanvasStage({
   } | null>(null)
 
   /**
+   * Live drag offset + the ids being dragged, read by {@link edgesLayer}'s draw at
+   * PAINT time so committed edges follow their card(s) continuously mid-drag. A
+   * card moves via a transient transform (the persisted layout — and thus
+   * placedRects — changes only on drop), so without this the edge stayed pinned to
+   * the old position until release. Held in a ref (assigned just below the
+   * interaction hook) so the earlier-declared edgesLayer memo can read it without a
+   * dep; underlayLayers lists `dragOffset` as a trigger dep so the underlay
+   * actually repaints each drag frame.
+   */
+  const dragEdgeFollowRef = useRef<{
+    offset: { dx: number; dy: number } | null
+    ids: ReadonlySet<string>
+  }>({ offset: null, ids: new Set() })
+
+  /**
    * UnderlayLayer that draws resolved note edges in world coordinates. Rebuilt
    * on [edges, placedRects, selectedEdge] so a new array reference marks the
    * underlay dirty via the `layers` identity change (spec §3 dirty-flag cadence;
@@ -500,9 +515,19 @@ export function CanvasStage({
         const color = edgeColorRef.current
         const drawn = edgeDrawnColorRef.current
 
+        // Apply the live drag offset to any endpoint whose card is mid-drag so the
+        // edge follows continuously (read at PAINT time — see dragEdgeFollowRef).
+        // No-op (returns the base rect) whenever nothing is being dragged.
+        const drag = dragEdgeFollowRef.current
+        const rectFor = (id: string): WorldRect | undefined => {
+          const r = rectByNoteId.get(id)
+          if (!r || !drag.offset || !drag.ids.has(id)) return r
+          return { x: r.x + drag.offset.dx, y: r.y + drag.offset.dy, w: r.w, h: r.h }
+        }
+
         for (const edge of edges) {
-          const fromRect = rectByNoteId.get(edge.fromNoteId)
-          const toRect = rectByNoteId.get(edge.toNoteId)
+          const fromRect = rectFor(edge.fromNoteId)
+          const toRect = rectFor(edge.toNoteId)
           // Skip edges where either endpoint is unplaced or absent (spec §11).
           if (!fromRect || !toRect) continue
 
@@ -1001,17 +1026,23 @@ export function CanvasStage({
       '#0D99FF'
     return {
       draw(ctx, cam): void {
-        // Snap the head to the target card's center when hovering one.
+        // Anchor the TAIL at the source card's edge (its center hides behind the
+        // opaque card, so a center-anchored line looks like it emerges from inside
+        // the note). The head snaps to a hovered target card's edge, else follows
+        // the free cursor. Border-clipping both ends matches committed edges (§3).
+        const fromRect = placedRects.get(st.fromNoteId)
         const target = st.targetCardId ? placedRects.get(st.targetCardId) : undefined
-        const head = target
+        const rawHead = target
           ? { x: target.x + target.w / 2, y: target.y + target.h / 2 }
           : st.currentWorld
+        const tail = fromRect ? borderPointToward(fromRect, rawHead) : st.startWorld
+        const head = target ? borderPointToward(target, tail) : rawHead
         ctx.beginPath()
         ctx.lineWidth = 1 / cam.zoom
         ctx.strokeStyle = accent
         ctx.globalAlpha = 0.5 // quiet (spec §3 "quiet rubber-band")
         ctx.setLineDash([4 / cam.zoom, 3 / cam.zoom])
-        ctx.moveTo(st.startWorld.x, st.startWorld.y)
+        ctx.moveTo(tail.x, tail.y)
         ctx.lineTo(head.x, head.y)
         ctx.stroke()
         ctx.globalAlpha = 1
@@ -1028,11 +1059,12 @@ export function CanvasStage({
    * cadence): the rubber-band layer's identity changes each drag frame
    * (edgeDragState updates) → underlay redraws; no drag → no rebuild → idle (#112).
    */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: interactions.dragOffset is a repaint TRIGGER, not read here — edgesLayer.draw reads it live via dragEdgeFollowRef so committed edges follow a card mid-drag; rebuilding this array each drag frame is what re-dirties the underlay
   const underlayLayers: UnderlayLayer[] = useMemo(() => {
     const base = tier === 'dot' ? [edgesLayer, dotsLayer] : [edgesLayer]
     if (liveRubberBandLayer) base.push(liveRubberBandLayer)
     return base
-  }, [edgesLayer, dotsLayer, tier, liveRubberBandLayer])
+  }, [edgesLayer, dotsLayer, tier, liveRubberBandLayer, interactions.dragOffset])
 
   /**
    * Place a note at a world point + record the undo entry. `from` is `'shelf'`
@@ -1281,6 +1313,12 @@ export function CanvasStage({
     (e: React.PointerEvent) => {
       const viewport = viewportRef.current
       const camera = cameraRef.current
+      // This handler lives on the viewport (the only node that physically covers
+      // empty surface — the world div is 0-size since every card is position:
+      // absolute, and the underlay is pointer-events:none). useCanvasCamera's
+      // native pointerdown listener runs first and preventDefaults the middle-/
+      // space-pan gestures; bail on those so a pan never also opens a marquee.
+      if (e.nativeEvent.defaultPrevented) return
       // While one-shot placing, the surface is the drop target — the DOM `click`
       // listener commits the placement; no marquee/drag should begin.
       if (e.button !== 0 || !viewport || !camera || placing) return
@@ -1317,6 +1355,10 @@ export function CanvasStage({
   const { selectedIds, clearSelection } = interactions
   const dragOffset = interactions.dragOffset
   const marquee = interactions.marquee
+  // Publish the live drag state for edgesLayer.draw (committed edges follow a card
+  // mid-drag; see dragEdgeFollowRef). Assigned every render so the paint-time read
+  // is current; the underlayLayers `dragOffset` trigger dep drives the repaint.
+  dragEdgeFollowRef.current = { offset: dragOffset, ids: selectedIds }
 
   /** Remove the selected layout rows (notes stay in the feed). Undoable (§13). */
   // biome-ignore lint/correctness/useExhaustiveDependencies: timestampsRef is a stable ref from useSpatialUndoStore (its .set is not a reactive dep)
@@ -1635,6 +1677,14 @@ export function CanvasStage({
       // biome-ignore lint/a11y/noNoninteractiveTabindex: canvas is a focusable spatial widget (role=application) owning its own keyboard model; plan mandates a focusable viewport so canvas-scoped hotkeys can gate on focus
       tabIndex={0}
       data-canvas-viewport
+      // Empty-surface gestures (marquee, deselect, double-click-create) live HERE,
+      // not on the inner world div: that div is 0-size (every card is position:
+      // absolute → out of flow) so it never covers empty space. The viewport fills
+      // the canvas area, and onWorldPointerDown already derives world coords from
+      // this node's getBoundingClientRect, so this is the coordinate-correct home.
+      // Card pointerdowns still reach here by bubbling and route via hit-testing.
+      onPointerDown={onWorldPointerDown}
+      onDoubleClick={onSurfaceDoubleClick}
       style={{
         flex: 1,
         overflow: 'hidden',
@@ -1663,7 +1713,6 @@ export function CanvasStage({
             width={viewportSize.w}
             height={viewportSize.h}
           />
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: the world is a spatial surface; pointer/dblclick drive marquee+drag+create — keyboard is the canvas-scoped hotkey map (Task 11), not per-element handlers */}
           <div
             style={{
               position: 'absolute',
@@ -1679,9 +1728,9 @@ export function CanvasStage({
             // the operator-run --smoke can assert select/deselect without reading
             // canvas-2D pixels (happy-dom has no edge DOM). Reflects state only —
             // selection logic lives in onWorldPointerDown / the esc cascade (Task 9).
+            // The pointer/dblclick handlers live on the viewport (this div is
+            // 0-size and never covers empty surface — see the viewport above).
             data-edge-selected={selectedEdge ? '' : undefined}
-            onPointerDown={onWorldPointerDown}
-            onDoubleClick={onSurfaceDoubleClick}
           >
             {cardsToRender.map((r) => {
               // While dragging, selected cards follow the live offset transiently
