@@ -41,38 +41,48 @@ export function PdfReader({ pdfId }: PdfReaderProps): React.JSX.Element {
     if (!doc || !canvasRef.current || !textLayerRef.current) return
     let renderTask: RenderTask | null = null
     let cancelled = false
-    doc.getPage(1).then(async (p) => {
-      if (cancelled) return
-      const vp = p.getViewport({ scale: 1.2 })
-      const canvas = canvasRef.current!
-      canvas.width = vp.width
-      canvas.height = vp.height
-      // pdf.js v6 `RenderParameters` requires `canvas` (the element); the old
-      // `canvasContext` field is now an optional backwards-compat alias — see
-      // node_modules/pdfjs-dist/types/src/display/api.d.ts (`canvas:
-      // HTMLCanvasElement | null`). Passing the element lets pdf.js own the 2D
-      // context internally (build/pdf.mjs falls back to `canvas.getContext`).
-      renderTask = p.render({ canvas, viewport: vp })
-      await renderTask.promise
-      const textLayerDiv = textLayerRef.current!
-      textLayerDiv.replaceChildren() // idempotent guard against double-invoke
-      // The text layer sizes its glyphs from the `--total-scale-factor` CSS var
-      // (pdf_viewer.css). pdf.js only auto-derives that var under a
-      // `.pdfViewer .page` ancestor, which this slim single-page markup omits —
-      // so set it explicitly (user-unit is 1 for normal PDFs). Without it the
-      // transparent text spans inherit the app font size and the selectable
-      // overlay drifts out of alignment with the rendered canvas.
-      textLayerDiv.style.setProperty('--scale-factor', String(vp.scale))
-      textLayerDiv.style.setProperty('--total-scale-factor', String(vp.scale))
-      const textLayer = new TextLayer({
-        textContentSource: p.streamTextContent(),
-        container: textLayerDiv,
-        viewport: vp,
+    doc
+      .getPage(1)
+      .then(async (p) => {
+        if (cancelled) return
+        const vp = p.getViewport({ scale: 1.2 })
+        const canvas = canvasRef.current!
+        canvas.width = vp.width
+        canvas.height = vp.height
+        // pdf.js v6 `RenderParameters` requires `canvas` (the element); the old
+        // `canvasContext` field is now an optional backwards-compat alias — see
+        // node_modules/pdfjs-dist/types/src/display/api.d.ts (`canvas:
+        // HTMLCanvasElement | null`). Passing the element lets pdf.js own the 2D
+        // context internally (build/pdf.mjs falls back to `canvas.getContext`).
+        renderTask = p.render({ canvas, viewport: vp })
+        await renderTask.promise
+        const textLayerDiv = textLayerRef.current!
+        textLayerDiv.replaceChildren() // idempotent guard against double-invoke
+        // The text layer sizes its glyphs from the `--total-scale-factor` CSS var
+        // (pdf_viewer.css). pdf.js only auto-derives that var under a
+        // `.pdfViewer .page` ancestor, which this slim single-page markup omits —
+        // so set it explicitly (user-unit is 1 for normal PDFs). Without it the
+        // transparent text spans inherit the app font size and the selectable
+        // overlay drifts out of alignment with the rendered canvas.
+        textLayerDiv.style.setProperty('--scale-factor', String(vp.scale))
+        textLayerDiv.style.setProperty('--total-scale-factor', String(vp.scale))
+        const textLayer = new TextLayer({
+          textContentSource: p.streamTextContent(),
+          container: textLayerDiv,
+          viewport: vp,
+        })
+        await textLayer.render()
+        if (cancelled) return
+        setPage(p)
+        setViewport(vp)
       })
-      await textLayer.render()
-      setPage(p)
-      setViewport(vp)
-    })
+      .catch((err) => {
+        // renderTask.cancel() (StrictMode double-invoke/unmount) rejects the
+        // awaited render promise with RenderingCancelledException — expected, so
+        // swallow it; surface any real render failure instead of a blank canvas.
+        if ((err as { name?: string })?.name !== 'RenderingCancelledException')
+          console.error('[PdfReader] page render failed', err)
+      })
     return () => {
       cancelled = true
       renderTask?.cancel()
