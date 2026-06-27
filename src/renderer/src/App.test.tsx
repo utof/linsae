@@ -24,8 +24,9 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../tests/setup'
-import type { Note } from '../../shared/types'
+import type { Note, PdfLocator } from '../../shared/types'
 import { useCommandStore } from './palette/command-store'
+import { useExcerptStore } from './pdf/excerptState'
 
 // ── Mock ThreadView to a lightweight sentinel ──────────────────────────────
 // This avoids loading usePlayer / playerSingleton / iframe machinery in jsdom.
@@ -456,6 +457,63 @@ describe('App — switcher freshness (note-titles / note-recent invalidation)', 
     // observers are still mounted+enabled, so react-query re-fetches each once more.
     await waitFor(() => expect(mockApi.notes.listTitles).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(mockApi.notes.recent).toHaveBeenCalledTimes(2))
+  })
+})
+
+describe('App — PDF excerpt → canvas placement bridge (B3)', () => {
+  /** Stable locator fixture for the B3 test. */
+  const LOCATOR: PdfLocator = {
+    media: 'pdf',
+    pdf_id: 'p1',
+    page: 1,
+    rect: [10, 20, 100, 30],
+    quote: 'quote',
+    prefix: '',
+    suffix: '',
+  }
+
+  beforeEach(() => {
+    // Reset the excerpt store so state never leaks between tests.
+    useExcerptStore.getState().clear()
+  })
+  afterEach(() => {
+    useExcerptStore.getState().clear()
+  })
+
+  /**
+   * B3 invariant (round-2 review): selection alone (set without arm) must
+   * never create a note; only the explicit "Excerpt →" affordance (arm) may
+   * trigger a create. This prevents orphan notes on every re-selection.
+   *
+   * @see src/renderer/src/pdf/excerptState.ts ExcerptState.armed
+   * @see docs/specs/v0.6-pdf-slim-slice.md §7
+   */
+  it('B3: selection alone does not create a note; arm() triggers exactly one create', async () => {
+    renderWithProviders(<App />)
+    // Wait for App to settle so the bridge useEffect is wired and armed.
+    await screen.findByRole('textbox')
+
+    // B3 negative: set pending WITHOUT arming → create must NOT fire.
+    act(() => {
+      useExcerptStore.getState().set({ text: 'quote', locator: LOCATOR, pdfId: 'p1', page: 1 })
+    })
+    // Give React a tick to flush state changes and run any effects.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(mockApi.notes.create).not.toHaveBeenCalled()
+
+    // B3 positive: arm() → bridge effect fires → create called exactly once.
+    await act(async () => {
+      useExcerptStore.getState().arm()
+    })
+    await waitFor(() => {
+      expect(mockApi.notes.create).toHaveBeenCalledOnce()
+    })
+    expect(mockApi.notes.create).toHaveBeenCalledWith({
+      body: 'quote',
+      type: 'source',
+      source_kind: 'pdf',
+      source_locator: LOCATOR,
+    })
   })
 })
 

@@ -194,7 +194,7 @@ export function App() {
         // A clear()/re-selection between arm and resolve flips the deps and runs
         // this cleanup (cancelled=true), so a late create never sets a stale ghost.
         if (cancelled) return
-        setPlacing({ noteId: note.id, title: pendingExcerpt.text })
+        setPlacing({ noteId: note.id, title: noteTitle(note) })
       } catch (err) {
         console.error('[App] excerpt note create failed', err)
       }
