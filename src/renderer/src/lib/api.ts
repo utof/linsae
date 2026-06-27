@@ -131,6 +131,47 @@ export const api = {
     recordAccess: (noteId: string, kind: AccessKind): Promise<{ ok: true }> =>
       window.api.notes.recordAccess({ noteId, kind }),
   },
+  /**
+   * PDF IPC facade: content-addressed import, open-by-id (with derived
+   * `mediaUrl`), and a recent-first list. Mirrors the preload `pdf` namespace;
+   * repackages object payloads into positional args.
+   * @see src/preload/index.ts (pdf namespace)
+   * @see docs/specs/v0.6-pdf-slim-slice.md §3
+   */
+  pdf: {
+    /**
+     * Import a PDF by absolute path: content-hash, dedup, store, extract
+     * /Title + page count. Returns the row id + metadata (never bytes).
+     * @see src/main/ipc/pdf.ts
+     */
+    import: (
+      filePath: string,
+    ): Promise<{ pdfId: string; sha256: string; title: string | null; pageCount: number | null }> =>
+      window.api.pdf.import({ filePath }),
+    /**
+     * Open a stored PDF by id — returns its metadata + the relative `/_media/`
+     * URL the renderer loads, or `null` if missing / soft-deleted.
+     * @see src/main/ipc/pdf.ts
+     */
+    open: (
+      pdfId: string,
+    ): Promise<{
+      pdfId: string
+      sha256: string
+      title: string | null
+      pageCount: number | null
+      mediaUrl: string
+    } | null> => window.api.pdf.open({ pdfId }),
+    /**
+     * List recently-imported PDFs, newest-first. `limit` defaults to 20.
+     * @see src/main/ipc/pdf.ts
+     */
+    listRecent: (
+      limit = 20,
+    ): Promise<
+      { pdfId: string; title: string | null; pageCount: number | null; importedAt: number }[]
+    > => window.api.pdf.listRecent({ limit }),
+  },
   search: {
     /**
      * FTS5 search with snippet highlighting. Why `limit = 50`: matches the

@@ -50,6 +50,9 @@ import type {
   NotesRecentInputSchema,
   NotesRecordAccessInputSchema,
   NotesUpdateInputSchema,
+  PdfImportInputSchema,
+  PdfListRecentInputSchema,
+  PdfOpenInputSchema,
   ResolveInputSchema,
   SaveOverlayInputSchema,
   SearchRunInputSchema,
@@ -76,6 +79,26 @@ const api = {
       ipcRenderer.invoke('notes:recent', i),
     recordAccess: (i: z.input<typeof NotesRecordAccessInputSchema>): Promise<{ ok: true }> =>
       ipcRenderer.invoke('notes:recordAccess', i),
+  },
+  pdf: {
+    import: (
+      i: z.input<typeof PdfImportInputSchema>,
+    ): Promise<{ pdfId: string; sha256: string; title: string | null; pageCount: number | null }> =>
+      ipcRenderer.invoke('pdf:import', i),
+    open: (
+      i: z.input<typeof PdfOpenInputSchema>,
+    ): Promise<{
+      pdfId: string
+      sha256: string
+      title: string | null
+      pageCount: number | null
+      mediaUrl: string
+    } | null> => ipcRenderer.invoke('pdf:open', i),
+    listRecent: (
+      i: z.input<typeof PdfListRecentInputSchema>,
+    ): Promise<
+      { pdfId: string; title: string | null; pageCount: number | null; importedAt: number }[]
+    > => ipcRenderer.invoke('pdf:listRecent', i),
   },
   search: {
     run: (i: z.input<typeof SearchRunInputSchema>): Promise<SearchHit[]> =>

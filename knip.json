@@ -17,7 +17,6 @@
     "@rolldown/plugin-babel",
     "@vitejs/plugin-react",
     "babel-plugin-react-compiler",
-    "pdfjs-dist",
     "rehype-katex",
     "remark-math"
   ]

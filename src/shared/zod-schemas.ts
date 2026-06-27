@@ -421,3 +421,19 @@ export const NotesRecordAccessInputSchema = z.object({
  * channel parser and the renderer `recordAccess` signature can never drift. */
 export type AccessKind = z.infer<typeof NotesRecordAccessInputSchema>['kind']
 // notes:listTitles takes no input.
+
+// ── v0.6 PDF import / open / recent ───────────────────────────────────────
+/** `pdf:import` input. */
+export const PdfImportInputSchema = z.object({
+  filePath: z.string().min(1),
+})
+
+/** `pdf:open` input. */
+export const PdfOpenInputSchema = z.object({
+  pdfId: z.string().min(1),
+})
+
+/** `pdf:listRecent` input. */
+export const PdfListRecentInputSchema = z.object({
+  limit: z.number().int().positive().max(100).default(20),
+})
