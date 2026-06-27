@@ -36,6 +36,7 @@
     "katex": "^0.17.0",
     "lucide-react": "^1.16.0",
     "motion": "^12.40.0",
+    "pdfjs-dist": "^6.0.227",
     "perfect-freehand": "^1.2.3",
     "rbush": "^4.0.1",
     "react-hotkeys-hook": "^5.3.2",
