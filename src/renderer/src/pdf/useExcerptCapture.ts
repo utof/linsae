@@ -40,6 +40,10 @@ export function useExcerptCapture({ pdfId, page, viewport, pageEl }: UseExcerptC
       const fullText = await page
         .getTextContent()
         .then((tc) => tc.items.map((i) => ('str' in i ? i.str : '')).join(' '))
+        // getTextContent rejects if the page transport is torn down mid-selection
+        // (e.g. usePdfDocument's loadingTask.destroy()); degrade to no prefix/suffix
+        // rather than leak an unhandled rejection from this async listener.
+        .catch(() => '')
       const idx = fullText.indexOf(text)
       const prefix = idx > 0 ? fullText.slice(Math.max(0, idx - 32), idx) : ''
       const suffix = idx >= 0 ? fullText.slice(idx + text.length, idx + text.length + 32) : ''

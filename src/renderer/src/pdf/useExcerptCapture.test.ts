@@ -49,6 +49,10 @@ describe('useExcerptCapture', () => {
       expect(p?.locator.quote).toBe('the selected text')
       expect(p?.locator.media).toBe('pdf')
       expect(p?.page).toBe(3)
+      expect(p?.locator.prefix).toBe('before ')
+      expect(p?.locator.suffix).toBe(' after')
+      expect(p?.locator.textStart).toBe(7)
+      expect(p?.locator.textEnd).toBe(24)
     })
     // B3: selecting text must never arm placement (that's the affordance's job).
     expect(useExcerptStore.getState().armed).toBe(false)
