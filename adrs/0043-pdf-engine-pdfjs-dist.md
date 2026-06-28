@@ -116,6 +116,19 @@ target latest stable) to realign the runtime, then revert the renderer to the mo
 `data:font/woff2` path and the heavier worker font-decode paths are not yet exercised end-to-end —
 tracked separately for verification against a real multi-feature PDF.
 
+### Follow-up (2026-06-28, v0.6.1): renderer reverted to the **modern** build — see ADR 0044
+
+The interim legacy swap above is now **undone**. Electron was bumped **39 → 42** (Chromium 148 /
+V8 **14.8**, which has `Map.prototype.getOrInsertComputed`), so the renderer's value imports are back
+on the **modern** build (`pdfjs-dist` / `pdfjs-dist/build/pdf.worker.mjs`), reclaiming the ~364 KB.
+The `smoke:pdf` PRIMARY assertion now passes on a freshly-built modern bundle, and a new multi-feature
+fixture (embedded fonts + image + 3 pages) closes the coverage gap noted just above (#153). Two points
+that DID survive the revert: **`font-src 'self' data:` is RETAINED** — pdf.js loads embedded glyph
+fonts as `data:font/woff2` at the engine level on the modern build too (the interim note's "drop
+`data:` again" was wrong); and **`extract-pdf-metadata.ts` stays on the legacy build** (Node no-DOM
+entry point — a different reason from the V8 baseline). Full detail + verified version matrix +
+the `better-sqlite3` 12.10.0→12.11.1 native-ABI fix: `adrs/0044-electron-42-bump.md`.
+
 ## Sources
 
 - `docs/research/2026-27-06-pdf-libs-and-architecture.md` §A (library comparison table), §F (security)
