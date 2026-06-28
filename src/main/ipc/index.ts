@@ -14,6 +14,7 @@ import type { NotesDir } from '../files/notes-dir'
 import { registerCanvasIpc } from './canvas'
 import { registerMediaIpc } from './media'
 import { registerNotesIpc } from './notes'
+import { registerPdfIpc } from './pdf'
 import { registerSystemIpc } from './system'
 import { registerYoutubeAuthIpc } from './youtube-auth'
 
@@ -49,5 +50,6 @@ export function registerAllIpc(
   registerCanvasIpc(db, nd)
   registerSystemIpc(notesDir, logsDir, reconcileSkipped)
   registerMediaIpc(db, attachmentsDir)
+  registerPdfIpc(db, attachmentsDir)
   registerYoutubeAuthIpc()
 }

@@ -60,19 +60,25 @@ export const api = {
      * default authoring mode in the composer (spec §Composer); explicit
      * `'question'` is only used in question-mode.
      *
-     * `source` carries the optional YouTube-annotation fields added in v0.2:
-     * `source_kind` / `source_locator` link the note to a media position;
-     * `commentOn` sets the parent video slug for thread-child notes.
-     * Undefined fields are omitted (not passed as `undefined`) to satisfy
-     * `exactOptionalPropertyTypes` and the Zod `optional()` contract.
+     * `source` carries the optional media-annotation fields (YouTube/PDF — PDF
+     * added in v0.6, YouTube since v0.2): `source_kind` / `source_locator` link
+     * the note to a media position; `commentOn` sets the parent video slug for
+     * thread-child notes. Undefined fields are omitted (not passed as
+     * `undefined`) to satisfy `exactOptionalPropertyTypes` and the Zod
+     * `optional()` contract.
      *
      * @see src/main/ipc/notes.ts
      * @see docs/specs/v0.2-youtube-annotation.md §Data model
+     * @see docs/specs/v0.6-pdf-slim-slice.md
      */
     create: (
       body: string,
       type: Note['type'] = 'claim',
-      source?: { source_kind?: 'youtube'; source_locator?: SourceLocator; commentOn?: string },
+      source?: {
+        source_kind?: 'youtube' | 'pdf'
+        source_locator?: SourceLocator
+        commentOn?: string
+      },
     ): Promise<Note> =>
       window.api.notes.create({
         body,
@@ -85,19 +91,20 @@ export const api = {
      * Update an existing note's body / type. Why no default for `type`:
      * updates always carry an explicit type — the composer round-trips it.
      *
-     * `source` carries optional YouTube-annotation fields added in v0.2:
+     * `source` carries optional media-annotation fields (YouTube/PDF):
      * `source_kind` / `source_locator` (no `commentOn` — threads don't
      * move parents post-creation). Undefined fields are omitted to satisfy
      * `exactOptionalPropertyTypes`.
      *
      * @see src/main/ipc/notes.ts
      * @see docs/specs/v0.2-youtube-annotation.md §Data model
+     * @see docs/specs/v0.6-pdf-slim-slice.md
      */
     update: (
       id: string,
       body: string,
       type: Note['type'],
-      source?: { source_kind?: 'youtube'; source_locator?: SourceLocator },
+      source?: { source_kind?: 'youtube' | 'pdf'; source_locator?: SourceLocator },
     ): Promise<Note> =>
       window.api.notes.update({
         id,
@@ -123,6 +130,47 @@ export const api = {
      * @see docs/specs/v0.5-command-search.md §7 */
     recordAccess: (noteId: string, kind: AccessKind): Promise<{ ok: true }> =>
       window.api.notes.recordAccess({ noteId, kind }),
+  },
+  /**
+   * PDF IPC facade: content-addressed import, open-by-id (with derived
+   * `mediaUrl`), and a recent-first list. Mirrors the preload `pdf` namespace;
+   * repackages object payloads into positional args.
+   * @see src/preload/index.ts (pdf namespace)
+   * @see docs/specs/v0.6-pdf-slim-slice.md §3
+   */
+  pdf: {
+    /**
+     * Import a PDF by absolute path: content-hash, dedup, store, extract
+     * /Title + page count. Returns the row id + metadata (never bytes).
+     * @see src/main/ipc/pdf.ts
+     */
+    import: (
+      filePath: string,
+    ): Promise<{ pdfId: string; sha256: string; title: string | null; pageCount: number | null }> =>
+      window.api.pdf.import({ filePath }),
+    /**
+     * Open a stored PDF by id — returns its metadata + the relative `/_media/`
+     * URL the renderer loads, or `null` if missing / soft-deleted.
+     * @see src/main/ipc/pdf.ts
+     */
+    open: (
+      pdfId: string,
+    ): Promise<{
+      pdfId: string
+      sha256: string
+      title: string | null
+      pageCount: number | null
+      mediaUrl: string
+    } | null> => window.api.pdf.open({ pdfId }),
+    /**
+     * List recently-imported PDFs, newest-first. `limit` defaults to 20.
+     * @see src/main/ipc/pdf.ts
+     */
+    listRecent: (
+      limit = 20,
+    ): Promise<
+      { pdfId: string; title: string | null; pageCount: number | null; importedAt: number }[]
+    > => window.api.pdf.listRecent({ limit }),
   },
   search: {
     /**
@@ -401,6 +449,17 @@ export const api = {
      * @see src/main/ipc/system.ts
      */
     getReconcileSkipped: (): Promise<number> => window.api.system.getReconcileSkipped(),
+    /**
+     * Open a native file picker. Pass dialog `filters` (e.g. `[{ name: 'PDF',
+     * extensions: ['pdf'] }]`); they are repackaged into the `{ filters }`
+     * payload the preload bridge expects. Returns the chosen absolute paths
+     * (empty array if the user cancelled).
+     * @see src/main/ipc/system.ts (system:chooseFile)
+     */
+    chooseFile: (
+      filters?: { name: string; extensions: string[] }[],
+    ): Promise<{ filePaths: string[] }> =>
+      window.api.system.chooseFile(filters ? { filters } : undefined),
     /**
      * Window controls for the custom frameless title bar — used by
      * `WindowFrame` to drive minimize / maximize-toggle / close.

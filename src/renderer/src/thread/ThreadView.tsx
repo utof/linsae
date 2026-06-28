@@ -95,7 +95,7 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     enabled: !!noteId,
   })
 
-  const videoId = note?.source_locator?.video_id ?? ''
+  const videoId = note?.source_locator?.media === 'youtube' ? note.source_locator.video_id : ''
 
   const { data: videoSource } = useQuery({
     queryKey: ['videoSource', videoId],

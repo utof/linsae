@@ -20,6 +20,8 @@ import { type Command, useCommandStore } from './palette/command-store'
 import { QuickSwitcher } from './palette/QuickSwitcher'
 import { Dock } from './panes/Dock'
 import { ShelfContext } from './panes/ShelfPane'
+import { useExcerptStore } from './pdf/excerptState'
+import { useOpenPdf, usePdfOpenId } from './pdf/usePdfOpenId'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { ThreadView } from './thread/ThreadView'
 import { WindowFrame } from './topbar/WindowFrame'
@@ -146,6 +148,94 @@ export function App() {
   // body-preservation contract).
   const [successCount, setSuccessCount] = useState(0)
 
+  // Right-dock PDF reader (spec §6): the open-pdf id is persisted in the
+  // app_settings store so the dock restores on boot. `pdfPaneOpen` mounts the
+  // right <Dock>; `openPdf(null)` (Dock onClose) clears it.
+  const pdfOpenId = usePdfOpenId()
+  const openPdf = useOpenPdf()
+  const pdfPaneOpen = pdfOpenId !== null
+  // Open PDF…: native picker → content-addressed import → set the open-pdf id
+  // (the right dock mounts + the next boot restores from `pdf.openDocId`).
+  // openPdf is stable (useOpenPdf memoizes), so this stays stable for the
+  // command registry. Declared here (above the command-registration effect) so
+  // it is in scope for that effect's dep array. @see spec §6
+  const onOpenPdf = useCallback(async () => {
+    try {
+      const { filePaths } = await api.system.chooseFile([{ name: 'PDF', extensions: ['pdf'] }])
+      if (!filePaths[0]) return
+      const result = await api.pdf.import(filePaths[0])
+      await openPdf(result.pdfId)
+    } catch (err) {
+      console.error('[App] Open PDF failed', err)
+    }
+  }, [openPdf])
+
+  // Widen the pinned-data refetch (spec §3): saves must converge feed↔canvas,
+  // and link edits must redraw canvas edges. Invalidates the feed list, every
+  // single-note query, and the resolved-edge query.
+  // Declared before the excerpt bridge so TypeScript can see it (block-scoped
+  // const must appear before any closure that references it).
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ['notes'] })
+    void queryClient.invalidateQueries({ queryKey: ['note'] }) // every ['note', id]
+    void queryClient.invalidateQueries({ queryKey: ['canvas-edges'] })
+    // ⌘O switcher feed + recent empty-state (spec §3: note-titles invalidated on
+    // create/save/delete). Push-based cache (query-client.ts staleTime:Infinity)
+    // never auto-refetches, so the switcher goes stale without this. The
+    // ['note-recent'] prefix matches both mode variants (recent | frecent).
+    void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
+    void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
+  }
+
+  // ── PDF excerpt → canvas ghost-placement bridge (spec §7) ─────────────────
+  // The right-dock PDF pane captures a text selection into excerptState; the
+  // "Excerpt →" affordance flips `armed`. We watch `armed` (NOT `pending`) so a
+  // note is created + canvas placement armed ONLY on that explicit click —
+  // watching `pending` would persist a note on every selection and orphan one
+  // on re-selection (round-2 review B3). Mirrors the feed→canvas onPlaceOnCanvas
+  // precedent: resolve the note id first, then set `placing`. No view switch —
+  // the PDF dock coexists with the canvas (spec §6: it is not a third viewMode),
+  // so the user excerpts while already in canvas view.
+  const pendingExcerpt = useExcerptStore((s) => s.pending)
+  const armed = useExcerptStore((s) => s.armed)
+  const clearExcerpt = useExcerptStore((s) => s.clear)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: invalidate recreates each render but is behaviorally stable (hardcoded keys, stable queryClient); adding it to deps would churn the bridge on every render
+  useEffect(() => {
+    if (!armed || !pendingExcerpt) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const note = await api.notes.create(pendingExcerpt.text, 'source', {
+          source_kind: 'pdf',
+          source_locator: pendingExcerpt.locator,
+        })
+        // The note exists in the DB at this point regardless of whether canvas
+        // placement proceeds; invalidate feed/switcher/recent now so the note
+        // appears in the feed, ⌘O title switcher, and ⌘J recent (spec §3
+        // invariant). Matches the invalidation every other create path calls.
+        invalidate()
+        // A clear()/re-selection between arm and resolve flips the deps and runs
+        // this cleanup (cancelled=true), so a late create never sets a stale ghost.
+        if (cancelled) return
+        setPlacing({ noteId: note.id, title: noteTitle(note) })
+      } catch (err) {
+        console.error('[App] excerpt note create failed', err)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [armed, pendingExcerpt])
+  // Shared placement teardown: clears the canvas ghost AND the excerpt store.
+  // Passed to CanvasStage (fires on canvas-click commit AND its capture-phase
+  // esc) and reused by App's esc ladder for the focus-outside-canvas case.
+  // clearExcerpt() is a no-op for non-PDF placement (feed/shelf), so one shared
+  // handler is safe. @see docs/specs/v0.6-pdf-slim-slice.md §7
+  const onPlacingDone = useCallback(() => {
+    setPlacing(null)
+    clearExcerpt()
+  }, [clearExcerpt])
+
   // Send-in-progress flag: true from the moment the user submits a new note until
   // shortly after it has glided into place. The Feed reads it to suppress the
   // virtualizer's own auto-scroll (`anchorTo:'end'` / `followOnAppend`) during the
@@ -241,12 +331,13 @@ export function App() {
         run: () => setRecentOpen((o) => !o),
       },
       { id: 'app.settings', label: 'Open settings', run: () => setSettingsOpen(true) },
+      { id: 'pdf.open', label: 'Open PDF…', run: onOpenPdf },
     ]
     for (const c of base) store.register(c)
     return () => {
       for (const c of base) store.unregister(c.id)
     }
-  }, [viewMode])
+  }, [viewMode, onOpenPdf])
 
   // Remove the static boot splash (index.html #boot-splash) once the notes
   // query has settled. The splash paints on the first frame — before the JS
@@ -272,21 +363,6 @@ export function App() {
     [notes],
   )
   const resolveSlug = (slug: string) => slugSet.has(slug.toLowerCase().trim())
-
-  // Widen the pinned-data refetch (spec §3): saves must converge feed↔canvas,
-  // and link edits must redraw canvas edges. Invalidates the feed list, every
-  // single-note query, and the resolved-edge query.
-  const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: ['notes'] })
-    void queryClient.invalidateQueries({ queryKey: ['note'] }) // every ['note', id]
-    void queryClient.invalidateQueries({ queryKey: ['canvas-edges'] })
-    // ⌘O switcher feed + recent empty-state (spec §3: note-titles invalidated on
-    // create/save/delete). Push-based cache (query-client.ts staleTime:Infinity)
-    // never auto-refetches, so the switcher goes stale without this. The
-    // ['note-recent'] prefix matches both mode variants (recent | frecent).
-    void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
-    void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
-  }
 
   /**
    * Paste interceptor for the create-mode composer. Called with the raw
@@ -439,9 +515,9 @@ export function App() {
     { enabled: viewMode === 'canvas' },
     [viewMode],
   )
-  // App's global esc ladder (settings → palette → focused pane). Each rung guards
-  // on its OWN state boolean, so this is a no-op when none of App's overlays are
-  // open. This is a BUBBLE-phase document listener (react-hotkeys-hook's default).
+  // App's global esc ladder (settings → palette → placement → focused pane). Each
+  // rung guards on its OWN state boolean, so this is a no-op when none of App's
+  // overlays are open. This is a BUBBLE-phase document listener (react-hotkeys-hook's default).
   // The canvas esc cascade (CanvasStage) is a CAPTURE-phase listener on the canvas
   // viewport node: an esc dispatched inside the canvas is seen by the viewport
   // capture handler DURING the capture descent — before the event can bubble up to
@@ -465,12 +541,20 @@ export function App() {
         setActivePalette('none')
         return
       }
+      // One-shot placement (incl. a PDF excerpt armed from the right dock): Esc
+      // cancels it when focus is OUTSIDE the canvas viewport (e.g. the PDF pane).
+      // Inside the canvas, CanvasStage's capture-phase esc handler consumes it
+      // first — calling this same onPlacingDone — so the two never double-fire.
+      if (placing) {
+        onPlacingDone()
+        return
+      }
       if (focusedId) {
         setFocusedId(null)
       }
     },
     { enableOnFormTags: ['textarea', 'input'] },
-    [settingsOpen, activePalette, focusedId],
+    [settingsOpen, activePalette, focusedId, placing, onPlacingDone],
   )
   // DEV: toggle the reveal-animation playground (mod+shift+R).
   useHotkeys(
@@ -745,7 +829,7 @@ export function App() {
                         onWikilinkClick={onWikilinkClick}
                         resolveSlug={resolveSlug}
                         placing={placing}
-                        onPlacingDone={() => setPlacing(null)}
+                        onPlacingDone={onPlacingDone}
                         onCameraChange={handleCameraChange}
                         fitSignal={fitSignal}
                         resetSignal={resetSignal}
@@ -849,6 +933,19 @@ export function App() {
                   )}
                 </AnimatePresence>
               </main>
+              {/* Right dock (spec §6) — the PDF reader, sits RIGHT of <main> so
+                the layout reads [left dock][center stage][right dock: pdf].
+                Mounts only when a PDF is open (`pdf.openDocId` set). */}
+              {pdfPaneOpen && (
+                <Dock
+                  open
+                  paneId="pdf"
+                  side="right"
+                  onClose={() => {
+                    void openPdf(null)
+                  }}
+                />
+              )}
               {focusedId && (
                 <BacklinksPane
                   focusedNoteId={focusedId}

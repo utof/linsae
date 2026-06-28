@@ -1,15 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getPane } from './Pane'
 
-/** Dock width bounds (spec §10 — resizable 220–400 px by edge drag). */
-const MIN_WIDTH = 220
-const MAX_WIDTH = 400
-const DEFAULT_WIDTH = 280
+/**
+ * Kind-derived dock width bounds (px). Utility panes keep the original §10
+ * 220–400 band; content panes (a PDF reader) get a wider 400–900 band so the
+ * page is legible without dwarfing the stage.
+ * @see docs/plans/v0.6-pdf-slim-slice.md §Task 7
+ */
+const MIN_WIDTH_UTILITY = 220
+const MAX_WIDTH_UTILITY = 400
+const DEFAULT_WIDTH_UTILITY = 280
+const MIN_WIDTH_CONTENT = 400
+const MAX_WIDTH_CONTENT = 900
+const DEFAULT_WIDTH_CONTENT = 600
 
 interface DockProps {
   open: boolean
   paneId: string
   onClose: () => void
+  /**
+   * Which screen edge the dock anchors to. Defaults to `'left'` (the v0.4
+   * behavior): border + resize handle on the right edge, width grows rightward.
+   * `'right'` mirrors all three so a right dock reads/resizes symmetrically.
+   */
+  side?: 'left' | 'right'
 }
 
 /**
@@ -21,20 +35,43 @@ interface DockProps {
  * milestone — the registry stays data-driven so this grows without a rewrite.
  *
  * Resize precision is harness-verified later (happy-dom has no layout model);
- * the in-memory width is clamped to [220, 400] px on each pointer-move frame.
+ * the in-memory width is clamped per the pane's {@link Pane.kind} on each
+ * pointer-move frame. `side` (default `'left'`) mirrors the chrome + resize
+ * direction for a right-anchored dock.
  * @see docs/specs/v0.4-canvas-mvp.md §10
+ * @see docs/plans/v0.6-pdf-slim-slice.md §Task 7
  * @see docs/canvas-vision.md §Dock shell
  */
-export function Dock({ open, paneId, onClose }: DockProps): React.JSX.Element | null {
+export function Dock({
+  open,
+  paneId,
+  onClose,
+  side = 'left',
+}: DockProps): React.JSX.Element | null {
+  // Kind-derive the clamp before the hooks (getPane is a pure lookup, not a
+  // hook) so the initial width matches the pane's band. Default kind is
+  // 'utility', preserving the v0.4 220/280/400 numbers for the Shelf.
+  const pane = getPane(paneId)
+  const isContent = pane?.kind === 'content'
+  const MIN_WIDTH = isContent ? MIN_WIDTH_CONTENT : MIN_WIDTH_UTILITY
+  const MAX_WIDTH = isContent ? MAX_WIDTH_CONTENT : MAX_WIDTH_UTILITY
+  const DEFAULT_WIDTH = isContent ? DEFAULT_WIDTH_CONTENT : DEFAULT_WIDTH_UTILITY
+
   const [width, setWidth] = useState(DEFAULT_WIDTH)
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
 
-  const onPointerMove = useCallback((e: PointerEvent) => {
-    const drag = dragRef.current
-    if (!drag) return
-    const next = drag.startWidth + (e.clientX - drag.startX)
-    setWidth(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, next)))
-  }, [])
+  const onPointerMove = useCallback(
+    (e: PointerEvent) => {
+      const drag = dragRef.current
+      if (!drag) return
+      // Right dock's handle is on the LEFT edge, so cursor-right shrinks it —
+      // mirror of the left dock where cursor-right grows it.
+      const delta = e.clientX - drag.startX
+      const next = side === 'right' ? drag.startWidth - delta : drag.startWidth + delta
+      setWidth(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, next)))
+    },
+    [side, MIN_WIDTH, MAX_WIDTH],
+  )
 
   const onPointerUp = useCallback(() => {
     dragRef.current = null
@@ -64,12 +101,11 @@ export function Dock({ open, paneId, onClose }: DockProps): React.JSX.Element | 
   }, [onPointerMove, onPointerUp])
 
   if (!open) return null
-  const pane = getPane(paneId)
   if (!pane) return null
 
   return (
     <aside
-      data-dock="left"
+      data-dock={side}
       style={{
         position: 'relative',
         width,
@@ -78,7 +114,10 @@ export function Dock({ open, paneId, onClose }: DockProps): React.JSX.Element | 
         display: 'flex',
         flexDirection: 'column',
         background: 'var(--bg-1)',
-        borderRight: '1px solid var(--border-0)',
+        // Border on the inner edge: right dock borders left, left dock borders right.
+        ...(side === 'right'
+          ? { borderLeft: '1px solid var(--border-0)' }
+          : { borderRight: '1px solid var(--border-0)' }),
       }}
     >
       <header
@@ -121,7 +160,8 @@ export function Dock({ open, paneId, onClose }: DockProps): React.JSX.Element | 
         style={{
           position: 'absolute',
           top: 0,
-          right: -3,
+          // Handle straddles the inner edge — left for a right dock, right otherwise.
+          ...(side === 'right' ? { left: -3 } : { right: -3 }),
           width: 6,
           height: '100%',
           cursor: 'col-resize',

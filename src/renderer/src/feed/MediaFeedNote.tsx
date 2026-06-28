@@ -66,7 +66,7 @@ export function MediaFeedNoteContainer({
   onDelete?: () => void
   onCopyLink?: () => void
 }) {
-  const videoId = note.source_locator?.video_id ?? ''
+  const videoId = note.source_locator?.media === 'youtube' ? note.source_locator.video_id : ''
   const { data: meta } = useQuery({
     queryKey: ['videoSource', videoId],
     queryFn: () => api.videoSources.get(videoId),

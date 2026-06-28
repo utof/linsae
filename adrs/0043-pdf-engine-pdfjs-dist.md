@@ -69,9 +69,11 @@ YouTube-only. Smoke test must verify the blob worker boots under `sandbox:true` 
 ## Consequences
 
 - **New dep:** `pdfjs-dist` (Apache-2.0, single package, no concerning runtime deps). Bundle
-  impact ~1–2 MB core+worker, loaded on-demand when a PDF opens (not at app boot).
-- **No native module / no ABI dance.** pdf.js is pure JS + a worker; existing `pnpm rebuild:electron`
-  / `rebuild:node` unaffected.
+  impact ~3.2 MB (legacy build: worker ~2.2 MB + core ~1.0 MB on disk), loaded on-demand when a
+  PDF opens (not at app boot).
+- **One optional, prebuilt native dep (`@napi-rs/canvas`), no rebuild required.** It ships as a
+  platform prebuilt (`@napi-rs+canvas-linux-x64-gnu@1.0.1`), so `pnpm rebuild:electron`/
+  `rebuild:node` are unaffected (no ABI dance).
 - **React Compiler 1.0** (ADR 0006): the thin in-house component is compiler-safe by construction
   (pdf.js itself is framework-agnostic). A third-party wrapper's compiler compat is undocumented —
   another reason the research preferred the in-house wrapper.
@@ -86,6 +88,34 @@ YouTube-only. Smoke test must verify the blob worker boots under `sandbox:true` 
   the main-process metadata path imports `pdfjs-dist/legacy/build/pdf.mjs` (`.mjs` not `.js` —
   v6 is ESM-only).
 
+## Amendment (2026-06-28, v0.6): the renderer also uses the **legacy** build
+
+The v0.6 Playwright-Electron smoke (`scripts/pdf-render-smoke.mjs` — the first real render; all prior
+PDF tests were happy-dom) caught that `PDFPageProxy.render()` throws
+`TypeError: ...getOrInsertComputed is not a function` in the target runtime. Root cause: `pdfjs-dist`
+v6's **modern** build calls `Map.prototype.getOrInsertComputed` (TC39 "upsert", Stage 4 2026-01-20,
+unflagged baseline **Chrome 145 / V8 14.5**) in both the renderer and worker realms; pinned
+**Electron 39 = Chromium 142 / V8 14.2** lacks it. So the "**No native module / pure JS, just works**"
+consequence above carries a caveat: the modern build's **JS baseline can outrun the pinned Electron's
+V8**.
+
+**Fix (interim):** the renderer's *value* imports now use the **legacy** build
+(`pdfjs-dist/legacy/build/pdf.{mjs,worker.mjs}` — `usePdfDocument.ts`, `PdfReader.tsx`), which
+self-polyfills the modern-API class via core-js (53 core-js refs vs 0 in the modern build) and exports
+the **identical** surface (`getDocument`/`GlobalWorkerOptions`/`TextLayer`/`version`) — zero API rework.
+This makes the renderer consistent with the main process, which already imported the legacy build.
+Cost: ~+364 KB (main+worker), loaded on-demand when a PDF opens, not at boot. Type-only imports stay
+on the package root. The CSP also gains `font-src 'self' data:` (independent real bug — pdf.js embeds
+glyphs as `data:font/woff2`, which the original `font-src 'self'` blocked).
+
+**Path back to modern:** bump Electron to ≥41 (Chromium 146 / V8 14.6, first with the API unflagged;
+target latest stable) to realign the runtime, then revert the renderer to the modern build and drop the
++364 KB. Tracked in **issue #152** with its full blast radius (Chromium+Node ABI, breaking-change audit).
+
+**Known coverage gap:** the committed smoke renders `tiny.pdf` (no embedded fonts), so the
+`data:font/woff2` path and the heavier worker font-decode paths are not yet exercised end-to-end —
+tracked separately for verification against a real multi-feature PDF.
+
 ## Sources
 
 - `docs/research/2026-27-06-pdf-libs-and-architecture.md` §A (library comparison table), §F (security)
@@ -97,3 +127,5 @@ YouTube-only. Smoke test must verify the blob worker boots under `sandbox:true` 
 - ADR 0008 (loopback HTTP shell — why `app://` was abandoned; PDF reuses the shell)
 - ADR 0016 (YouTube `<webview>` — the precedent this ADR declines to extend to PDF)
 - ADR 0027 (context-free `ink/` module — the Stage 2 reuse contract for PDF annotation)
+- mozilla/pdf.js PR #20706 / commit 6323afab (2026-02-17, "unconditional `Map.prototype.getOrInsertComputed()`… polyfilled via core-js in the legacy builds") — the amendment's root-cause source
+- `scripts/pdf-render-smoke.mjs` (the v0.6 smoke that caught the V8 gap); issue #152 (Electron bump to realign V8 + revert to modern)

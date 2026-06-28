@@ -93,14 +93,17 @@ Cover both library choice AND named-API correctness. Don't reflex-audit.
 ## Stack
 pnpm · Electron 30+ via electron-vite · React 19 + TypeScript strict · better-sqlite3 (raw SQL migrations via Vite `import.meta.glob('./migrations/*.sql', { query: '?raw', eager: true })`; no Drizzle at v0.1) · FTS5 with `bm25()`+`snippet()` · `@tanstack/react-virtual` (MIT) for the rolling feed — see ADR 0005; `react-virtuoso` was used through v0.1.2 and replaced after the OSS package's chat-stability limit (petyosi/react-virtuoso#1240) burned through nine fix attempts · cmdk · react-markdown + remark-gfm/math + rehype-katex + a custom `remark-wikilinks` plugin · lucide-react · react-hotkeys-hook · @tanstack/react-query · uuidv7 · js-yaml · Zod at IPC boundaries · @electron/rebuild (NOT deprecated `electron-rebuild`) · Vitest + RTL + happy-dom (jsdom dropped for ~2× faster suite — see ADR 0014; node-env tests pin `// @vitest-environment node`) · Biome · knip · lefthook. Tauri ruled out (YouTube iframe + screenshot-at-timestamp). No Tailwind at v0.1 — inline `style` with v21 CSS-variable tokens.
 
-## Precommit (lefthook · order matters)
-1. `biome check --apply` (format + lint)
-2. `tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json`
-3. `vitest run` (unit + component + integration)
-4. `knip` (fail on unused exports / files / deps)
-5. `scripts/check-design-tokens.sh` (fails if the renderer's `colors_and_type.css` drifts from `v21-design-system/project/colors_and_type.css`)
+## Precommit (lefthook · `parallel: true`)
+Independent checks run concurrently; the heavy ones (typecheck / rebuild+test / knip) skip on docs-only commits via `scripts/staged-has-code.sh`.
+- `biome check .` (`lint:check` — lint only, no auto-write, so it's parallel-safe)
+- `tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json`
+- `scripts/ensure-node-abi.mjs && vitest run` — one sequential command: the ABI probe rebuilds better-sqlite3 for Node ONLY when it isn't already Node-ABI (~80ms no-op in the dev loop, vs ~2–4s of re-extracting an already-correct tarball, and it stops re-writing the shared `.node` under concurrency), then the FULL suite (unit + component + integration)
+- `knip` (fail on unused exports / files / deps)
+- `scripts/check-design-tokens.sh` (fails if the renderer's `colors_and_type.css` drifts from `v21-design-system/project/colors_and_type.css`)
 
-Any step fails → commit blocked. **Never** `--no-verify`. Add `"prepare": "lefthook install"` to `package.json` so fresh clones install hooks on `pnpm install`.
+Any step fails → commit blocked. **Never** `--no-verify`. The full test suite still runs on every code commit (per-commit coverage unchanged); only the redundant per-commit native rebuild was made conditional and the independent checks parallelized. Add `"prepare": "lefthook install"` to `package.json` so fresh clones install hooks on `pnpm install`.
+
+**Orchestration rule (multi-agent dev loop):** implementer/reviewer subagents must NOT pre-run the full `pnpm test` / `pnpm rebuild:node` before committing — lefthook is the single authoritative gate, and the pre-run is pure duplication on a passing commit (it re-ran the growing suite 2–4× per task and over-subscribed CPU across concurrent agents). For TDD feedback run only the specific/changed test file (`vitest run <file>` or `vitest run --changed`). Rationale + measurements: `docs/research/2026-06-27-precommit-test-speed.md`.
 
 ## Tests every batch
 - **Unit (Vitest)** for pure logic (parsers, query wrappers, resolvers, normalizers, atomic-write) — node-env tests pin `// @vitest-environment node`; the rest inherit the global happy-dom env.
@@ -108,7 +111,7 @@ Any step fails → commit blocked. **Never** `--no-verify`. Add `"prepare": "lef
 - **Integration (Vitest, real disk + real SQLite file in `mkdtempSync` tmpdirs)** for file↔DB round-trip, reconciler malformed-skip behavior, and external-edit-between-sessions.
 - **Visual regression — Playwright `toHaveScreenshot()`** against a fixed-viewport Electron window with seed data — starts at **v0.2**, deliberately deferred from v0.1.
 
-`better-sqlite3` native binding requires ABI alignment: `pnpm rebuild:electron` before `pnpm dev`, `pnpm rebuild:node` before `pnpm test`. CI runs `rebuild:node` first.
+`better-sqlite3` native binding requires ABI alignment. Both `pnpm dev` and the precommit hook probe-then-rebuild only when needed (`scripts/ensure-electron-abi.mjs` / `scripts/ensure-node-abi.mjs`); the manual `pnpm rebuild:electron` (before `pnpm dev`) / `pnpm rebuild:node` (before `pnpm test`) still work directly. CI runs `rebuild:node` first.
 
 
 ## Documentation-for-trust (vibe-code rigor)

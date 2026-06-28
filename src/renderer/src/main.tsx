@@ -1,4 +1,5 @@
 import 'katex/dist/katex.min.css'
+import 'pdfjs-dist/web/pdf_viewer.css'
 import './styles/globals.css'
 import './styles/colors_and_type.css'
 import { QueryClientProvider } from '@tanstack/react-query'

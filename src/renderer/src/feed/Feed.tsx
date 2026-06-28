@@ -133,7 +133,7 @@ const SOURCE_NOTE_HEIGHT_ESTIMATE = 320
 function estimateBubbleHeight(note: Note): number {
   // Source notes render a fixed-height media card — use a constant estimate.
   // The virtualizer replaces this with the measured value on first paint.
-  if (note.source_kind === 'youtube' && note.source_locator?.video_id != null) {
+  if (note.source_kind === 'youtube' && note.source_locator?.media === 'youtube') {
     return SOURCE_NOTE_HEIGHT_ESTIMATE
   }
   const body = note.body
@@ -286,7 +286,7 @@ export function Feed({
     const chunks = notes
       .filter((n) => selectedIds.has(n.id))
       .map((n) =>
-        n.type === 'source' && n.source_locator?.video_id != null
+        n.type === 'source' && n.source_locator?.media === 'youtube'
           ? `https://youtu.be/${n.source_locator.video_id}`
           : n.body,
       )

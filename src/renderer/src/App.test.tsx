@@ -24,8 +24,9 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../tests/setup'
-import type { Note } from '../../shared/types'
+import type { Note, PdfLocator } from '../../shared/types'
 import { useCommandStore } from './palette/command-store'
+import { useExcerptStore } from './pdf/excerptState'
 
 // ── Mock ThreadView to a lightweight sentinel ──────────────────────────────
 // This avoids loading usePlayer / playerSingleton / iframe machinery in jsdom.
@@ -373,7 +374,14 @@ describe('App — base command registration (⌘K)', () => {
     const cmds = useCommandStore.getState().commands()
     const byId = new Map(cmds.map((c) => [c.id, c]))
     expect([...byId.keys()].sort()).toEqual(
-      ['app.settings', 'note.new', 'search.content', 'search.title', 'view.recent'].sort(),
+      [
+        'app.settings',
+        'note.new',
+        'pdf.open',
+        'search.content',
+        'search.title',
+        'view.recent',
+      ].sort(),
     )
     // The two search doors carry their hotkey hints (rendered on the ⌘K rows).
     expect(byId.get('search.title')?.hint).toBe('⌘O')
@@ -447,6 +455,110 @@ describe('App — switcher freshness (note-titles / note-recent invalidation)', 
 
     // invalidate() must now mark ['note-titles'] + ['note-recent'] stale; both
     // observers are still mounted+enabled, so react-query re-fetches each once more.
+    await waitFor(() => expect(mockApi.notes.listTitles).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(mockApi.notes.recent).toHaveBeenCalledTimes(2))
+  })
+})
+
+describe('App — PDF excerpt → canvas placement bridge (B3)', () => {
+  /** Stable locator fixture for the B3 test. */
+  const LOCATOR: PdfLocator = {
+    media: 'pdf',
+    pdf_id: 'p1',
+    page: 1,
+    rect: [10, 20, 100, 30],
+    quote: 'quote',
+    prefix: '',
+    suffix: '',
+  }
+
+  beforeEach(() => {
+    // Reset the excerpt store so state never leaks between tests.
+    useExcerptStore.getState().clear()
+  })
+  afterEach(() => {
+    useExcerptStore.getState().clear()
+    // Reset command registrations left by App mount (mirrors the switcher-freshness
+    // describe; needed now that one B3 test opens the ⌘O switcher).
+    useCommandStore.getState().reset()
+  })
+
+  /**
+   * B3 invariant (round-2 review): selection alone (set without arm) must
+   * never create a note; only the explicit "Excerpt →" affordance (arm) may
+   * trigger a create. This prevents orphan notes on every re-selection.
+   *
+   * @see src/renderer/src/pdf/excerptState.ts ExcerptState.armed
+   * @see docs/specs/v0.6-pdf-slim-slice.md §7
+   */
+  it('B3: selection alone does not create a note; arm() triggers exactly one create', async () => {
+    renderWithProviders(<App />)
+    // Wait for App to settle so the bridge useEffect is wired and armed.
+    await screen.findByRole('textbox')
+
+    // B3 negative: set pending WITHOUT arming → create must NOT fire.
+    act(() => {
+      useExcerptStore.getState().set({ text: 'quote', locator: LOCATOR, pdfId: 'p1', page: 1 })
+    })
+    // Give React a tick to flush state changes and run any effects.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(mockApi.notes.create).not.toHaveBeenCalled()
+
+    // B3 positive: arm() → bridge effect fires → create called exactly once.
+    await act(async () => {
+      useExcerptStore.getState().arm()
+    })
+    await waitFor(() => {
+      expect(mockApi.notes.create).toHaveBeenCalledOnce()
+    })
+    expect(mockApi.notes.create).toHaveBeenCalledWith({
+      body: 'quote',
+      type: 'source',
+      source_kind: 'pdf',
+      source_locator: LOCATOR,
+    })
+  })
+
+  /**
+   * Cache-invalidation guard (spec §3 / blocker): arm() must invalidate the
+   * ['note-titles'] and ['note-recent'] caches so the excerpted note immediately
+   * appears in the ⌘O switcher, ⌘J recent, and the feed — not just on canvas.
+   *
+   * Mechanism mirrors the createMut freshness test above: keep the ⌘O switcher
+   * open so its queries have active observers; assert they refetch after arm().
+   * Without the invalidate() call in the bridge, listTitles/recent stay at one
+   * call (no refetch triggered) and this test fails.
+   *
+   * @see src/renderer/src/App.tsx — excerpt bridge useEffect
+   * @see docs/specs/v0.6-pdf-slim-slice.md §7
+   */
+  it('B3: arm() invalidates note-titles and note-recent caches (switcher/recent freshness)', async () => {
+    renderWithProviders(<App />)
+    await screen.findByRole('textbox')
+
+    // Wait for base commands to register (the command effect runs post-mount).
+    await waitFor(() => expect(useCommandStore.getState().commands().length).toBeGreaterThan(0))
+
+    // Open ⌘O switcher — listTitles + recent each fetch once (enabled: open).
+    // Keep the switcher open so its observers stay mounted and a refetch is
+    // detectable (a close→reopen would refetch on re-enable regardless).
+    await act(async () => {
+      useCommandStore.getState().registry.get('search.title')?.run?.()
+    })
+    await waitFor(() => expect(mockApi.notes.listTitles).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mockApi.notes.recent).toHaveBeenCalledTimes(1))
+
+    // Set pending + arm → bridge fires → note created → invalidate() called.
+    act(() => {
+      useExcerptStore.getState().set({ text: 'quote', locator: LOCATOR, pdfId: 'p1', page: 1 })
+    })
+    await act(async () => {
+      useExcerptStore.getState().arm()
+    })
+    await waitFor(() => expect(mockApi.notes.create).toHaveBeenCalledOnce())
+
+    // invalidate() marks ['note-titles'] + ['note-recent'] stale; the open
+    // observers refetch. Each must now be at two calls.
     await waitFor(() => expect(mockApi.notes.listTitles).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(mockApi.notes.recent).toHaveBeenCalledTimes(2))
   })

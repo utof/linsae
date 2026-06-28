@@ -5,15 +5,43 @@
 export type NoteType = 'claim' | 'question' | 'source'
 
 /**
- * What external thing a note is anchored to (JSON in notes.source_locator).
- * Media-agnostic (spec §Forward direction); v0.2.0 = youtube only. `t` (sec)
- * is omitted for anchorless comment-notes.
+ * A note anchored to a YouTube video position. `t` (sec) is omitted for
+ * anchorless comment-notes.
+ * @see docs/specs/v0.2-youtube-annotation.md §Data model
  */
-export interface SourceLocator {
+export interface YoutubeLocator {
   media: 'youtube'
   video_id: string
   t?: number
 }
+
+/**
+ * A note anchored to a region of a PDF page (W3C-style text + position
+ * selectors, so the anchor survives re-flow / re-extraction). The exact
+ * selected text plus prefix/suffix disambiguators let a quote be re-found even
+ * when the page's text-position offsets drift.
+ * @see docs/specs/v0.6-pdf-slim-slice.md
+ * @see https://www.w3.org/TR/annotation-model/#text-quote-selector
+ */
+export interface PdfLocator {
+  media: 'pdf'
+  pdf_id: string // → pdf_documents.id
+  page: number // 1-indexed
+  rect: [number, number, number, number] // PDF user-space [x, y, w, h]
+  quote: string // TextQuoteSelector — exact selected text
+  prefix: string // disambiguator
+  suffix: string // disambiguator
+  textStart?: number // TextPositionSelector over page text (best-effort)
+  textEnd?: number // best-effort; omitted if getTextContent() ordering is unreliable
+}
+
+/**
+ * What external thing a note is anchored to (JSON in notes.source_locator).
+ * Media-agnostic (spec §Forward direction); the `media` discriminant is the
+ * `youtube | pdf` union at v0.6 (was youtube-only through v0.5).
+ * @see docs/specs/v0.6-pdf-slim-slice.md
+ */
+export type SourceLocator = YoutubeLocator | PdfLocator
 
 export interface Note {
   id: string
