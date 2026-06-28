@@ -41,6 +41,16 @@ import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), '..', 'tests', 'fixtures', 'tiny.pdf')
+// Multi-feature fixture (#153): 3 pages, 3 embedded TrueType subsets (FontFile2 →
+// pdf.js emits `data:font/woff2`), and a JPEG image XObject. tiny.pdf has no
+// embedded fonts, so the engine-level data:font path went unexercised end-to-end.
+const FIXTURE_MULTI = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'tests',
+  'fixtures',
+  'multi-feature.pdf',
+)
 // Scope every selector to the right dock: the app's center CanvasStage ALSO
 // renders a <canvas>, so a bare `canvas` selector would match the wrong one and
 // pass without pdf.js ever rendering. The PDF pane lives under [data-dock=right].
@@ -176,6 +186,55 @@ try {
   )
   console.log(
     `pdf-smoke [PASS] TERTIARY — selectable quote=${JSON.stringify(quote)} (${quote.length} chars)`,
+  )
+
+  // ── QUATERNARY — multi-feature PDF: embedded fonts + image + multipage (#153) ─
+  // Rendering an EMBEDDED-FONT page (page 1) under the retained `font-src 'self'
+  // data:` CSP proves the engine-level data:font/woff2 glyph path works on the
+  // MODERN build under Electron 42 — the path tiny.pdf could not reach. Re-import +
+  // reload re-points usePdfOpenId at the new fixture (same seed-then-reload trick).
+  const multi = await win.evaluate(async (filePath) => {
+    const r = await window.api.pdf.import({ filePath })
+    await window.api.settings.set({ key: 'pdf.openDocId', value: r.pdfId })
+    return r
+  }, FIXTURE_MULTI)
+  assert.equal(
+    multi.pageCount,
+    3,
+    `main-side pdf.js read multi-feature.pdf as 3 pages — multipage worker decode (got ${multi.pageCount})`,
+  )
+
+  await win.reload()
+  await win.waitForLoadState('domcontentloaded')
+  await win.waitForSelector(RIGHT_DOCK, { timeout: 20000 })
+  await win.waitForFunction(
+    (sel) => {
+      const tl = document.querySelector(`${sel} .textLayer`)
+      return !!tl && tl.childElementCount > 0
+    },
+    RIGHT_DOCK,
+    { timeout: 25000 },
+  )
+  // Same painted+content read as PRIMARY (an unrendered canvas is 300×150 fully
+  // transparent); a blocked data: font would leave the glyphs unpainted.
+  const multiCanvas = await win.evaluate((sel) => {
+    const c = document.querySelector(`${sel} canvas`)
+    const ctx = c.getContext('2d')
+    const { data } = ctx.getImageData(0, 0, c.width, c.height)
+    let painted = 0
+    const colors = new Set()
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] !== 0) painted++
+      colors.add(data[i] * 65536 + data[i + 1] * 256 + data[i + 2])
+    }
+    return { painted, distinctColors: colors.size }
+  }, RIGHT_DOCK)
+  assert.ok(
+    multiCanvas.painted > 0 && multiCanvas.distinctColors > 1,
+    `embedded-font page rendered under font-src data: CSP (paintedPx=${multiCanvas.painted}, colors=${multiCanvas.distinctColors})`,
+  )
+  console.log(
+    `pdf-smoke [PASS] QUATERNARY — multi-feature (3pp, embedded fonts+image) rendered: paintedPx=${multiCanvas.painted}, distinctColors=${multiCanvas.distinctColors}`,
   )
 
   console.log('\npdf-smoke: ALL ASSERTIONS PASSED')
