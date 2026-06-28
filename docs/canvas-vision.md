@@ -77,8 +77,14 @@ the dock-shell embryo a **right dock + content-pane class** (`Pane.kind`, `Dock.
 no multi-pane** (2026-06-28 amendment, §Sequencing). Current branch `v0.6.1/electron-bump` is an
 Electron 39→42 patch — no product surface.
 
-**Next:** the full **§Dock shell** — "backing up" the slim PDF slice with left+right home docks, **tab
-strips once 2+ things share a dock**, and tab dragging. Not yet spec'd.
+**Now building: §Dock shell — v0.6.2 dock-shell** (`docs/specs/v0.6.2-dock-shell.md`; implemented on
+`v0.6.2/dock-shell`, awaiting merge after v0.6.1). It "backs up" the slim PDF slice with the real
+multi-pane grammar: a dock = ordered pane ids + active id in an in-memory zustand `dockStore`; **tab
+strips render once 2+ panes share a dock**; **backlinks becomes the first right-dock utility pane**
+(dual surface — the transient focus overlay is kept AND a deliberately-opened dock pane is added).
+What remains **deferred**: cross-dock **tab dragging**, the two quiet dock-toggle chrome affordances,
+left-dock multi-pane / shelf tab-mates, the AI-chat pane, and dock-layout persistence — all additive
+seams on the ordered-list model.
 
 ## Future backlog (unordered)
 
@@ -86,13 +92,16 @@ Each item is self-contained so the list can be reshuffled without rewriting it. 
 commitments to a date or an order; all of them are commitments to a *direction* — a v0.x spec that
 forecloses one of these must amend this doc first.
 
-### Dock shell (full constrained tiling) — embryo grown in v0.4/v0.6; full grammar is the next milestone
+### Dock shell (full constrained tiling) — embryo v0.4/v0.6; **grammar ✅ shipped v0.6.2** (`docs/specs/v0.6.2-dock-shell.md`); cross-dock drag + toggle chrome deferred
 The embryo — the `Pane` registry + left dock (shelf) from v0.4, plus (since **v0.6**) a **right dock +
 content-pane class** (`Pane.kind: 'utility' | 'content'`, `Dock.side`) holding one PDF beside the
-canvas — grows into the full grammar: **tab strips that render only at ≥2 panes**; every pane has a
-home dock and opens there by default (note-list things → left; contextual utilities → right; content
-panes → right, wide); tab dragging between docks as pure rearrangement, never a flow step; two quiet
-outline dock-toggles at top-right, and no other window chrome — resist the feature-button row. Two
+canvas — grew into the full grammar in **v0.6.2 dock-shell**: a dock = ordered pane ids + active id in
+an in-memory zustand `dockStore`; **tab strips that render only at ≥2 panes** (`DockTabs`); every pane
+has a home dock and opens there by default (note-list things → left; contextual utilities → right;
+content panes → right, wide) — **backlinks is the first right-dock utility pane**, with a dual surface
+(kept overlay + deliberate dock pane). Still **deferred**: tab dragging between docks as pure
+rearrangement, never a flow step; two quiet outline dock-toggles at top-right, and no other window
+chrome — resist the feature-button row. Two
 pane classes, one mechanism: **content panes** (PDF, video — want width, peers of the canvas, probably
 max one visible per dock) vs **utility panes** (shelf, backlinks, AI chat — narrow, cheap). The v0.6
 PDF pane is the **first content pane and first right-dock pane**, so this milestone *generalizes* an
@@ -208,4 +217,10 @@ Resequencing = edit this section, nothing else.
 > right-dock + content-pane slice (`Pane.kind`, `Dock.side`) — NOT tabs, NOT multi-pane, NOT edge
 > work. This honors "dock-shell design must protect the excerpt-drag path from day one." The full
 > PDF milestone (annotation, Stage 2) remains sequenced after the dock shell + canvas-ink Stage 3.
+
+> **Amendment (2026-06-29, v0.6.2):** the **dock-shell grammar** (multi-pane docks, tab strips at ≥2,
+> the `dockStore` ordered-list model, backlinks as a dockable dual-surface pane) shipped as
+> `v0.6.2/dock-shell` — the first item on the sequence is now largely done. What remains of §Dock shell
+> is the deferred set (cross-dock tab dragging, dock-toggle chrome, left multi-pane, AI-chat pane,
+> persistence). Next up the queue: **semantic zoom**.
 > Layers remain after PDFs (full milestone).
