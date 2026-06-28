@@ -1,6 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
 import type { PDFDocumentLoadingTask, PDFDocumentProxy } from 'pdfjs-dist'
-import * as pdfjs from 'pdfjs-dist'
+// Legacy build (NOT modern): pdf.js v6's modern bundle calls
+// `Map.prototype.getOrInsertComputed` (Chrome-145 baseline), which Electron 39's
+// V8 14.2 lacks — `render()` throws in both renderer and worker realms and the
+// canvas never paints. The legacy build self-polyfills via core-js and exports
+// the identical surface (getDocument/GlobalWorkerOptions/TextLayer/version), so
+// this is a drop-in swap with no API rework. Revert to the modern build once the
+// Electron bump lands. @see adrs/0043-pdf-engine-pdfjs-dist.md @issue utof/linsae#152
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs'
 import { useEffect, useRef } from 'react'
 import { api } from '../lib/api'
 
@@ -8,7 +15,7 @@ import { api } from '../lib/api'
 // The exact workerSrc URL is the bundled worker — Vite resolves this at build.
 // CSP `worker-src 'self' blob:` (Task 6) permits this same-origin worker.
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.mjs',
+  'pdfjs-dist/legacy/build/pdf.worker.mjs',
   import.meta.url,
 ).toString()
 

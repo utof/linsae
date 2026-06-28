@@ -1,5 +1,7 @@
 import type { PageViewport, PDFPageProxy, RenderTask } from 'pdfjs-dist'
-import { TextLayer } from 'pdfjs-dist'
+// Legacy build for the same V8-baseline reason as usePdfDocument.ts (Electron 39
+// lacks Map.getOrInsertComputed; legacy self-polyfills via core-js). #152.
+import { TextLayer } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import { useEffect, useRef, useState } from 'react'
 import { useExcerptStore } from './excerptState'
 import { useExcerptCapture } from './useExcerptCapture'
