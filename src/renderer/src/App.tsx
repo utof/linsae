@@ -170,6 +170,23 @@ export function App() {
     }
   }, [openPdf])
 
+  // Widen the pinned-data refetch (spec §3): saves must converge feed↔canvas,
+  // and link edits must redraw canvas edges. Invalidates the feed list, every
+  // single-note query, and the resolved-edge query.
+  // Declared before the excerpt bridge so TypeScript can see it (block-scoped
+  // const must appear before any closure that references it).
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ['notes'] })
+    void queryClient.invalidateQueries({ queryKey: ['note'] }) // every ['note', id]
+    void queryClient.invalidateQueries({ queryKey: ['canvas-edges'] })
+    // ⌘O switcher feed + recent empty-state (spec §3: note-titles invalidated on
+    // create/save/delete). Push-based cache (query-client.ts staleTime:Infinity)
+    // never auto-refetches, so the switcher goes stale without this. The
+    // ['note-recent'] prefix matches both mode variants (recent | frecent).
+    void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
+    void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
+  }
+
   // ── PDF excerpt → canvas ghost-placement bridge (spec §7) ─────────────────
   // The right-dock PDF pane captures a text selection into excerptState; the
   // "Excerpt →" affordance flips `armed`. We watch `armed` (NOT `pending`) so a
@@ -182,6 +199,7 @@ export function App() {
   const pendingExcerpt = useExcerptStore((s) => s.pending)
   const armed = useExcerptStore((s) => s.armed)
   const clearExcerpt = useExcerptStore((s) => s.clear)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: invalidate recreates each render but is behaviorally stable (hardcoded keys, stable queryClient); adding it to deps would churn the bridge on every render
   useEffect(() => {
     if (!armed || !pendingExcerpt) return
     let cancelled = false
@@ -191,6 +209,11 @@ export function App() {
           source_kind: 'pdf',
           source_locator: pendingExcerpt.locator,
         })
+        // The note exists in the DB at this point regardless of whether canvas
+        // placement proceeds; invalidate feed/switcher/recent now so the note
+        // appears in the feed, ⌘O title switcher, and ⌘J recent (spec §3
+        // invariant). Matches the invalidation every other create path calls.
+        invalidate()
         // A clear()/re-selection between arm and resolve flips the deps and runs
         // this cleanup (cancelled=true), so a late create never sets a stale ghost.
         if (cancelled) return
@@ -340,21 +363,6 @@ export function App() {
     [notes],
   )
   const resolveSlug = (slug: string) => slugSet.has(slug.toLowerCase().trim())
-
-  // Widen the pinned-data refetch (spec §3): saves must converge feed↔canvas,
-  // and link edits must redraw canvas edges. Invalidates the feed list, every
-  // single-note query, and the resolved-edge query.
-  const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: ['notes'] })
-    void queryClient.invalidateQueries({ queryKey: ['note'] }) // every ['note', id]
-    void queryClient.invalidateQueries({ queryKey: ['canvas-edges'] })
-    // ⌘O switcher feed + recent empty-state (spec §3: note-titles invalidated on
-    // create/save/delete). Push-based cache (query-client.ts staleTime:Infinity)
-    // never auto-refetches, so the switcher goes stale without this. The
-    // ['note-recent'] prefix matches both mode variants (recent | frecent).
-    void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
-    void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
-  }
 
   /**
    * Paste interceptor for the create-mode composer. Called with the raw
