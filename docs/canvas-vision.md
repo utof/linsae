@@ -193,3 +193,10 @@ threads/nested → multi-canvas → channels → PDFs → layers. Any item may j
 is the likeliest to move up). Exactly two ordering constraints are binding, both user-stated:
 **PDFs only after the node/edge/tab/pane workflow is nailed**, and **layers only after PDFs**.
 Resequencing = edit this section, nothing else.
+
+> **Amendment (2026-06-28, v0.6):** the slim PDF slice (read + excerpt-drag, no annotation) was
+> pulled forward ahead of the full dock shell as `v0.6/pdf-slim-slice`. It ships only the embryo
+> right-dock + content-pane slice (`Pane.kind`, `Dock.side`) — NOT tabs, NOT multi-pane, NOT edge
+> work. This honors "dock-shell design must protect the excerpt-drag path from day one." The full
+> PDF milestone (annotation, Stage 2) remains sequenced after the dock shell + canvas-ink Stage 3.
+> Layers remain after PDFs (full milestone).

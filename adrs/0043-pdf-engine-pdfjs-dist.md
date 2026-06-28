@@ -69,9 +69,11 @@ YouTube-only. Smoke test must verify the blob worker boots under `sandbox:true` 
 ## Consequences
 
 - **New dep:** `pdfjs-dist` (Apache-2.0, single package, no concerning runtime deps). Bundle
-  impact ~1–2 MB core+worker, loaded on-demand when a PDF opens (not at app boot).
-- **No native module / no ABI dance.** pdf.js is pure JS + a worker; existing `pnpm rebuild:electron`
-  / `rebuild:node` unaffected.
+  impact ~3.2 MB (legacy build: worker ~2.2 MB + core ~1.0 MB on disk), loaded on-demand when a
+  PDF opens (not at app boot).
+- **One optional, prebuilt native dep (`@napi-rs/canvas`), no rebuild required.** It ships as a
+  platform prebuilt (`@napi-rs+canvas-linux-x64-gnu@1.0.1`), so `pnpm rebuild:electron`/
+  `rebuild:node` are unaffected (no ABI dance).
 - **React Compiler 1.0** (ADR 0006): the thin in-house component is compiler-safe by construction
   (pdf.js itself is framework-agnostic). A third-party wrapper's compiler compat is undocumented —
   another reason the research preferred the in-house wrapper.
