@@ -18,7 +18,8 @@ import { CommandMenu } from './palette/CommandMenu'
 import { ContentSearch } from './palette/ContentSearch'
 import { type Command, useCommandStore } from './palette/command-store'
 import { QuickSwitcher } from './palette/QuickSwitcher'
-import { Dock } from './panes/Dock'
+import { DockHost } from './panes/DockHost'
+import { useDockStore } from './panes/dockStore'
 import { ShelfContext } from './panes/ShelfPane'
 import { useExcerptStore } from './pdf/excerptState'
 import { useOpenPdf, usePdfOpenId } from './pdf/usePdfOpenId'
@@ -114,8 +115,9 @@ export function App() {
   // verb; CanvasStage consumes it to show the ghost + banner, then calls
   // onPlacingDone on commit/cancel. Carries the title for the banner copy.
   const [placing, setPlacing] = useState<{ noteId: string; title: string } | null>(null)
-  // Left dock (shelf) open state — in-memory view-state, not persisted (§10).
-  const [dockOpen, setDockOpen] = useState(false)
+  // Left dock (shelf) open — derived from the dock store (spec §4). The store is
+  // the single source of truth for which panes are open per side.
+  const shelfOpen = useDockStore((s) => s.left.openPaneIds.includes('shelf'))
   // Recent-popover open state lives in App so the status-bar trigger and (Task
   // 11) ⌘J can both toggle it; rendered above the status bar (spec §14).
   const [recentOpen, setRecentOpen] = useState(false)
@@ -149,11 +151,28 @@ export function App() {
   const [successCount, setSuccessCount] = useState(0)
 
   // Right-dock PDF reader (spec §6): the open-pdf id is persisted in the
-  // app_settings store so the dock restores on boot. `pdfPaneOpen` mounts the
-  // right <Dock>; `openPdf(null)` (Dock onClose) clears it.
+  // app_settings store so the dock restores on boot. `openPdf(null)`
+  // (pane onClose, via handlePaneClose) clears it.
   const pdfOpenId = usePdfOpenId()
   const openPdf = useOpenPdf()
-  const pdfPaneOpen = pdfOpenId !== null
+  // Boot/restore: when the persisted open-pdf id resolves, open its dock pane.
+  // The store starts empty (in-memory), so the v0.6 "restore on boot" behavior
+  // must be reasserted explicitly here. Intentionally one-way (open only) — the
+  // close path flows solely through handlePaneClose, which clears the persisted
+  // id so this effect won't reopen it. @see docs/specs/v0.6.2-dock-shell.md §4 (C2)
+  useEffect(() => {
+    if (pdfOpenId != null) useDockStore.getState().openPane('pdf')
+  }, [pdfOpenId])
+  // closePane + side effects App owns: closing 'pdf' clears the persisted id
+  // (else the restore effect reopens it); 'backlinks' clears focus (I1, Task 6).
+  const handlePaneClose = useCallback(
+    (paneId: string) => {
+      useDockStore.getState().closePane(paneId)
+      if (paneId === 'pdf') void openPdf(null)
+      if (paneId === 'backlinks') setFocusedId(null)
+    },
+    [openPdf],
+  )
   // Open PDF…: native picker → content-addressed import → set the open-pdf id
   // (the right dock mounts + the next boot restores from `pdf.openDocId`).
   // openPdf is stable (useOpenPdf memoizes), so this stays stable for the
@@ -717,8 +736,8 @@ export function App() {
           onOpenSettings={() => setSettingsOpen(true)}
           view={viewMode}
           onViewChange={setViewMode}
-          dockOpen={dockOpen}
-          onToggleDock={() => setDockOpen((o) => !o)}
+          dockOpen={shelfOpen}
+          onToggleDock={() => useDockStore.getState().togglePane('shelf')}
         />
         {/* Body row: position:relative so BacklinksPane can absolutely overlay
          it without pushing the feed left when the pane opens (the previous
@@ -745,9 +764,10 @@ export function App() {
             />
           ) : (
             <>
-              {/* Dock (spec §10) — window chrome, sits LEFT of <main> and coexists
-                with both views. Returns null when closed. */}
-              <Dock open={dockOpen} paneId="shelf" onClose={() => setDockOpen(false)} />
+              {/* Left dock (spec §2) — window chrome, sits LEFT of <main> and
+                coexists with both views. DockHost self-hides when its side is
+                empty (the store owns open/active/width). */}
+              <DockHost side="left" onPaneClose={handlePaneClose} />
               <main
                 style={{
                   display: 'flex',
@@ -933,19 +953,11 @@ export function App() {
                   )}
                 </AnimatePresence>
               </main>
-              {/* Right dock (spec §6) — the PDF reader, sits RIGHT of <main> so
-                the layout reads [left dock][center stage][right dock: pdf].
-                Mounts only when a PDF is open (`pdf.openDocId` set). */}
-              {pdfPaneOpen && (
-                <Dock
-                  open
-                  paneId="pdf"
-                  side="right"
-                  onClose={() => {
-                    void openPdf(null)
-                  }}
-                />
-              )}
+              {/* Right dock (spec §2) — sits RIGHT of <main> so the layout reads
+                [left dock][center stage][right dock]. DockHost self-hides when
+                the right side is empty; the PDF pane opens via the restore effect
+                / Open PDF… and closes via handlePaneClose. */}
+              <DockHost side="right" onPaneClose={handlePaneClose} />
               {focusedId && (
                 <BacklinksPane
                   focusedNoteId={focusedId}
@@ -972,7 +984,7 @@ export function App() {
               placedCount={placedNoteIds.size}
               unplacedCount={unplacedCount}
               zoomPct={zoomPct}
-              onOpenShelf={() => setDockOpen(true)}
+              onOpenShelf={() => useDockStore.getState().openPane('shelf')}
               onResetZoom={() => setResetSignal((s) => s + 1)}
               onFit={() => setFitSignal((s) => s + 1)}
               onToggleRecent={() => setRecentOpen((o) => !o)}

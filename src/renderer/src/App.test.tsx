@@ -26,6 +26,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../tests/setup'
 import type { Note, PdfLocator } from '../../shared/types'
 import { useCommandStore } from './palette/command-store'
+import { useDockStore } from './panes/dockStore'
 import { useExcerptStore } from './pdf/excerptState'
 
 // ── Mock ThreadView to a lightweight sentinel ──────────────────────────────
@@ -77,8 +78,18 @@ vi.mock('./feed/Feed', () => ({
   ),
 }))
 
+// Mock the open-pdf id hooks so tests can drive boot-restore deterministically.
+// Default: no pdf open (usePdfOpenId → null) + a no-op setter, so EXISTING tests
+// are unaffected; the boot-restore describe overrides the return values per-test.
+vi.mock('./pdf/usePdfOpenId', () => ({
+  usePdfOpenId: vi.fn(() => null),
+  useOpenPdf: vi.fn(() => vi.fn()),
+}))
+
 // Import App AFTER vi.mock so hoisted mocks apply.
 import { App } from './App'
+import * as PaneModule from './panes/Pane'
+import { useOpenPdf, usePdfOpenId } from './pdf/usePdfOpenId'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -141,6 +152,9 @@ beforeEach(() => {
   mockApi.notes.create.mockResolvedValue(CREATED_SOURCE_NOTE)
   mockApi.youtube.fetchOEmbed.mockResolvedValue(OEMBED_RESULT)
   mockApi.videoSources.upsert.mockResolvedValue(undefined)
+  // The dock store is an in-memory singleton; vitest's `isolate:false` leaks it
+  // across files, so reset it for every App test (starts empty per test).
+  useDockStore.getState().reset()
 })
 
 describe('App — paste YouTube URL → source note + oEmbed', () => {
@@ -614,5 +628,56 @@ describe('App — sendInFlight append-coupled clear', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('App — PDF boot-restore (C2)', () => {
+  beforeEach(() => {
+    // Spy getPane so the right dock's 'pdf' pane renders a trivial body instead
+    // of mounting the real PdfReader (which pulls pdfjs/worker machinery).
+    vi.spyOn(PaneModule, 'getPane').mockImplementation((id: string) =>
+      id === 'pdf'
+        ? {
+            id,
+            title: 'pdf',
+            homeDock: 'right',
+            kind: 'content',
+            render: () => <div>pdf body</div>,
+          }
+        : { id, title: id, homeDock: 'left', kind: 'utility', render: () => <div>{id} body</div> },
+    )
+  })
+  afterEach(() => {
+    // Restore the getPane spy first; restoreAllMocks also resets the factory
+    // mocks, so re-establish their defaults AFTER it (else the resets are dead).
+    vi.restoreAllMocks()
+    vi.mocked(usePdfOpenId).mockReturnValue(null)
+    vi.mocked(useOpenPdf).mockReturnValue(vi.fn())
+  })
+
+  /**
+   * C2 invariant (spec §4/§5): the persisted open-pdf id must reopen the right
+   * dock pane on boot (the in-memory store starts empty), and closing it must
+   * clear the persisted id so the restore effect does not immediately reopen it.
+   * @see docs/specs/v0.6.2-dock-shell.md §4 (C2)
+   */
+  it('reopens the pdf pane when the persisted id resolves; close clears the id', async () => {
+    const openPdfSpy = vi.fn()
+    vi.mocked(usePdfOpenId).mockReturnValue('pdf-abc')
+    vi.mocked(useOpenPdf).mockReturnValue(openPdfSpy)
+
+    renderWithProviders(<App />)
+
+    // The [pdfOpenId] effect opens the 'pdf' pane on the right dock.
+    await waitFor(() => {
+      expect(useDockStore.getState().right.openPaneIds).toContain('pdf')
+    })
+
+    // Single pane → quiet header close button. Clicking it must clear the id.
+    const closeBtn = await screen.findByRole('button', { name: /close pdf/i })
+    await act(async () => {
+      fireEvent.click(closeBtn)
+    })
+    expect(openPdfSpy).toHaveBeenCalledWith(null)
   })
 })
