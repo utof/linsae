@@ -8,7 +8,7 @@ import { getPane, PANES } from './Pane'
 
 describe('Pane registry', () => {
   it('registers the Shelf (home left) and the v0.6 PDF reader (home right, content)', () => {
-    expect(PANES).toHaveLength(2)
+    expect(PANES).toHaveLength(3)
     expect(getPane('shelf')?.homeDock).toBe('left')
     expect(getPane('pdf')?.homeDock).toBe('right')
     expect(getPane('pdf')?.kind).toBe('content')
@@ -16,5 +16,10 @@ describe('Pane registry', () => {
   it('getPane resolves by id', () => {
     expect(getPane('shelf')?.title).toBeTypeOf('string')
     expect(getPane('nope')).toBeUndefined()
+  })
+  it('registers the backlinks pane as a right-dock utility', () => {
+    const p = getPane('backlinks')
+    expect(p?.homeDock).toBe('right')
+    expect(p?.kind).toBe('utility')
   })
 })

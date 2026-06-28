@@ -48,14 +48,22 @@ vi.mock('./thread/ThreadView', () => ({
 vi.mock('./feed/Feed', () => ({
   Feed: ({
     onOpenThread,
+    onFocus,
+    focusedId,
     notes,
     sendInFlight,
   }: {
     onOpenThread?: (id: string) => void
+    onFocus?: (id: string) => void
+    focusedId?: string | null
     notes: Note[]
     sendInFlight?: boolean
   }) => (
-    <div data-testid="feed-sentinel" data-send-in-flight={String(!!sendInFlight)}>
+    <div
+      data-testid="feed-sentinel"
+      data-send-in-flight={String(!!sendInFlight)}
+      data-focused-id={focusedId ?? ''}
+    >
       {notes.map((n) => (
         <button
           key={n.id}
@@ -64,6 +72,18 @@ vi.mock('./feed/Feed', () => ({
           onClick={() => onOpenThread?.(n.id)}
         >
           {`open thread ${n.id}`}
+        </button>
+      ))}
+      {/* Focus triggers (Task 6): drive the focus↔backlinks-pane sync. App's onFocus
+          toggles, so clicking the same note twice clears focus (used for the I2 case). */}
+      {notes.map((n) => (
+        <button
+          key={`focus-${n.id}`}
+          type="button"
+          data-testid={`focus-btn-${n.id}`}
+          onClick={() => onFocus?.(n.id)}
+        >
+          {`focus ${n.id}`}
         </button>
       ))}
       {/* Legacy alias: fires note-src-1, used by existing tests that rely on FEED_NOTE seeding. */}
@@ -679,5 +699,126 @@ describe('App — PDF boot-restore (C2)', () => {
       fireEvent.click(closeBtn)
     })
     expect(openPdfSpy).toHaveBeenCalledWith(null)
+  })
+})
+
+describe('App — backlinks dock pane (spec §3,§4)', () => {
+  beforeEach(() => {
+    // Seed a focusable note so the Feed mock renders its focus trigger, and make
+    // the backlinks body query resolve cleanly (both surfaces show the empty copy).
+    mockApi.notes.list.mockResolvedValue([FEED_NOTE])
+    mockApi.links.backlinks.mockResolvedValue([])
+  })
+  afterEach(() => useCommandStore.getState().reset())
+
+  /** Focus a note via the Feed mock's per-note focus trigger (toggles on App side). */
+  const focusNote = async (id: string) => {
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId(`focus-btn-${id}`))
+    })
+  }
+
+  it('registers backlinks.open only while a note is focused (absent → present → absent)', async () => {
+    renderWithProviders(<App />)
+    // Wait for the base command set to register so the registry is non-empty.
+    await waitFor(() => expect(useCommandStore.getState().commands().length).toBeGreaterThan(0))
+    const hasOpen = () =>
+      useCommandStore
+        .getState()
+        .commands()
+        .some((c) => c.id === 'backlinks.open')
+
+    // No focus → command absent.
+    expect(hasOpen()).toBe(false)
+
+    // Focus a note → the dedicated [focusedId] effect registers it.
+    await focusNote('feed-note-1')
+    await waitFor(() => expect(hasOpen()).toBe(true))
+
+    // Clear focus (re-click toggles off) → the effect cleanup unregisters it (C1).
+    await focusNote('feed-note-1')
+    await waitFor(() => expect(hasOpen()).toBe(false))
+  })
+
+  it('opening the backlinks dock pane suppresses the overlay (one list in the DOM)', async () => {
+    renderWithProviders(<App />)
+    await focusNote('feed-note-1')
+
+    // Focus alone → the transient overlay is present.
+    expect(await screen.findByLabelText(/close pane/i)).toBeInTheDocument()
+
+    // Open the deliberate dock pane.
+    act(() => {
+      useDockStore.getState().openPane('backlinks')
+    })
+
+    // Overlay suppressed; only the dock pane (its quiet header close) remains.
+    await waitFor(() => expect(screen.queryByLabelText(/close pane/i)).toBeNull())
+    expect(screen.getByLabelText(/close backlinks/i)).toBeInTheDocument()
+    // Exactly one backlinks list body (the dock pane) — not two.
+    expect(screen.queryAllByText(/nothing links here yet/i)).toHaveLength(1)
+  })
+
+  it('closing the dock pane clears focus and does NOT resurrect the overlay (I1)', async () => {
+    renderWithProviders(<App />)
+    await focusNote('feed-note-1')
+    act(() => {
+      useDockStore.getState().openPane('backlinks')
+    })
+    const closeBtn = await screen.findByLabelText(/close backlinks/i)
+
+    await act(async () => {
+      fireEvent.click(closeBtn)
+    })
+
+    // Pane gone, focus cleared → overlay must NOT appear, no backlinks list anywhere.
+    await waitFor(() => expect(screen.queryByLabelText(/close backlinks/i)).toBeNull())
+    expect(screen.queryByLabelText(/close pane/i)).toBeNull()
+    expect(useDockStore.getState().right.openPaneIds).not.toContain('backlinks')
+    expect(screen.queryAllByText(/nothing links here yet/i)).toHaveLength(0)
+  })
+
+  it('clearing focus while the dock pane is open auto-closes the pane (I2)', async () => {
+    renderWithProviders(<App />)
+    await focusNote('feed-note-1')
+    act(() => {
+      useDockStore.getState().openPane('backlinks')
+    })
+    await screen.findByLabelText(/close backlinks/i)
+
+    // Re-click the focused note → App toggles focus off → I2 effect closes the pane.
+    await focusNote('feed-note-1')
+
+    await waitFor(() =>
+      expect(useDockStore.getState().right.openPaneIds).not.toContain('backlinks'),
+    )
+    expect(screen.queryByLabelText(/close backlinks/i)).toBeNull()
+    // Focus is clear, so the overlay must not appear either.
+    expect(screen.queryByLabelText(/close pane/i)).toBeNull()
+  })
+
+  it('the Open-backlinks command run() opens the dock pane (⌘K wiring)', async () => {
+    renderWithProviders(<App />)
+    // Focus a note so the dedicated [focusedId] effect registers backlinks.open.
+    await focusNote('feed-note-1')
+    await waitFor(() =>
+      expect(
+        useCommandStore
+          .getState()
+          .commands()
+          .some((c) => c.id === 'backlinks.open'),
+      ).toBe(true),
+    )
+
+    // Drive the command end-to-end: resolve it from the registry and invoke its
+    // real run() closure (the ⌘K "Open backlinks" wiring), not openPane directly.
+    act(() => {
+      useCommandStore.getState().registry.get('backlinks.open')?.run?.()
+    })
+
+    await waitFor(() => expect(useDockStore.getState().right.openPaneIds).toContain('backlinks'))
+    // The pane mounted: its quiet header close is in the DOM, overlay suppressed.
+    expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
+    expect(screen.queryByLabelText(/close pane/i)).toBeNull()
   })
 })

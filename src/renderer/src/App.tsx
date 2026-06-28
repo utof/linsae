@@ -4,6 +4,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useHotkeys } from 'react-hotkeys-hook'
 import { MANUAL_ARRANGEMENT_ID, ROOT_CANVAS_ID } from '../../shared/canvas'
 import type { Note, NoteType } from '../../shared/types'
+import { BacklinksContext } from './backlinks/BacklinksContext'
 import { BacklinksPane } from './backlinks/BacklinksPane'
 import { CanvasStage } from './canvas/CanvasStage'
 import { RecentPopover } from './canvas/RecentPopover'
@@ -118,6 +119,9 @@ export function App() {
   // Left dock (shelf) open — derived from the dock store (spec §4). The store is
   // the single source of truth for which panes are open per side.
   const shelfOpen = useDockStore((s) => s.left.openPaneIds.includes('shelf'))
+  // Whether the deliberate backlinks dock pane is open — gates the transient
+  // overlay (suppression rule, spec §4 Decision 4): no double backlinks.
+  const backlinksDockOpen = useDockStore((s) => s.right.openPaneIds.includes('backlinks'))
   // Recent-popover open state lives in App so the status-bar trigger and (Task
   // 11) ⌘J can both toggle it; rendered above the status bar (spec §14).
   const [recentOpen, setRecentOpen] = useState(false)
@@ -357,6 +361,31 @@ export function App() {
       for (const c of base) store.unregister(c.id)
     }
   }, [viewMode, onOpenPdf])
+
+  // Register "Open backlinks" only while a note is focused. A dedicated [focusedId]
+  // effect (not a `when` gate) because CommandMenu evaluates when() against the
+  // closure captured at registration time, so a register-once
+  // `when: () => focusedId != null` would capture the mount-render null and never
+  // update. @see docs/specs/v0.6.2-dock-shell.md Decision 5
+  useEffect(() => {
+    if (focusedId == null) return
+    const store = useCommandStore.getState()
+    store.register({
+      id: 'backlinks.open',
+      label: 'Open backlinks',
+      run: () => useDockStore.getState().openPane('backlinks'),
+    })
+    return () => store.unregister('backlinks.open')
+  }, [focusedId])
+
+  // I2 (spec §4 Decision 4): a backlinks pane with no focused note is dead chrome —
+  // close it when focus clears. Idempotent with I1's close→clear-focus (the pane is
+  // already gone by the time this runs after a tab-close).
+  useEffect(() => {
+    if (focusedId == null && useDockStore.getState().right.openPaneIds.includes('backlinks')) {
+      useDockStore.getState().closePane('backlinks')
+    }
+  }, [focusedId])
 
   // Remove the static boot splash (index.html #boot-splash) once the notes
   // query has settled. The splash paints on the first frame — before the JS
@@ -709,6 +738,11 @@ export function App() {
     [viewMode, onGotoNote, onJumpToCard, onBeginShelfDrag],
   )
 
+  // BacklinksContext value (mirrors shelfContextValue) — feeds the backlinks dock
+  // pane's prop-free body the focused note + jump verb. The overlay re-provides its
+  // own (identical) values locally. @see docs/specs/v0.6.2-dock-shell.md §3
+  const backlinksContextValue = useMemo(() => ({ focusedId, onJump: setFocusedId }), [focusedId])
+
   // ADR-0019 guardrail: every animation respects prefers-reduced-motion. A
   // zero-duration transition keeps the AnimatePresence swap semantics (mount/
   // unmount on view change) but removes the slide motion. @see adrs/0019-motion.md
@@ -722,24 +756,27 @@ export function App() {
     // navigation surface (spec §4). The dock is window chrome — it coexists with
     // both views and reads `view` to branch its row-click behaviour.
     <ShelfContext.Provider value={shelfContextValue}>
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          height: '100vh',
-          overflow: 'hidden',
-          background: 'var(--bg-0)',
-        }}
-      >
-        <WindowFrame
-          onOpenPalette={() => setActivePalette('command')}
-          onOpenSettings={() => setSettingsOpen(true)}
-          view={viewMode}
-          onViewChange={setViewMode}
-          dockOpen={shelfOpen}
-          onToggleDock={() => useDockStore.getState().togglePane('shelf')}
-        />
-        {/* Body row: position:relative so BacklinksPane can absolutely overlay
+      {/* BacklinksContext feeds the dock pane's prop-free body (spec §3); both
+       DockHosts and the transient overlay live inside it. */}
+      <BacklinksContext.Provider value={backlinksContextValue}>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            height: '100vh',
+            overflow: 'hidden',
+            background: 'var(--bg-0)',
+          }}
+        >
+          <WindowFrame
+            onOpenPalette={() => setActivePalette('command')}
+            onOpenSettings={() => setSettingsOpen(true)}
+            view={viewMode}
+            onViewChange={setViewMode}
+            dockOpen={shelfOpen}
+            onToggleDock={() => useDockStore.getState().togglePane('shelf')}
+          />
+          {/* Body row: position:relative so BacklinksPane can absolutely overlay
          it without pushing the feed left when the pane opens (the previous
          flex-sibling layout shifted the entire feed; user feedback called
          that "annoying and too much for such a small action"). The pane
@@ -748,80 +785,80 @@ export function App() {
          and BacklinksPane entirely (they are mutually exclusive UI modes).
          key={threadNoteId} forces a remount when switching threads so the
          player singleton and duration write-back state reset per video. */}
-        <div
-          style={{
-            display: 'flex',
-            flex: 1,
-            minHeight: 0,
-            position: 'relative',
-          }}
-        >
-          {threadNoteId ? (
-            <ThreadView
-              key={threadNoteId}
-              noteId={threadNoteId}
-              onClose={() => setThreadNoteId(null)}
-            />
-          ) : (
-            <>
-              {/* Left dock (spec §2) — window chrome, sits LEFT of <main> and
+          <div
+            style={{
+              display: 'flex',
+              flex: 1,
+              minHeight: 0,
+              position: 'relative',
+            }}
+          >
+            {threadNoteId ? (
+              <ThreadView
+                key={threadNoteId}
+                noteId={threadNoteId}
+                onClose={() => setThreadNoteId(null)}
+              />
+            ) : (
+              <>
+                {/* Left dock (spec §2) — window chrome, sits LEFT of <main> and
                 coexists with both views. DockHost self-hides when its side is
                 empty (the store owns open/active/width). */}
-              <DockHost side="left" onPaneClose={handlePaneClose} />
-              <main
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  flex: 1,
-                  minWidth: 0,
-                  minHeight: 0,
-                }}
-              >
-                {skipped > 0 && !skipBannerDismissed && (
-                  <div
-                    style={{
-                      padding: '8px 16px',
-                      background: '#FDECEC',
-                      borderBottom: '1px solid #FAEAC2',
-                      fontSize: 13,
-                      color: 'var(--fg-1)',
-                      display: 'flex',
-                      gap: 12,
-                      alignItems: 'center',
-                    }}
-                  >
-                    <span>{skipped} notes had unreadable frontmatter and were skipped.</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void api.system.openLogsFolder()
-                      }}
+                <DockHost side="left" onPaneClose={handlePaneClose} />
+                <main
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    flex: 1,
+                    minWidth: 0,
+                    minHeight: 0,
+                  }}
+                >
+                  {skipped > 0 && !skipBannerDismissed && (
+                    <div
                       style={{
-                        border: 0,
-                        background: 'transparent',
-                        color: 'var(--accent)',
-                        cursor: 'pointer',
-                        textDecoration: 'underline',
+                        padding: '8px 16px',
+                        background: '#FDECEC',
+                        borderBottom: '1px solid #FAEAC2',
+                        fontSize: 13,
+                        color: 'var(--fg-1)',
+                        display: 'flex',
+                        gap: 12,
+                        alignItems: 'center',
                       }}
                     >
-                      view log.
-                    </button>
-                    <div style={{ flex: 1 }} />
-                    <button
-                      type="button"
-                      onClick={() => setSkipBannerDismissed(true)}
-                      style={{
-                        border: 0,
-                        background: 'transparent',
-                        cursor: 'pointer',
-                        color: 'var(--fg-2)',
-                      }}
-                    >
-                      dismiss
-                    </button>
-                  </div>
-                )}
-                {/* §6 stage slide: feed exits left / canvas enters right→left. Only
+                      <span>{skipped} notes had unreadable frontmatter and were skipped.</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void api.system.openLogsFolder()
+                        }}
+                        style={{
+                          border: 0,
+                          background: 'transparent',
+                          color: 'var(--accent)',
+                          cursor: 'pointer',
+                          textDecoration: 'underline',
+                        }}
+                      >
+                        view log.
+                      </button>
+                      <div style={{ flex: 1 }} />
+                      <button
+                        type="button"
+                        onClick={() => setSkipBannerDismissed(true)}
+                        style={{
+                          border: 0,
+                          background: 'transparent',
+                          cursor: 'pointer',
+                          color: 'var(--fg-2)',
+                        }}
+                      >
+                        dismiss
+                      </button>
+                    </div>
+                  )}
+                  {/* §6 stage slide: feed exits left / canvas enters right→left. Only
                   the two OUTER stage containers' x-transform animates — the feed's
                   virtualized rows are untouched (ADR 0019 guardrail: no
                   layout/layoutId projection inside the feed). `mode="wait"` keeps
@@ -829,191 +866,195 @@ export function App() {
                   don't both run), `initial={false}` skips the first-paint slide.
                   The two wrappers fill <main>'s flex area with overflow hidden so
                   the off-screen slide never shows a scrollbar. */}
-                <AnimatePresence mode="wait" initial={false}>
-                  {viewMode === 'canvas' ? (
-                    <motion.div
-                      key="canvas"
-                      initial={{ x: '100%' }}
-                      animate={{ x: 0 }}
-                      exit={{ x: '-100%' }}
-                      transition={slideTransition}
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        flex: 1,
-                        minHeight: 0,
-                        overflow: 'hidden',
-                      }}
-                    >
-                      <CanvasStage
-                        onWikilinkClick={onWikilinkClick}
-                        resolveSlug={resolveSlug}
-                        placing={placing}
-                        onPlacingDone={onPlacingDone}
-                        onCameraChange={handleCameraChange}
-                        fitSignal={fitSignal}
-                        resetSignal={resetSignal}
-                        jumpTo={jumpTo}
-                      />
-                    </motion.div>
-                  ) : (
-                    <motion.div
-                      key="feed"
-                      initial={{ x: '100%' }}
-                      animate={{ x: 0 }}
-                      exit={{ x: '-100%' }}
-                      transition={slideTransition}
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        flex: 1,
-                        minHeight: 0,
-                        overflow: 'hidden',
-                      }}
-                    >
-                      {notes.length === 0 ? (
-                        <div
-                          style={{
-                            flex: 1,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            color: 'var(--fg-3)',
-                            fontFamily: 'var(--font-sans)',
-                            fontSize: 14,
-                          }}
-                        >
-                          nothing yet. start anywhere.
-                        </div>
-                      ) : (
-                        <Feed
-                          notes={notes}
-                          scrollerRef={feedScrollerRef}
-                          sendInFlight={sendInFlight}
-                          focusedId={focusedId}
-                          // Toggle behaviour: clicking an unfocused bubble focuses it (opens
-                          // BacklinksPane); clicking the already-focused bubble unfocuses it
-                          // (closes the pane). Wikilink / palette / pane-jump callbacks set
-                          // focus directly without toggling — those are navigation gestures.
-                          onFocus={(id) => setFocusedId((cur) => (cur === id ? null : id))}
+                  <AnimatePresence mode="wait" initial={false}>
+                    {viewMode === 'canvas' ? (
+                      <motion.div
+                        key="canvas"
+                        initial={{ x: '100%' }}
+                        animate={{ x: 0 }}
+                        exit={{ x: '-100%' }}
+                        transition={slideTransition}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          flex: 1,
+                          minHeight: 0,
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <CanvasStage
                           onWikilinkClick={onWikilinkClick}
                           resolveSlug={resolveSlug}
-                          onEdit={setEditingNoteId}
-                          onDelete={(id) => {
-                            deleteMut.mutate(id)
-                            if (focusedId === id) setFocusedId(null)
-                          }}
-                          onCopyLink={(id) => {
-                            void navigator.clipboard.writeText(`linsae://note/${id}`)
-                          }}
-                          onOpenThread={openThread}
-                          // Canvas traces + verbs (spec §6/§9) — placedNoteIds drives the
-                          // ▦ chip; the three callbacks are threaded to NoteBubble by id.
-                          placedNoteIds={placedNoteIds}
-                          onShelf={onShelf}
-                          onPlaceOnCanvas={onPlaceOnCanvas}
-                          onJumpToCard={onJumpToCard}
+                          placing={placing}
+                          onPlacingDone={onPlacingDone}
+                          onCameraChange={handleCameraChange}
+                          fitSignal={fitSignal}
+                          resetSignal={resetSignal}
+                          jumpTo={jumpTo}
                         />
-                      )}
-                      {editingNote ? (
-                        <Composer
-                          key={editingNote.id}
-                          initialBody={editingNote.body}
-                          initialMode={editingNote.type}
-                          editMode
-                          error={submitError}
-                          onClearError={() => setSubmitError(null)}
-                          onSubmit={({ body, type }) =>
-                            updateMut.mutate({ id: editingNote.id, body, type })
-                          }
-                          onCancel={() => setEditingNoteId(null)}
-                        />
-                      ) : (
-                        // Composite key: `draftBody ?? 'fresh'` handles the dangling-wikilink
-                        // prefill remount; `successCount` ticks on successful create to
-                        // force a remount → fresh empty textarea. Failed creates leave the
-                        // key unchanged so the user's text + cursor survive.
-                        <Composer
-                          key={`${draftBody ?? 'fresh'}-${successCount}`}
-                          initialBody={draftBody ?? ''}
-                          initialMode="claim"
-                          error={submitError}
-                          onClearError={() => setSubmitError(null)}
-                          // Flag the send so the Feed suppresses its auto-scroll while the new
-                          // note glides in (see `beginSend`), THEN create it.
-                          onSubmit={({ body, type }) => {
-                            beginSend()
-                            createMut.mutate({ body, type })
-                          }}
-                          onCancel={() => setDraftBody(null)}
-                          onPasteText={handlePasteText}
-                        />
-                      )}
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </main>
-              {/* Right dock (spec §2) — sits RIGHT of <main> so the layout reads
+                      </motion.div>
+                    ) : (
+                      <motion.div
+                        key="feed"
+                        initial={{ x: '100%' }}
+                        animate={{ x: 0 }}
+                        exit={{ x: '-100%' }}
+                        transition={slideTransition}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          flex: 1,
+                          minHeight: 0,
+                          overflow: 'hidden',
+                        }}
+                      >
+                        {notes.length === 0 ? (
+                          <div
+                            style={{
+                              flex: 1,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              color: 'var(--fg-3)',
+                              fontFamily: 'var(--font-sans)',
+                              fontSize: 14,
+                            }}
+                          >
+                            nothing yet. start anywhere.
+                          </div>
+                        ) : (
+                          <Feed
+                            notes={notes}
+                            scrollerRef={feedScrollerRef}
+                            sendInFlight={sendInFlight}
+                            focusedId={focusedId}
+                            // Toggle behaviour: clicking an unfocused bubble focuses it (opens
+                            // BacklinksPane); clicking the already-focused bubble unfocuses it
+                            // (closes the pane). Wikilink / palette / pane-jump callbacks set
+                            // focus directly without toggling — those are navigation gestures.
+                            onFocus={(id) => setFocusedId((cur) => (cur === id ? null : id))}
+                            onWikilinkClick={onWikilinkClick}
+                            resolveSlug={resolveSlug}
+                            onEdit={setEditingNoteId}
+                            onDelete={(id) => {
+                              deleteMut.mutate(id)
+                              if (focusedId === id) setFocusedId(null)
+                            }}
+                            onCopyLink={(id) => {
+                              void navigator.clipboard.writeText(`linsae://note/${id}`)
+                            }}
+                            onOpenThread={openThread}
+                            // Canvas traces + verbs (spec §6/§9) — placedNoteIds drives the
+                            // ▦ chip; the three callbacks are threaded to NoteBubble by id.
+                            placedNoteIds={placedNoteIds}
+                            onShelf={onShelf}
+                            onPlaceOnCanvas={onPlaceOnCanvas}
+                            onJumpToCard={onJumpToCard}
+                          />
+                        )}
+                        {editingNote ? (
+                          <Composer
+                            key={editingNote.id}
+                            initialBody={editingNote.body}
+                            initialMode={editingNote.type}
+                            editMode
+                            error={submitError}
+                            onClearError={() => setSubmitError(null)}
+                            onSubmit={({ body, type }) =>
+                              updateMut.mutate({ id: editingNote.id, body, type })
+                            }
+                            onCancel={() => setEditingNoteId(null)}
+                          />
+                        ) : (
+                          // Composite key: `draftBody ?? 'fresh'` handles the dangling-wikilink
+                          // prefill remount; `successCount` ticks on successful create to
+                          // force a remount → fresh empty textarea. Failed creates leave the
+                          // key unchanged so the user's text + cursor survive.
+                          <Composer
+                            key={`${draftBody ?? 'fresh'}-${successCount}`}
+                            initialBody={draftBody ?? ''}
+                            initialMode="claim"
+                            error={submitError}
+                            onClearError={() => setSubmitError(null)}
+                            // Flag the send so the Feed suppresses its auto-scroll while the new
+                            // note glides in (see `beginSend`), THEN create it.
+                            onSubmit={({ body, type }) => {
+                              beginSend()
+                              createMut.mutate({ body, type })
+                            }}
+                            onCancel={() => setDraftBody(null)}
+                            onPasteText={handlePasteText}
+                          />
+                        )}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </main>
+                {/* Right dock (spec §2) — sits RIGHT of <main> so the layout reads
                 [left dock][center stage][right dock]. DockHost self-hides when
                 the right side is empty; the PDF pane opens via the restore effect
                 / Open PDF… and closes via handlePaneClose. */}
-              <DockHost side="right" onPaneClose={handlePaneClose} />
-              {focusedId && (
-                <BacklinksPane
-                  focusedNoteId={focusedId}
-                  onClose={() => setFocusedId(null)}
-                  onJump={setFocusedId}
-                />
-              )}
-            </>
-          )}
-        </div>
-        {/* App-wide footer (spec §14): the status strip plus the recent popover it
+                <DockHost side="right" onPaneClose={handlePaneClose} />
+                {focusedId && !backlinksDockOpen && (
+                  <BacklinksPane
+                    focusedNoteId={focusedId}
+                    onClose={() => setFocusedId(null)}
+                    onJump={setFocusedId}
+                  />
+                )}
+              </>
+            )}
+          </div>
+          {/* App-wide footer (spec §14): the status strip plus the recent popover it
           anchors. position:relative so RecentPopover (position:absolute,
           bottom:100%) floats UP from the strip. Hidden during a thread so the
           full-screen ThreadView owns the chrome. */}
-        {!threadNoteId && (
-          <div style={{ position: 'relative', flexShrink: 0 }}>
-            <RecentPopover
-              open={recentOpen}
-              onClose={() => setRecentOpen(false)}
-              onJump={onJumpToCard}
-            />
-            <StatusBar
-              view={viewMode}
-              placedCount={placedNoteIds.size}
-              unplacedCount={unplacedCount}
-              zoomPct={zoomPct}
-              onOpenShelf={() => useDockStore.getState().openPane('shelf')}
-              onResetZoom={() => setResetSignal((s) => s + 1)}
-              onFit={() => setFitSignal((s) => s + 1)}
-              onToggleRecent={() => setRecentOpen((o) => !o)}
-            />
-          </div>
-        )}
-        <CommandMenu open={activePalette === 'command'} onClose={() => setActivePalette('none')} />
-        <QuickSwitcher
-          open={activePalette === 'title'}
-          onJump={onSwitcherJump}
-          onClose={() => setActivePalette('none')}
-        />
-        <ContentSearch
-          open={activePalette === 'content'}
-          onClose={() => setActivePalette('none')}
-          onJump={onSwitcherJump}
-        />
-        <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-        {DEV_PLAYGROUND && revealOpen && RevealPlayground && (
-          <Suspense fallback={null}>
-            <RevealPlayground onClose={() => setOverlay('reveal', false)} />
-          </Suspense>
-        )}
-        {WaveTuner && waveOn && (
-          <Suspense fallback={null}>
-            <WaveTuner />
-          </Suspense>
-        )}
-      </div>
+          {!threadNoteId && (
+            <div style={{ position: 'relative', flexShrink: 0 }}>
+              <RecentPopover
+                open={recentOpen}
+                onClose={() => setRecentOpen(false)}
+                onJump={onJumpToCard}
+              />
+              <StatusBar
+                view={viewMode}
+                placedCount={placedNoteIds.size}
+                unplacedCount={unplacedCount}
+                zoomPct={zoomPct}
+                onOpenShelf={() => useDockStore.getState().openPane('shelf')}
+                onResetZoom={() => setResetSignal((s) => s + 1)}
+                onFit={() => setFitSignal((s) => s + 1)}
+                onToggleRecent={() => setRecentOpen((o) => !o)}
+              />
+            </div>
+          )}
+          <CommandMenu
+            open={activePalette === 'command'}
+            onClose={() => setActivePalette('none')}
+          />
+          <QuickSwitcher
+            open={activePalette === 'title'}
+            onJump={onSwitcherJump}
+            onClose={() => setActivePalette('none')}
+          />
+          <ContentSearch
+            open={activePalette === 'content'}
+            onClose={() => setActivePalette('none')}
+            onJump={onSwitcherJump}
+          />
+          <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+          {DEV_PLAYGROUND && revealOpen && RevealPlayground && (
+            <Suspense fallback={null}>
+              <RevealPlayground onClose={() => setOverlay('reveal', false)} />
+            </Suspense>
+          )}
+          {WaveTuner && waveOn && (
+            <Suspense fallback={null}>
+              <WaveTuner />
+            </Suspense>
+          )}
+        </div>
+      </BacklinksContext.Provider>
     </ShelfContext.Provider>
   )
 }
