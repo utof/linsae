@@ -7,16 +7,35 @@ interface UseExcerptCaptureArgs {
   pdfId: string
   page: PDFPageProxy | null
   viewport: PageViewport | null
+  /** Element the mouseup listener binds to (the scroll container, so a drag
+   * released anywhere in the pane is still captured). */
   pageEl: HTMLElement | null
+  /** The page-content element (canvas + text-layer wrapper) whose top-left is
+   * the true page origin. Used as the `convertToPdfPoint` origin so excerpt
+   * rects stay correct when the page is scrolled or zoomed (its
+   * `getBoundingClientRect()` already folds in scroll offset + centering).
+   * Falls back to `pageEl` when not provided. @see B17/B18 */
+  contentEl?: HTMLElement | null
 }
 
 /**
  * On selectionchange/mouseup inside the page element, build the hybrid
  * source_locator (quote + prefix/suffix + rect + best-effort textStart/textEnd)
  * and store it in excerptState. Esc clears.
+ *
+ * Coordinates are measured against `contentEl` (the page origin) rather than the
+ * scroll container, so the captured rect is correct at any zoom and scroll
+ * position — `convertToPdfPoint` divides by the (zoom-inclusive) viewport scale,
+ * so the same viewport handles zoom ≠ 1 with no extra math.
  * @see docs/specs/v0.6-pdf-slim-slice.md §7 (capture→place)
  */
-export function useExcerptCapture({ pdfId, page, viewport, pageEl }: UseExcerptCaptureArgs): void {
+export function useExcerptCapture({
+  pdfId,
+  page,
+  viewport,
+  pageEl,
+  contentEl,
+}: UseExcerptCaptureArgs): void {
   const set = useExcerptStore((s) => s.set)
   const clear = useExcerptStore((s) => s.clear)
 
@@ -28,7 +47,9 @@ export function useExcerptCapture({ pdfId, page, viewport, pageEl }: UseExcerptC
       const range = sel.getRangeAt(0)
       const text = sel.toString()
       if (!text.trim()) return
-      const pageRect = pageEl.getBoundingClientRect()
+      // Origin = the page-content element when available (correct under scroll +
+      // zoom); otherwise the listener element. @see B17/B18
+      const pageRect = (contentEl ?? pageEl).getBoundingClientRect()
       // pdf.js types `convertToPdfPoint` as `any[]`; the helper wants `[number, number]`
       // (it always returns a 2-tuple at runtime). Cast to the helper's own param type.
       const rect = clientRectsToPdfRect(
@@ -80,5 +101,5 @@ export function useExcerptCapture({ pdfId, page, viewport, pageEl }: UseExcerptC
       pageEl.removeEventListener('mouseup', onPageMouseUp)
       window.removeEventListener('keydown', onKey)
     }
-  }, [page, viewport, pageEl, pdfId, set, clear])
+  }, [page, viewport, pageEl, contentEl, pdfId, set, clear])
 }
