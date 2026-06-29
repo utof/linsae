@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { BacklinksPaneBody } from '../backlinks/BacklinksPaneBody'
 import { PdfReader } from '../pdf/PdfReader'
 import { ShelfPaneBody } from './ShelfPane'
 
@@ -25,10 +26,18 @@ export interface Pane {
   render: () => ReactNode
 }
 
-/** The pane registry — the v0.4 Shelf plus the v0.6 PDF reader (home right). */
+/** The pane registry — the v0.4 Shelf, the v0.6 PDF reader (home right), and the
+ *  v0.6.2 backlinks utility pane (home right; tabs with PDF). @see docs/specs/v0.6.2-dock-shell.md §2 */
 export const PANES: Pane[] = [
   { id: 'shelf', title: 'shelf', homeDock: 'left', render: () => <ShelfPaneBody /> },
   { id: 'pdf', title: 'pdf', homeDock: 'right', kind: 'content', render: () => <PdfReader /> },
+  {
+    id: 'backlinks',
+    title: 'backlinks',
+    homeDock: 'right',
+    kind: 'utility',
+    render: () => <BacklinksPaneBody />,
+  },
 ]
 
 /** Resolve a pane by id (undefined if unknown). */

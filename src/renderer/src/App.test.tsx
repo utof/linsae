@@ -26,6 +26,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../tests/setup'
 import type { Note, PdfLocator } from '../../shared/types'
 import { useCommandStore } from './palette/command-store'
+import { useDockStore } from './panes/dockStore'
 import { useExcerptStore } from './pdf/excerptState'
 
 // ── Mock ThreadView to a lightweight sentinel ──────────────────────────────
@@ -47,14 +48,22 @@ vi.mock('./thread/ThreadView', () => ({
 vi.mock('./feed/Feed', () => ({
   Feed: ({
     onOpenThread,
+    onFocus,
+    focusedId,
     notes,
     sendInFlight,
   }: {
     onOpenThread?: (id: string) => void
+    onFocus?: (id: string) => void
+    focusedId?: string | null
     notes: Note[]
     sendInFlight?: boolean
   }) => (
-    <div data-testid="feed-sentinel" data-send-in-flight={String(!!sendInFlight)}>
+    <div
+      data-testid="feed-sentinel"
+      data-send-in-flight={String(!!sendInFlight)}
+      data-focused-id={focusedId ?? ''}
+    >
       {notes.map((n) => (
         <button
           key={n.id}
@@ -63,6 +72,18 @@ vi.mock('./feed/Feed', () => ({
           onClick={() => onOpenThread?.(n.id)}
         >
           {`open thread ${n.id}`}
+        </button>
+      ))}
+      {/* Focus triggers (Task 6): drive the focus↔backlinks-pane sync. App's onFocus
+          toggles, so clicking the same note twice clears focus (used for the I2 case). */}
+      {notes.map((n) => (
+        <button
+          key={`focus-${n.id}`}
+          type="button"
+          data-testid={`focus-btn-${n.id}`}
+          onClick={() => onFocus?.(n.id)}
+        >
+          {`focus ${n.id}`}
         </button>
       ))}
       {/* Legacy alias: fires note-src-1, used by existing tests that rely on FEED_NOTE seeding. */}
@@ -77,8 +98,18 @@ vi.mock('./feed/Feed', () => ({
   ),
 }))
 
+// Mock the open-pdf id hooks so tests can drive boot-restore deterministically.
+// Default: no pdf open (usePdfOpenId → null) + a no-op setter, so EXISTING tests
+// are unaffected; the boot-restore describe overrides the return values per-test.
+vi.mock('./pdf/usePdfOpenId', () => ({
+  usePdfOpenId: vi.fn(() => null),
+  useOpenPdf: vi.fn(() => vi.fn()),
+}))
+
 // Import App AFTER vi.mock so hoisted mocks apply.
 import { App } from './App'
+import * as PaneModule from './panes/Pane'
+import { useOpenPdf, usePdfOpenId } from './pdf/usePdfOpenId'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -141,6 +172,9 @@ beforeEach(() => {
   mockApi.notes.create.mockResolvedValue(CREATED_SOURCE_NOTE)
   mockApi.youtube.fetchOEmbed.mockResolvedValue(OEMBED_RESULT)
   mockApi.videoSources.upsert.mockResolvedValue(undefined)
+  // The dock store is an in-memory singleton; vitest's `isolate:false` leaks it
+  // across files, so reset it for every App test (starts empty per test).
+  useDockStore.getState().reset()
 })
 
 describe('App — paste YouTube URL → source note + oEmbed', () => {
@@ -614,5 +648,177 @@ describe('App — sendInFlight append-coupled clear', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('App — PDF boot-restore (C2)', () => {
+  beforeEach(() => {
+    // Spy getPane so the right dock's 'pdf' pane renders a trivial body instead
+    // of mounting the real PdfReader (which pulls pdfjs/worker machinery).
+    vi.spyOn(PaneModule, 'getPane').mockImplementation((id: string) =>
+      id === 'pdf'
+        ? {
+            id,
+            title: 'pdf',
+            homeDock: 'right',
+            kind: 'content',
+            render: () => <div>pdf body</div>,
+          }
+        : { id, title: id, homeDock: 'left', kind: 'utility', render: () => <div>{id} body</div> },
+    )
+  })
+  afterEach(() => {
+    // Restore the getPane spy first; restoreAllMocks also resets the factory
+    // mocks, so re-establish their defaults AFTER it (else the resets are dead).
+    vi.restoreAllMocks()
+    vi.mocked(usePdfOpenId).mockReturnValue(null)
+    vi.mocked(useOpenPdf).mockReturnValue(vi.fn())
+  })
+
+  /**
+   * C2 invariant (spec §4/§5): the persisted open-pdf id must reopen the right
+   * dock pane on boot (the in-memory store starts empty), and closing it must
+   * clear the persisted id so the restore effect does not immediately reopen it.
+   * @see docs/specs/v0.6.2-dock-shell.md §4 (C2)
+   */
+  it('reopens the pdf pane when the persisted id resolves; close clears the id', async () => {
+    const openPdfSpy = vi.fn()
+    vi.mocked(usePdfOpenId).mockReturnValue('pdf-abc')
+    vi.mocked(useOpenPdf).mockReturnValue(openPdfSpy)
+
+    renderWithProviders(<App />)
+
+    // The [pdfOpenId] effect opens the 'pdf' pane on the right dock.
+    await waitFor(() => {
+      expect(useDockStore.getState().right.openPaneIds).toContain('pdf')
+    })
+
+    // Single pane → quiet header close button. Clicking it must clear the id.
+    const closeBtn = await screen.findByRole('button', { name: /close pdf/i })
+    await act(async () => {
+      fireEvent.click(closeBtn)
+    })
+    expect(openPdfSpy).toHaveBeenCalledWith(null)
+  })
+})
+
+describe('App — backlinks dock pane (spec §3,§4)', () => {
+  beforeEach(() => {
+    // Seed a focusable note so the Feed mock renders its focus trigger, and make
+    // the backlinks body query resolve cleanly (both surfaces show the empty copy).
+    mockApi.notes.list.mockResolvedValue([FEED_NOTE])
+    mockApi.links.backlinks.mockResolvedValue([])
+  })
+  afterEach(() => useCommandStore.getState().reset())
+
+  /** Focus a note via the Feed mock's per-note focus trigger (toggles on App side). */
+  const focusNote = async (id: string) => {
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId(`focus-btn-${id}`))
+    })
+  }
+
+  it('registers backlinks.open only while a note is focused (absent → present → absent)', async () => {
+    renderWithProviders(<App />)
+    // Wait for the base command set to register so the registry is non-empty.
+    await waitFor(() => expect(useCommandStore.getState().commands().length).toBeGreaterThan(0))
+    const hasOpen = () =>
+      useCommandStore
+        .getState()
+        .commands()
+        .some((c) => c.id === 'backlinks.open')
+
+    // No focus → command absent.
+    expect(hasOpen()).toBe(false)
+
+    // Focus a note → the dedicated [focusedId] effect registers it.
+    await focusNote('feed-note-1')
+    await waitFor(() => expect(hasOpen()).toBe(true))
+
+    // Clear focus (re-click toggles off) → the effect cleanup unregisters it (C1).
+    await focusNote('feed-note-1')
+    await waitFor(() => expect(hasOpen()).toBe(false))
+  })
+
+  it('opening the backlinks dock pane suppresses the overlay (one list in the DOM)', async () => {
+    renderWithProviders(<App />)
+    await focusNote('feed-note-1')
+
+    // Focus alone → the transient overlay is present.
+    expect(await screen.findByLabelText(/close pane/i)).toBeInTheDocument()
+
+    // Open the deliberate dock pane.
+    act(() => {
+      useDockStore.getState().openPane('backlinks')
+    })
+
+    // Overlay suppressed; only the dock pane (its quiet header close) remains.
+    await waitFor(() => expect(screen.queryByLabelText(/close pane/i)).toBeNull())
+    expect(screen.getByLabelText(/close backlinks/i)).toBeInTheDocument()
+    // Exactly one backlinks list body (the dock pane) — not two.
+    expect(screen.queryAllByText(/nothing links here yet/i)).toHaveLength(1)
+  })
+
+  it('closing the dock pane clears focus and does NOT resurrect the overlay (I1)', async () => {
+    renderWithProviders(<App />)
+    await focusNote('feed-note-1')
+    act(() => {
+      useDockStore.getState().openPane('backlinks')
+    })
+    const closeBtn = await screen.findByLabelText(/close backlinks/i)
+
+    await act(async () => {
+      fireEvent.click(closeBtn)
+    })
+
+    // Pane gone, focus cleared → overlay must NOT appear, no backlinks list anywhere.
+    await waitFor(() => expect(screen.queryByLabelText(/close backlinks/i)).toBeNull())
+    expect(screen.queryByLabelText(/close pane/i)).toBeNull()
+    expect(useDockStore.getState().right.openPaneIds).not.toContain('backlinks')
+    expect(screen.queryAllByText(/nothing links here yet/i)).toHaveLength(0)
+  })
+
+  it('clearing focus while the dock pane is open auto-closes the pane (I2)', async () => {
+    renderWithProviders(<App />)
+    await focusNote('feed-note-1')
+    act(() => {
+      useDockStore.getState().openPane('backlinks')
+    })
+    await screen.findByLabelText(/close backlinks/i)
+
+    // Re-click the focused note → App toggles focus off → I2 effect closes the pane.
+    await focusNote('feed-note-1')
+
+    await waitFor(() =>
+      expect(useDockStore.getState().right.openPaneIds).not.toContain('backlinks'),
+    )
+    expect(screen.queryByLabelText(/close backlinks/i)).toBeNull()
+    // Focus is clear, so the overlay must not appear either.
+    expect(screen.queryByLabelText(/close pane/i)).toBeNull()
+  })
+
+  it('the Open-backlinks command run() opens the dock pane (⌘K wiring)', async () => {
+    renderWithProviders(<App />)
+    // Focus a note so the dedicated [focusedId] effect registers backlinks.open.
+    await focusNote('feed-note-1')
+    await waitFor(() =>
+      expect(
+        useCommandStore
+          .getState()
+          .commands()
+          .some((c) => c.id === 'backlinks.open'),
+      ).toBe(true),
+    )
+
+    // Drive the command end-to-end: resolve it from the registry and invoke its
+    // real run() closure (the ⌘K "Open backlinks" wiring), not openPane directly.
+    act(() => {
+      useCommandStore.getState().registry.get('backlinks.open')?.run?.()
+    })
+
+    await waitFor(() => expect(useDockStore.getState().right.openPaneIds).toContain('backlinks'))
+    // The pane mounted: its quiet header close is in the DOM, overlay suppressed.
+    expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
+    expect(screen.queryByLabelText(/close pane/i)).toBeNull()
   })
 })

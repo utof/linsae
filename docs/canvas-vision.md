@@ -71,9 +71,20 @@ a separate minimap widget is permanently ruled out).
 
 ## Now
 
-Current milestone: **v0.4 canvas-mvp** — `docs/specs/v0.4-canvas-mvp.md`. Ships the curated manual
-canvas (shelf, `/` picker, one-shot placement, double-click capture, arranging + spatial undo,
-read-only edges, LOD seam + dev-flag dot renderer, status-bar chrome, embryo dock shell).
+**Latest shipped: v0.6 pdf-slim-slice** (`docs/specs/v0.6-pdf-slim-slice.md`) — a PDF opens in a
+right-dock content pane beside the canvas; read + select + **excerpt-drag onto the canvas**. It grew
+the dock-shell embryo a **right dock + content-pane class** (`Pane.kind`, `Dock.side`) but **no tabs,
+no multi-pane** (2026-06-28 amendment, §Sequencing). Current branch `v0.6.1/electron-bump` is an
+Electron 39→42 patch — no product surface.
+
+**Now building: §Dock shell — v0.6.2 dock-shell** (`docs/specs/v0.6.2-dock-shell.md`; implemented on
+`v0.6.2/dock-shell`, awaiting merge after v0.6.1). It "backs up" the slim PDF slice with the real
+multi-pane grammar: a dock = ordered pane ids + active id in an in-memory zustand `dockStore`; **tab
+strips render once 2+ panes share a dock**; **backlinks becomes the first right-dock utility pane**
+(dual surface — the transient focus overlay is kept AND a deliberately-opened dock pane is added).
+What remains **deferred**: cross-dock **tab dragging**, the two quiet dock-toggle chrome affordances,
+left-dock multi-pane / shelf tab-mates, the AI-chat pane, and dock-layout persistence — all additive
+seams on the ordered-list model.
 
 ## Future backlog (unordered)
 
@@ -81,20 +92,26 @@ Each item is self-contained so the list can be reshuffled without rewriting it. 
 commitments to a date or an order; all of them are commitments to a *direction* — a v0.x spec that
 forecloses one of these must amend this doc first.
 
-### Dock shell (full constrained tiling)
-The embryo (`Pane` registry, left dock, shelf) grows into the full grammar: right dock; tab strips
-render only at ≥2 panes; every pane has a home dock and opens there by default (note-list things →
-left; contextual utilities → right; content panes → right, wide); tab dragging between docks as
-pure rearrangement, never a flow step; two quiet outline dock-toggles at top-right, and no other
-window chrome — resist the feature-button row. Two pane classes, one mechanism: **content panes**
-(PDF, video — want width, peers of the canvas, probably max one visible per dock) vs **utility
-panes** (shelf, backlinks, AI chat — narrow, cheap). Forcing functions for this milestone are
-backlinks + AI chat panes, deliberately *not* PDF. Escape hatch if dogfooding shows shelf and feed
-must be visible simultaneously: allow one dock to split horizontally — note this presupposes
-feed-as-a-pane, which otherwise only arrives with channels, so taking the hatch means pulling
-feed-as-pane forward deliberately, not as a side effect. Do not build until proven. All layout
-state is per-window view-state; no saved workspaces/presets until layouts demonstrably hurt to
-reconstruct.
+### Dock shell (full constrained tiling) — embryo v0.4/v0.6; **grammar ✅ shipped v0.6.2** (`docs/specs/v0.6.2-dock-shell.md`); cross-dock drag + toggle chrome deferred
+The embryo — the `Pane` registry + left dock (shelf) from v0.4, plus (since **v0.6**) a **right dock +
+content-pane class** (`Pane.kind: 'utility' | 'content'`, `Dock.side`) holding one PDF beside the
+canvas — grew into the full grammar in **v0.6.2 dock-shell**: a dock = ordered pane ids + active id in
+an in-memory zustand `dockStore`; **tab strips that render only at ≥2 panes** (`DockTabs`); every pane
+has a home dock and opens there by default (note-list things → left; contextual utilities → right;
+content panes → right, wide) — **backlinks is the first right-dock utility pane**, with a dual surface
+(kept overlay + deliberate dock pane). Still **deferred**: tab dragging between docks as pure
+rearrangement, never a flow step; two quiet outline dock-toggles at top-right, and no other window
+chrome — resist the feature-button row. Two
+pane classes, one mechanism: **content panes** (PDF, video — want width, peers of the canvas, probably
+max one visible per dock) vs **utility panes** (shelf, backlinks, AI chat — narrow, cheap). The v0.6
+PDF pane is the **first content pane and first right-dock pane**, so this milestone *generalizes* an
+existing pattern rather than inventing it; the remaining forcing functions are **backlinks + AI-chat
+utility panes** and **≥2 panes coexisting in one dock** — the moment tab strips, multi-pane, and the
+home-dock defaults all become real. Escape hatch if dogfooding shows shelf and feed must be visible
+simultaneously: allow one dock to split horizontally — note this presupposes feed-as-a-pane, which
+otherwise only arrives with channels, so taking the hatch means pulling feed-as-pane forward
+deliberately, not as a side effect. Do not build the rest until proven. All layout state is per-window
+view-state; no saved workspaces/presets until layouts demonstrably hurt to reconstruct.
 
 ### Semantic zoom, shipped for real
 User-facing title tier and dot tier on the underlay: zoom-threshold UX, card⇄title⇄dot transitions
@@ -113,7 +130,7 @@ seed-scatter for a shelf batch — all local, on-demand, undoable mutations of t
 arrangement. Relayout animates as one staged eased tween (freeze input → snapshot → compute →
 interpolate positions, edges following → settle); never unmount/remount mid-tween.
 
-### Edge work (creation + interaction)
+### Edge work (creation + interaction) — ✅ shipped v0.4.1 (`docs/specs/v0.4.1-canvas-edges.md`)
 v0.4 ships read-only edge *display*. This milestone adds: drag card→card to create a typed link,
 type picker, edge selection/deletion, possibly labels; line hit-testing on the underlay. Edge
 creation writes real `links` rows — it is a data operation with canvas affordances, same
@@ -158,12 +175,13 @@ Telegram-style channels: several feeds, a feed picker as a left-dock pane, each 
 choose its working feed from inside the canvas view (no round-trip through the feed view). This is
 the moment the feed stops being singular app chrome and becomes a pane like everything else.
 
-### PDFs (and the excerpt-drag move)
+### PDFs (and the excerpt-drag move) — slim slice ✅ shipped v0.6 (`docs/specs/v0.6-pdf-slim-slice.md`)
 PDF as a content pane in the right dock: read, annotate, and — the entire point — **drag an excerpt
 onto the canvas** as a note carrying its source locator (the MarginNote move; same `source_locator`
-philosophy as YouTube annotations). Ginormous milestone; explicitly sequenced *after* the
-node/edge/tab/pane workflow feels right (user-stated constraint). Dock-shell design must protect
-the excerpt-drag path from day one even though PDFs ship later.
+philosophy as YouTube annotations). **Read + excerpt-drag shipped in v0.6** (no annotation); it grew
+the right-dock content-pane embryo (see §Dock shell). What remains is the full milestone — **PDF
+annotation (Stage 2)**, re-open-at-source navigation, image-region excerpts, multi-document tabs —
+sequenced *after* the dock shell + canvas-ink Stage 3.
 
 ### Canvas layers
 Z-layers within one canvas (show/hide/lock groups of content, ink on its own layer, etc.).
@@ -199,4 +217,10 @@ Resequencing = edit this section, nothing else.
 > right-dock + content-pane slice (`Pane.kind`, `Dock.side`) — NOT tabs, NOT multi-pane, NOT edge
 > work. This honors "dock-shell design must protect the excerpt-drag path from day one." The full
 > PDF milestone (annotation, Stage 2) remains sequenced after the dock shell + canvas-ink Stage 3.
+
+> **Amendment (2026-06-29, v0.6.2):** the **dock-shell grammar** (multi-pane docks, tab strips at ≥2,
+> the `dockStore` ordered-list model, backlinks as a dockable dual-surface pane) shipped as
+> `v0.6.2/dock-shell` — the first item on the sequence is now largely done. What remains of §Dock shell
+> is the deferred set (cross-dock tab dragging, dock-toggle chrome, left multi-pane, AI-chat pane,
+> persistence). Next up the queue: **semantic zoom**.
 > Layers remain after PDFs (full milestone).

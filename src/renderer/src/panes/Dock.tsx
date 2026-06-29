@@ -1,84 +1,59 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
+import { DockTabs } from './DockTabs'
+import type { DockSide } from './dockStore'
 import { getPane } from './Pane'
 
-/**
- * Kind-derived dock width bounds (px). Utility panes keep the original §10
- * 220–400 band; content panes (a PDF reader) get a wider 400–900 band so the
- * page is legible without dwarfing the stage.
- * @see docs/plans/v0.6-pdf-slim-slice.md §Task 7
- */
-const MIN_WIDTH_UTILITY = 220
-const MAX_WIDTH_UTILITY = 400
-const DEFAULT_WIDTH_UTILITY = 280
-const MIN_WIDTH_CONTENT = 400
-const MAX_WIDTH_CONTENT = 900
-const DEFAULT_WIDTH_CONTENT = 600
-
 interface DockProps {
-  open: boolean
-  paneId: string
-  onClose: () => void
-  /**
-   * Which screen edge the dock anchors to. Defaults to `'left'` (the v0.4
-   * behavior): border + resize handle on the right edge, width grows rightward.
-   * `'right'` mirrors all three so a right dock reads/resizes symmetrically.
-   */
-  side?: 'left' | 'right'
+  side: DockSide
+  openPaneIds: string[]
+  activeId: string
+  width: number
+  onActivate: (paneId: string) => void
+  onClose: (paneId: string) => void
+  onWidthChange: (width: number) => void
 }
 
-/**
- * The §10 embryo dock shell: a fixed-side, edge-resizable container rendering
- * exactly ONE pane (resolved via {@link getPane}). One pane ⇒ no tab strip —
- * just a quiet header (pane title + close ×) above the pane body. Open/closed
- * and width are in-memory view-state (not persisted in v0.4). The full grammar
- * (right dock, tab strips at ≥2 panes, tab dragging) is the vision §Dock shell
- * milestone — the registry stays data-driven so this grows without a rewrite.
- *
- * Resize precision is harness-verified later (happy-dom has no layout model);
- * the in-memory width is clamped per the pane's {@link Pane.kind} on each
- * pointer-move frame. `side` (default `'left'`) mirrors the chrome + resize
- * direction for a right-anchored dock.
- * @see docs/specs/v0.4-canvas-mvp.md §10
- * @see docs/plans/v0.6-pdf-slim-slice.md §Task 7
- * @see docs/canvas-vision.md §Dock shell
- */
+/** Presentational dock: renders the active pane, a DockTabs strip at ≥2 panes,
+ *  and an edge resize handle. Fully controlled — holds NO local width state; the
+ *  store is the sole clamp site (spec §2). `side` mirrors chrome + resize.
+ *  @see docs/specs/v0.6.2-dock-shell.md §2 */
 export function Dock({
-  open,
-  paneId,
+  side,
+  openPaneIds,
+  activeId,
+  width,
+  onActivate,
   onClose,
-  side = 'left',
-}: DockProps): React.JSX.Element | null {
-  // Kind-derive the clamp before the hooks (getPane is a pure lookup, not a
-  // hook) so the initial width matches the pane's band. Default kind is
-  // 'utility', preserving the v0.4 220/280/400 numbers for the Shelf.
-  const pane = getPane(paneId)
-  const isContent = pane?.kind === 'content'
-  const MIN_WIDTH = isContent ? MIN_WIDTH_CONTENT : MIN_WIDTH_UTILITY
-  const MAX_WIDTH = isContent ? MAX_WIDTH_CONTENT : MAX_WIDTH_UTILITY
-  const DEFAULT_WIDTH = isContent ? DEFAULT_WIDTH_CONTENT : DEFAULT_WIDTH_UTILITY
-
-  const [width, setWidth] = useState(DEFAULT_WIDTH)
+  onWidthChange,
+}: DockProps): React.JSX.Element {
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  // Latest-ref so the drag handlers below can have EMPTY deps and stay stable
+  // across renders. `onWidthChange` is a fresh closure every DockHost render
+  // (it captures the live activeId), and setWidth re-renders DockHost mid-drag;
+  // if the handlers tracked `side`/`onWidthChange` in their deps, that identity
+  // churn would change the unmount-safety effect's deps and run its cleanup —
+  // tearing down the window listeners after the first pointermove. Reading from
+  // the ref keeps the handlers stable so listeners survive the whole drag.
+  const latest = useRef({ side, onWidthChange })
+  latest.current = { side, onWidthChange }
 
-  const onPointerMove = useCallback(
-    (e: PointerEvent) => {
-      const drag = dragRef.current
-      if (!drag) return
-      // Right dock's handle is on the LEFT edge, so cursor-right shrinks it —
-      // mirror of the left dock where cursor-right grows it.
-      const delta = e.clientX - drag.startX
-      const next = side === 'right' ? drag.startWidth - delta : drag.startWidth + delta
-      setWidth(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, next)))
-    },
-    [side, MIN_WIDTH, MAX_WIDTH],
-  )
-
+  const onPointerMove = useCallback((e: PointerEvent) => {
+    const drag = dragRef.current
+    if (!drag) return
+    // Right dock's handle is on the LEFT edge, so cursor-right shrinks it —
+    // mirror of the left dock where cursor-right grows it.
+    const { side, onWidthChange } = latest.current
+    const delta = e.clientX - drag.startX
+    onWidthChange(side === 'right' ? drag.startWidth - delta : drag.startWidth + delta)
+  }, [])
+  // Deps = [onPointerMove] only (it is stable → onPointerUp stays stable too);
+  // the self-reference does not need listing. Stability is what keeps the
+  // unmount effect from tearing down listeners mid-drag.
   const onPointerUp = useCallback(() => {
     dragRef.current = null
     window.removeEventListener('pointermove', onPointerMove)
     window.removeEventListener('pointerup', onPointerUp)
   }, [onPointerMove])
-
   const onResizeStart = useCallback(
     (e: React.PointerEvent) => {
       e.preventDefault()
@@ -88,20 +63,19 @@ export function Dock({
     },
     [width, onPointerMove, onPointerUp],
   )
-
-  // Unmount safety: if the Dock unmounts mid-drag (e.g. onClose swaps the
-  // stage), window listeners would otherwise leak and call setWidth on an
-  // unmounted component. Both callbacks are stable (useCallback) so this runs
-  // only on real unmount — it does not tear down listeners mid-drag.
-  useEffect(() => {
-    return () => {
+  // Unmount safety: if the Dock unmounts mid-drag the window listeners would
+  // otherwise leak. Both callbacks are stable (empty deps) so this runs only on
+  // real unmount — it does not tear down listeners mid-drag.
+  useEffect(
+    () => () => {
       window.removeEventListener('pointermove', onPointerMove)
       window.removeEventListener('pointerup', onPointerUp)
-    }
-  }, [onPointerMove, onPointerUp])
+    },
+    [onPointerMove, onPointerUp],
+  )
 
-  if (!open) return null
-  if (!pane) return null
+  const active = getPane(activeId)
+  const tabbed = openPaneIds.length >= 2
 
   return (
     <aside
@@ -120,40 +94,49 @@ export function Dock({
           : { borderRight: '1px solid var(--border-0)' }),
       }}
     >
-      <header
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          height: 'var(--topbar-h)',
-          padding: '0 var(--space-4)',
-          borderBottom: '1px solid var(--border-0)',
-          fontSize: 'var(--t-13)',
-          color: 'var(--fg-2)',
-        }}
-      >
-        <span>{pane.title}</span>
-        <button
-          type="button"
-          aria-label={`close ${pane.title}`}
-          onClick={onClose}
+      {tabbed ? (
+        <DockTabs
+          paneIds={openPaneIds}
+          activeId={activeId}
+          onActivate={onActivate}
+          onClose={onClose}
+        />
+      ) : (
+        <header
           style={{
-            border: 'none',
-            background: 'transparent',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            height: 'var(--topbar-h)',
+            padding: '0 var(--space-4)',
+            borderBottom: '1px solid var(--border-0)',
+            fontSize: 'var(--t-13)',
             color: 'var(--fg-2)',
-            cursor: 'pointer',
-            fontSize: 'var(--t-16)',
-            lineHeight: 1,
-            padding: 'var(--space-1)',
           }}
         >
-          ×
-        </button>
-      </header>
-      <div style={{ flex: 1, overflow: 'auto' }}>{pane.render()}</div>
+          <span>{active?.title ?? activeId}</span>
+          <button
+            type="button"
+            aria-label={`close ${active?.title ?? activeId}`}
+            onClick={() => onClose(activeId)}
+            style={{
+              border: 'none',
+              background: 'transparent',
+              color: 'var(--fg-2)',
+              cursor: 'pointer',
+              fontSize: 'var(--t-16)',
+              lineHeight: 1,
+              padding: 'var(--space-1)',
+            }}
+          >
+            ×
+          </button>
+        </header>
+      )}
+      <div style={{ flex: 1, overflow: 'auto' }}>{active?.render()}</div>
       {/* Intentionally pointer-only — keyboard resize (the WAI-ARIA
-          role="separator" splitter pattern) is deferred to the dock-shell
-          milestone (vision §Dock shell), so no role/aria here yet. */}
+          role="separator" splitter pattern) is deferred to a later milestone,
+          so no role/aria here yet. */}
       <div
         data-dock-resize
         onPointerDown={onResizeStart}

@@ -1,72 +1,45 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { renderWithProviders } from '../../../../tests/setup'
+import { render } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Dock } from './Dock'
-import type { Pane } from './Pane'
 import * as PaneModule from './Pane'
 
-// One content pane (right home) and one utility pane (left home). We spy on the
-// real getPane PER TEST rather than vi.mock('./Pane'): the dom project runs with
-// `isolate: false` (vitest.config.ts), so a hoisted module mock of ./Pane races
-// with the other renderer suites that import the real registry — intermittently
-// the mock doesn't apply and the real ShelfPaneBody (which needs a QueryClient)
-// renders. An imperative spyOn is re-applied every test and restored in
-// afterEach, so it's deterministic regardless of file order in the worker.
-const contentPane: Pane = {
-  id: 'pdf',
-  title: 'pdf',
-  homeDock: 'right',
-  kind: 'content',
-  render: () => <div>pdf body</div>,
-}
-const utilityPane: Pane = {
-  id: 'shelf',
-  title: 'shelf',
-  homeDock: 'left',
-  kind: 'utility',
-  render: () => <div>shelf body</div>,
-}
-
-afterEach(() => {
-  vi.restoreAllMocks()
+beforeEach(() => {
+  vi.spyOn(PaneModule, 'getPane').mockImplementation((id: string) => ({
+    id,
+    title: id,
+    homeDock: 'right',
+    kind: 'content',
+    render: () => <div>{id} body</div>,
+  }))
 })
+afterEach(() => vi.restoreAllMocks())
 
-describe('Dock side', () => {
-  it('renders a content pane on the right with the wide default width (600)', () => {
-    vi.spyOn(PaneModule, 'getPane').mockReturnValue(contentPane)
-    const { container } = renderWithProviders(
-      <Dock open paneId="pdf" onClose={() => {}} side="right" />,
-    )
-    const aside = container.querySelector<HTMLElement>('[data-dock="right"]')
-    expect(aside).not.toBeNull()
-    expect(aside?.getAttribute('data-dock')).toBe('right')
-    // Content clamp default = 600 (utility default is 280) — proves the wider clamp.
-    expect(aside?.style.width).toBe('600px')
-    // Right dock: border + resize handle sit on the inner (left) edge.
-    expect(aside?.getAttribute('style')).toContain('border-left')
-    expect(aside?.getAttribute('style')).not.toContain('border-right')
-    const handle = aside?.querySelector<HTMLElement>('[data-dock-resize]')
-    expect(handle?.style.left).toBe('-3px')
-    expect(handle?.style.right).toBe('')
+const base = {
+  openPaneIds: ['pdf'],
+  activeId: 'pdf',
+  onActivate: vi.fn(),
+  onClose: vi.fn(),
+  onWidthChange: vi.fn(),
+}
+
+describe('Dock side mirroring', () => {
+  it('right dock borders on the left; left dock borders on the right', () => {
+    const { container: r } = render(<Dock {...base} side="right" width={600} />)
+    const { container: l } = render(<Dock {...base} side="left" width={280} />)
+    // Read the raw inline style string: happy-dom's CSSOM `style.borderLeft`
+    // getter mangles the `1px solid var(--border-0)` shorthand (drops the 1px),
+    // so assert side-mirroring against the serialized attribute instead.
+    const right = r.querySelector('[data-dock="right"]') as HTMLElement
+    const left = l.querySelector('[data-dock="left"]') as HTMLElement
+    expect(right.getAttribute('style')).toContain('border-left')
+    expect(right.getAttribute('style')).not.toContain('border-right')
+    expect(left.getAttribute('style')).toContain('border-right')
+    expect(left.getAttribute('style')).not.toContain('border-left')
   })
-
-  it('renders a utility pane on the left with the narrow default width (280)', () => {
-    vi.spyOn(PaneModule, 'getPane').mockReturnValue(utilityPane)
-    const { container } = renderWithProviders(
-      <Dock open paneId="shelf" onClose={() => {}} side="left" />,
+  it('renders the controlled width prop verbatim', () => {
+    const { container } = render(<Dock {...base} side="right" width={742} />)
+    expect((container.querySelector('[data-dock="right"]') as HTMLElement).style.width).toBe(
+      '742px',
     )
-    const aside = container.querySelector<HTMLElement>('[data-dock="left"]')
-    expect(aside).not.toBeNull()
-    // Utility clamp default = 280 — unchanged from v0.4.
-    expect(aside?.style.width).toBe('280px')
-    expect(aside?.getAttribute('style')).toContain('border-right')
-    expect(aside?.getAttribute('style')).not.toContain('border-left')
-    const handle = aside?.querySelector<HTMLElement>('[data-dock-resize]')
-    expect(handle?.style.right).toBe('-3px')
-  })
-
-  it('defaults side to "left" when the prop is omitted (backward compatible)', () => {
-    vi.spyOn(PaneModule, 'getPane').mockReturnValue(utilityPane)
-    const { container } = renderWithProviders(<Dock open paneId="shelf" onClose={() => {}} />)
-    expect(container.querySelector('[data-dock="left"]')).not.toBeNull()
   })
 })
