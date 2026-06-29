@@ -114,6 +114,15 @@ interface Props {
    * jump to the SAME card re-fire (the id alone wouldn't change).
    */
   jumpTo?: { id: string; nonce: number } | null
+  /**
+   * Feed→canvas selection carry-over (B4 / ADR 0047): the id of the note focused
+   * in the feed, when it is placed on the canvas. CanvasStage selects that card
+   * ONCE on mount — it remounts on every feed→canvas view swap (App's
+   * AnimatePresence `mode="wait"`), so the mount read captures the note focused at
+   * switch time. One-directional: canvas selection never writes back to feed focus.
+   * App gates this on placement, so a non-placed id is never passed.
+   */
+  selectNoteId?: string | null
 }
 
 /**
@@ -317,6 +326,7 @@ export function CanvasStage({
   fitSignal,
   resetSignal,
   jumpTo,
+  selectNoteId = null,
 }: Props): React.JSX.Element {
   const viewportRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
@@ -1004,6 +1014,18 @@ export function CanvasStage({
     onEdgeTargetPicker,
     hitVisibleAt,
   })
+
+  // B4 — feed→canvas selection carry-over (ADR 0047). On mount (one per feed→canvas
+  // swap, since AnimatePresence mode="wait" remounts this stage), select the note
+  // that was focused in the feed at switch time. App only passes `selectNoteId`
+  // when the note is placed, so the selected id always has a card. Mount-only:
+  // `setSelection` is a stable useCallback (ADR 0006), so [setSelection] deps run
+  // the effect exactly once; the switch-time value is captured in the ref.
+  const { setSelection } = interactions
+  const carrySelectRef = useRef(selectNoteId)
+  useEffect(() => {
+    if (carrySelectRef.current) setSelection([carrySelectRef.current])
+  }, [setSelection])
 
   /**
    * Live edge-draw rubber-band (spec §3): a quiet accent line from the source card

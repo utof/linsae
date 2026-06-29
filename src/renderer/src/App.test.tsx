@@ -740,66 +740,55 @@ describe('App — backlinks dock pane (spec §3,§4)', () => {
     await waitFor(() => expect(hasOpen()).toBe(false))
   })
 
-  it('opening the backlinks dock pane suppresses the overlay (one list in the DOM)', async () => {
+  it('focusing a note opens the backlinks dock pane (single surface, no overlay)', async () => {
     renderWithProviders(<App />)
     await focusNote('feed-note-1')
 
-    // Focus alone → the transient overlay is present.
-    expect(await screen.findByLabelText(/close pane/i)).toBeInTheDocument()
-
-    // Open the deliberate dock pane.
-    act(() => {
-      useDockStore.getState().openPane('backlinks')
-    })
-
-    // Overlay suppressed; only the dock pane (its quiet header close) remains.
-    await waitFor(() => expect(screen.queryByLabelText(/close pane/i)).toBeNull())
-    expect(screen.getByLabelText(/close backlinks/i)).toBeInTheDocument()
-    // Exactly one backlinks list body (the dock pane) — not two.
+    // Focus opens the dock pane directly (B6 / ADR 0047): the dock chrome's quiet
+    // header close is present; the retired overlay's "close pane" never appears.
+    await waitFor(() => expect(useDockStore.getState().right.openPaneIds).toContain('backlinks'))
+    expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
+    expect(screen.queryByLabelText(/close pane/i)).toBeNull()
+    // Exactly one backlinks list body (the dock pane) — never two surfaces.
     expect(screen.queryAllByText(/nothing links here yet/i)).toHaveLength(1)
   })
 
-  it('closing the dock pane clears focus and does NOT resurrect the overlay (I1)', async () => {
+  it('closing the dock pane clears focus and leaves no backlinks list (I1)', async () => {
     renderWithProviders(<App />)
     await focusNote('feed-note-1')
-    act(() => {
-      useDockStore.getState().openPane('backlinks')
-    })
     const closeBtn = await screen.findByLabelText(/close backlinks/i)
 
     await act(async () => {
       fireEvent.click(closeBtn)
     })
 
-    // Pane gone, focus cleared → overlay must NOT appear, no backlinks list anywhere.
+    // I1: close clears focus; the feed sentinel reflects the cleared focus and the
+    // pane does not resurrect (no list anywhere, pane removed from the store).
     await waitFor(() => expect(screen.queryByLabelText(/close backlinks/i)).toBeNull())
-    expect(screen.queryByLabelText(/close pane/i)).toBeNull()
     expect(useDockStore.getState().right.openPaneIds).not.toContain('backlinks')
+    expect(screen.getByTestId('feed-sentinel')).toHaveAttribute('data-focused-id', '')
     expect(screen.queryAllByText(/nothing links here yet/i)).toHaveLength(0)
   })
 
   it('clearing focus while the dock pane is open auto-closes the pane (I2)', async () => {
     renderWithProviders(<App />)
     await focusNote('feed-note-1')
-    act(() => {
-      useDockStore.getState().openPane('backlinks')
-    })
     await screen.findByLabelText(/close backlinks/i)
 
-    // Re-click the focused note → App toggles focus off → I2 effect closes the pane.
+    // Re-click the focused note → App toggles focus off → I2 closes the pane.
     await focusNote('feed-note-1')
 
     await waitFor(() =>
       expect(useDockStore.getState().right.openPaneIds).not.toContain('backlinks'),
     )
     expect(screen.queryByLabelText(/close backlinks/i)).toBeNull()
-    // Focus is clear, so the overlay must not appear either.
-    expect(screen.queryByLabelText(/close pane/i)).toBeNull()
   })
 
   it('the Open-backlinks command run() opens the dock pane (⌘K wiring)', async () => {
     renderWithProviders(<App />)
-    // Focus a note so the dedicated [focusedId] effect registers backlinks.open.
+    // Focus a note so the dedicated [focusedId] effect registers backlinks.open
+    // (focusing also opens the pane via the coupling); close it so run() is the
+    // thing that re-opens it, exercising the command's real closure in isolation.
     await focusNote('feed-note-1')
     await waitFor(() =>
       expect(
@@ -809,6 +798,12 @@ describe('App — backlinks dock pane (spec §3,§4)', () => {
           .some((c) => c.id === 'backlinks.open'),
       ).toBe(true),
     )
+    act(() => {
+      useDockStore.getState().closePane('backlinks')
+    })
+    await waitFor(() =>
+      expect(useDockStore.getState().right.openPaneIds).not.toContain('backlinks'),
+    )
 
     // Drive the command end-to-end: resolve it from the registry and invoke its
     // real run() closure (the ⌘K "Open backlinks" wiring), not openPane directly.
@@ -817,8 +812,33 @@ describe('App — backlinks dock pane (spec §3,§4)', () => {
     })
 
     await waitFor(() => expect(useDockStore.getState().right.openPaneIds).toContain('backlinks'))
-    // The pane mounted: its quiet header close is in the DOM, overlay suppressed.
     expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
-    expect(screen.queryByLabelText(/close pane/i)).toBeNull()
+  })
+
+  it('B2: the WindowFrame backlinks toggle opens/closes the pane independent of focus', async () => {
+    renderWithProviders(<App />)
+    // No note focused. The always-visible toggle opens the pane anyway (B2).
+    const toggle = await screen.findByRole('button', { name: /toggle backlinks/i })
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+
+    await act(async () => {
+      fireEvent.click(toggle)
+    })
+    await waitFor(() => expect(useDockStore.getState().right.openPaneIds).toContain('backlinks'))
+    // Pane stays open with no focus (I2 only fires on a focus→null transition, not
+    // when focus was already null), proving open-independent-of-focus.
+    expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /toggle backlinks/i })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+
+    // Toggling again closes it.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /toggle backlinks/i }))
+    })
+    await waitFor(() =>
+      expect(useDockStore.getState().right.openPaneIds).not.toContain('backlinks'),
+    )
   })
 })

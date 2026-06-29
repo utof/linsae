@@ -1651,4 +1651,27 @@ describe('CanvasStage', () => {
     })
     expect(mockApi.canvas.deleteEdge).not.toHaveBeenCalled()
   })
+
+  // ---- B4: feed→canvas selection carry-over (ADR 0047) -----------------------
+
+  it('(b4) selectNoteId selects the carried note on mount (no pointer interaction)', async () => {
+    // A placed card + the feed's focused-note id passed in. CanvasStage's mount
+    // effect must select it, so the selection bar appears with NO pointerdown.
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([row('e-note', 0, 0, 1000)])
+    mockApi.notes.get.mockResolvedValue(note('e-note', 'e', 'Carried selection'))
+    renderWithProviders(<CanvasStage {...noopProps} selectNoteId="e-note" />)
+    await waitFor(() => expect(screen.queryByText('Carried selection')).toBeTruthy())
+    // The mount-selected card surfaces the floating selection bar (count pill).
+    await waitFor(() => expect(screen.queryByText(/1 selected/i)).toBeTruthy())
+  })
+
+  it('(b4) no selectNoteId (default) → nothing is selected on mount', async () => {
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([row('e-note', 0, 0, 1000)])
+    mockApi.notes.get.mockResolvedValue(note('e-note', 'e', 'No carry'))
+    renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => expect(screen.queryByText('No carry')).toBeTruthy())
+    expect(screen.queryByText(/1 selected/i)).toBeNull()
+  })
 })
