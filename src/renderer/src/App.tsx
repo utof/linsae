@@ -1008,6 +1008,7 @@ export function App() {
                         {editingNote ? (
                           <Composer
                             key={editingNote.id}
+                            band={feedBand}
                             initialBody={editingNote.body}
                             initialMode={editingNote.type}
                             editMode
@@ -1025,6 +1026,7 @@ export function App() {
                           // key unchanged so the user's text + cursor survive.
                           <Composer
                             key={`${draftBody ?? 'fresh'}-${successCount}`}
+                            band={feedBand}
                             initialBody={draftBody ?? ''}
                             initialMode="claim"
                             error={submitError}

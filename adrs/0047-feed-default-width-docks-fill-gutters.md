@@ -52,6 +52,13 @@ margins relative to `<main>`'s content box. Both docks pass through the identica
 clamp, so the behavior is symmetric by construction. The feed width itself is
 `clamp(FEED_BAND.min, FEED_BAND.default, winW − leftW − rightW)`.
 
+**Feed and composer are one unit.** The new-note composer is a sibling of `<Feed>`
+in the feed column (not a child), so App threads the SAME `band` value to both. The
+composer applies it to its own centered band exactly as the feed does, so the two
+stay horizontally aligned and drift/shrink together (B13). They are not wrapped in a
+single band container only because `<Feed>`'s band div hosts its scroller, thumb,
+and scroll-pill — extracting it would be a risky restructure for no behavioral gain.
+
 ### Backlinks collapses to a single dock-pane surface (supersedes ADR 0046)
 
 Model A removes the layout *shift* that was 0046's sole justification for keeping a
