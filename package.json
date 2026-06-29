@@ -31,7 +31,7 @@
   "dependencies": {
     "@tanstack/react-query": "^5.100.14",
     "@tanstack/react-virtual": "^3.14.1",
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "^12.11.1",
     "cmdk": "^1.1.1",
     "js-yaml": "^4.1.1",
     "katex": "^0.17.0",
@@ -67,7 +67,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
     "babel-plugin-react-compiler": "^1.0.0",
-    "electron": "^39.2.6",
+    "electron": "^42.5.0",
     "electron-builder": "^26.0.12",
     "electron-vite": "6.0.0-beta.1",
     "happy-dom": "^20.9.0",
