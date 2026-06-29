@@ -554,6 +554,59 @@ describe('App — PDF excerpt → canvas placement bridge (B3)', () => {
   })
 
   /**
+   * Bug fix (v0.6.3): arming the PDF "Excerpt → place on canvas" affordance must
+   * not merely create a note that lands in the feed — it must enter the one-shot
+   * ghost-placement flow, which requires the canvas to be the active view (the
+   * ghost only mounts inside CanvasStage, and AnimatePresence keeps a single
+   * stage mounted at a time). The app starts in feed view; after arm() the note
+   * is created AND the view switches to canvas so the draggable ghost is visible,
+   * matching Flow A's feed right-click "place on canvas…" verb.
+   *
+   * @see src/renderer/src/App.tsx — excerpt bridge useEffect (setViewMode call)
+   * @see src/renderer/src/canvas/CanvasStage.tsx — one-shot ghost (`placing` prop)
+   */
+  it('arming the excerpt switches to the canvas view (so the placement ghost is visible)', async () => {
+    // create must RESOLVE a real note so the bridge can read note.id → setPlacing
+    // + setViewMode (the default vi.fn() resolves undefined and would throw).
+    mockApi.notes.create.mockResolvedValueOnce({
+      id: 'excerpt-1',
+      slug: 'excerpt-1',
+      body: 'quote',
+      type: 'source',
+      created_at: 3000,
+      updated_at: 3000,
+      deleted_at: null,
+      source_kind: 'pdf',
+      source_locator: LOCATOR,
+    })
+
+    renderWithProviders(<App />)
+    await screen.findByRole('textbox')
+
+    // App boots in feed view: the WindowFrame segmented control reflects this.
+    const canvasToggle = screen.getByRole('button', { name: 'canvas view' })
+    expect(canvasToggle).toHaveAttribute('aria-pressed', 'false')
+
+    // Set pending + arm → bridge creates the note, then enters placing + canvas.
+    act(() => {
+      useExcerptStore.getState().set({ text: 'quote', locator: LOCATOR, pdfId: 'p1', page: 1 })
+    })
+    await act(async () => {
+      useExcerptStore.getState().arm()
+    })
+    await waitFor(() => expect(mockApi.notes.create).toHaveBeenCalledOnce())
+
+    // The view must now be canvas (where the one-shot ghost can render) — NOT
+    // feed, where arming would have silently created a note with no rectangle.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'canvas view' })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      ),
+    )
+  })
+
+  /**
    * Cache-invalidation guard (spec §3 / blocker): arm() must invalidate the
    * ['note-titles'] and ['note-recent'] caches so the excerpted note immediately
    * appears in the ⌘O switcher, ⌘J recent, and the feed — not just on canvas.

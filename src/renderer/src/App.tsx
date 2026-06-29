@@ -225,9 +225,13 @@ export function App() {
   // note is created + canvas placement armed ONLY on that explicit click —
   // watching `pending` would persist a note on every selection and orphan one
   // on re-selection (round-2 review B3). Mirrors the feed→canvas onPlaceOnCanvas
-  // precedent: resolve the note id first, then set `placing`. No view switch —
-  // the PDF dock coexists with the canvas (spec §6: it is not a third viewMode),
-  // so the user excerpts while already in canvas view.
+  // precedent: resolve the note id first, set `placing`, THEN switch to the
+  // canvas so the ghost rectangle is actually visible. The PDF dock is
+  // view-independent chrome (spec §6: it is not a third viewMode), so a user can
+  // excerpt from the FEED view too — and without the switch the note was created
+  // but no ghost ever appeared (it would mount on the off-screen, unmounted
+  // canvas). This restores parity with Flow A's "place on canvas…" verb.
+  // @issue v0.6.3 PDF "place on canvas" created a note in the feed instead of a ghost
   const pendingExcerpt = useExcerptStore((s) => s.pending)
   const armed = useExcerptStore((s) => s.armed)
   const clearExcerpt = useExcerptStore((s) => s.clear)
@@ -250,6 +254,11 @@ export function App() {
         // this cleanup (cancelled=true), so a late create never sets a stale ghost.
         if (cancelled) return
         setPlacing({ noteId: note.id, title: noteTitle(note) })
+        // Switch to the canvas so the one-shot ghost mounts + is visible whether
+        // the user excerpted from feed or canvas view (AnimatePresence keeps only
+        // the active stage mounted — a feed-view excerpt would otherwise drop its
+        // ghost on the unmounted canvas). No-op when already on canvas.
+        setViewMode('canvas')
       } catch (err) {
         console.error('[App] excerpt note create failed', err)
       }
