@@ -6,6 +6,7 @@ import { MANUAL_ARRANGEMENT_ID, ROOT_CANVAS_ID } from '../../shared/canvas'
 import type { Note, NoteType } from '../../shared/types'
 import { BacklinksContext } from './backlinks/BacklinksContext'
 import { CanvasStage } from './canvas/CanvasStage'
+import { PlacementGhost } from './canvas/PlacementGhost'
 import { RecentPopover } from './canvas/RecentPopover'
 import { StatusBar } from './canvas/StatusBar'
 import { Composer } from './composer/Composer'
@@ -1129,6 +1130,11 @@ export function App() {
             onJump={onSwitcherJump}
           />
           <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+          {/* B16: window-level placement ghost — follows the cursor over the whole
+              window (dock/PDF included) while a one-shot placement is active, so the
+              note "in hand" is always visible. The drop still commits only on the
+              canvas via CanvasStage's viewport click→placeAt path. */}
+          {placing && <PlacementGhost title={placing.title} />}
           {DEV_PLAYGROUND && revealOpen && RevealPlayground && (
             <Suspense fallback={null}>
               <RevealPlayground onClose={() => setOverlay('reveal', false)} />
