@@ -1,5 +1,5 @@
 import { Dock } from './Dock'
-import { type DockSide, dockWidthFor, useDockStore } from './dockStore'
+import { type DockSide, dockWidthFor, isSideShown, useDockStore } from './dockStore'
 
 interface DockHostProps {
   side: DockSide
@@ -33,11 +33,14 @@ export function DockHost({
   maxWidth,
 }: DockHostProps): React.JSX.Element | null {
   const slice = useDockStore((s) => s[side])
+  const shown = useDockStore((s) => isSideShown(s, side))
   const storeWidth = useDockStore((s) => (s[side].activeId ? dockWidthFor(s, side) : 0))
   const setActive = useDockStore((s) => s.setActive)
   const setWidth = useDockStore((s) => s.setWidth)
   const activeId = slice.activeId
-  if (!activeId) return null
+  // Render nothing when empty OR explicitly collapsed (B19): a collapsed side keeps
+  // its panes in the store but hides the dock and yields its width to the feed.
+  if (!activeId || !shown) return null
   const width = widthProp ?? storeWidth
   return (
     <Dock

@@ -48,6 +48,12 @@ describe('DockHost', () => {
     // Width is now stored per SIDE (B15), not per pane.
     expect(useDockStore.getState().widths.left).toBe(340)
   })
+  it('renders null when its side is explicitly collapsed even with an active pane (B19)', () => {
+    useDockStore.getState().openPane('shelf')
+    useDockStore.getState().collapseSide('left')
+    const { container } = render(<DockHost side="left" onPaneClose={vi.fn()} />)
+    expect(container.firstChild).toBeNull()
+  })
   it('the App-provided width prop overrides the store width for rendering (B14)', () => {
     useDockStore.getState().openPane('shelf') // store width 280
     const { container } = render(<DockHost side="left" onPaneClose={vi.fn()} width={150} />)

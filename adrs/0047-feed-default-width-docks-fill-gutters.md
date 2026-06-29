@@ -79,6 +79,26 @@ until the feed's `min-width` forced an overflow *under* the panel (the reported 
 clamped to the *resized* pane's kind band), so switching the active tab (pdf ↔
 backlinks) never changes the dock's width.
 
+**The top toggle collapses the whole SIDE, not one tab (B19).** A per-side
+`collapsed` flag (top-level in the store, separate from the slice) hides a whole
+side while keeping its `openPaneIds`/`activeId`/width intact, so toggling back
+restores exactly what was there (the B15 per-side width re-applies within the
+current window cap automatically). A collapsed (or empty) side reads as "not shown"
+(`isSideShown`), which makes it contribute **0** to the geometry above — the feed
+reclaims the space — and makes `DockHost` render nothing. `toggleSide(side)`:
+shown → `collapseSide`; collapsed → restore; fresh (never opened) → open the side
+default (right → backlinks, left → shelf — matching the prior B2 toggle). The per-tab
+`×` (B5) still closes a single pane; only the top toggle collapses the side.
+Symmetric for both sides.
+
+*Collapse vs. the focus→backlinks auto-open (B6).* `openPane` clears the collapse
+flag (opening a pane reveals its side). Because the focus→auto-open effect is keyed
+`[focusedId]` and only fires on a focus **change**, an explicit collapse holds while
+the same note stays focused (the effect never re-runs), and is only undone by the
+toggle or by focusing a **different** note (which calls `openPane`, clearing the
+flag). Collapse does not touch `focusedId`, so it doesn't reintroduce the I1/I2
+loop and the remembered subject note survives the round-trip.
+
 ### Backlinks collapses to a single dock-pane surface (supersedes ADR 0046)
 
 Model A removes the layout *shift* that was 0046's sole justification for keeping a

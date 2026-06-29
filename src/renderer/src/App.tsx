@@ -21,7 +21,7 @@ import { type Command, useCommandStore } from './palette/command-store'
 import { QuickSwitcher } from './palette/QuickSwitcher'
 import { DockHost } from './panes/DockHost'
 import { maxDockWidth } from './panes/dock-widths'
-import { dockWidthFor, paneKind, useDockStore } from './panes/dockStore'
+import { dockWidthFor, isSideShown, paneKind, useDockStore } from './panes/dockStore'
 import { ShelfContext } from './panes/ShelfPane'
 import { useExcerptStore } from './pdf/excerptState'
 import { useOpenPdf, usePdfOpenId } from './pdf/usePdfOpenId'
@@ -117,21 +117,21 @@ export function App() {
   // verb; CanvasStage consumes it to show the ghost + banner, then calls
   // onPlacingDone on commit/cancel. Carries the title for the banner copy.
   const [placing, setPlacing] = useState<{ noteId: string; title: string } | null>(null)
-  // Left dock (shelf) open — derived from the dock store (spec §4). The store is
-  // the single source of truth for which panes are open per side.
-  const shelfOpen = useDockStore((s) => s.left.openPaneIds.includes('shelf'))
-  // Whether the backlinks dock pane is open — drives the WindowFrame's visible
-  // backlinks toggle pressed-state (B2). Since v0.6.3 backlinks is a first-class
-  // right-dock pane (no transient overlay — ADR 0047 supersedes 0046's dual surface).
-  const backlinksDockOpen = useDockStore((s) => s.right.openPaneIds.includes('backlinks'))
+  // Whether each dock SIDE is shown (has an active pane AND is not explicitly
+  // collapsed — B19). Drives the WindowFrame side toggles' pressed-state and the
+  // geometry below (a collapsed/empty side contributes 0 width so the feed reclaims
+  // it). The top toggle collapses/restores the WHOLE side, not a single tab.
+  const leftShown = useDockStore((s) => isSideShown(s, 'left'))
+  const rightShown = useDockStore((s) => isSideShown(s, 'right'))
   // Per-side dock geometry inputs (ADR 0047). App is the geometry owner: it measures
-  // the window (bodyWidth) and reads each side's active pane + stored width, then
-  // derives the window-capped effective widths (B14) below — driving BOTH the feed
-  // band and the rendered dock widths from the same numbers so they can't disagree.
-  const leftActiveId = useDockStore((s) => s.left.activeId)
-  const rightActiveId = useDockStore((s) => s.right.activeId)
-  const leftStoredW = useDockStore((s) => (s.left.activeId ? dockWidthFor(s, 'left') : 0))
-  const rightStoredW = useDockStore((s) => (s.right.activeId ? dockWidthFor(s, 'right') : 0))
+  // the window (bodyWidth) and reads each shown side's active pane + stored width,
+  // then derives the window-capped effective widths (B14) below — driving BOTH the
+  // feed band and the rendered dock widths from the same numbers so they can't
+  // disagree. A hidden (collapsed/empty) side reads as no active pane → 0 width.
+  const leftActiveId = useDockStore((s) => (isSideShown(s, 'left') ? s.left.activeId : null))
+  const rightActiveId = useDockStore((s) => (isSideShown(s, 'right') ? s.right.activeId : null))
+  const leftStoredW = useDockStore((s) => (isSideShown(s, 'left') ? dockWidthFor(s, 'left') : 0))
+  const rightStoredW = useDockStore((s) => (isSideShown(s, 'right') ? dockWidthFor(s, 'right') : 0))
   const bodyRowRef = useRef<HTMLDivElement | null>(null)
   const [bodyWidth, setBodyWidth] = useState(0)
   // Recent-popover open state lives in App so the status-bar trigger and (Task
@@ -848,10 +848,10 @@ export function App() {
             onOpenSettings={() => setSettingsOpen(true)}
             view={viewMode}
             onViewChange={setViewMode}
-            dockOpen={shelfOpen}
-            onToggleDock={() => useDockStore.getState().togglePane('shelf')}
-            backlinksOpen={backlinksDockOpen}
-            onToggleBacklinks={() => useDockStore.getState().togglePane('backlinks')}
+            dockOpen={leftShown}
+            onToggleDock={() => useDockStore.getState().toggleSide('left')}
+            backlinksOpen={rightShown}
+            onToggleBacklinks={() => useDockStore.getState().toggleSide('right')}
           />
           {/* Body row: [left dock][center stage][right dock] (ADR 0045). bodyRowRef
          feeds the "Model A" feed-band measurement (ADR 0047) — its width is the

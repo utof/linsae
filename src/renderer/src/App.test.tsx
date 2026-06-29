@@ -868,9 +868,9 @@ describe('App — backlinks dock pane (spec §3,§4)', () => {
     expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
   })
 
-  it('B2: the WindowFrame backlinks toggle opens/closes the pane independent of focus', async () => {
+  it('B2: the WindowFrame backlinks toggle opens the side independent of focus', async () => {
     renderWithProviders(<App />)
-    // No note focused. The always-visible toggle opens the pane anyway (B2).
+    // No note focused. The always-visible toggle opens the (fresh) right side anyway.
     const toggle = await screen.findByRole('button', { name: /toggle backlinks/i })
     expect(toggle).toHaveAttribute('aria-pressed', 'false')
 
@@ -885,13 +885,52 @@ describe('App — backlinks dock pane (spec §3,§4)', () => {
       'aria-pressed',
       'true',
     )
+  })
 
-    // Toggling again closes it.
+  it('B19: the side toggle COLLAPSES the whole right dock (remembering panes) and restores it', async () => {
+    renderWithProviders(<App />)
+    await focusNote('feed-note-1') // opens the right side (backlinks)
+    expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
+
+    // Top toggle → collapse the WHOLE side. The pane is REMEMBERED (still in
+    // openPaneIds) and focus is preserved — only the dock is hidden.
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /toggle backlinks/i }))
     })
-    await waitFor(() =>
-      expect(useDockStore.getState().right.openPaneIds).not.toContain('backlinks'),
+    await waitFor(() => expect(screen.queryByLabelText(/close backlinks/i)).toBeNull())
+    expect(useDockStore.getState().collapsed.right).toBe(true)
+    expect(useDockStore.getState().right.openPaneIds).toContain('backlinks') // remembered
+    expect(screen.getByRole('button', { name: /toggle backlinks/i })).toHaveAttribute(
+      'aria-pressed',
+      'false',
     )
+
+    // Toggle again → restore exactly what was there.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /toggle backlinks/i }))
+    })
+    expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
+  })
+
+  it('B19: explicit collapse wins over auto-open for the same note; a DIFFERENT note re-opens', async () => {
+    mockApi.notes.list.mockResolvedValue([FEED_NOTE, { ...FEED_NOTE, id: 'feed-note-2' }])
+    renderWithProviders(<App />)
+    await focusNote('feed-note-1')
+    await screen.findByLabelText(/close backlinks/i)
+
+    // Collapse while feed-note-1 stays focused → the auto-open does NOT re-fire for
+    // the same focus (the [focusedId] effect only runs on a focus change).
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /toggle backlinks/i }))
+    })
+    await waitFor(() => expect(screen.queryByLabelText(/close backlinks/i)).toBeNull())
+    expect(useDockStore.getState().collapsed.right).toBe(true)
+    // Focus is preserved (collapse is not a close): the side is hidden despite a
+    // focused note — proving the collapse suppresses auto-open for that note.
+    expect(screen.getByTestId('feed-sentinel')).toHaveAttribute('data-focused-id', 'feed-note-1')
+
+    // Focusing a DIFFERENT note re-opens the side (openPane clears the collapse).
+    await focusNote('feed-note-2')
+    expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
   })
 })

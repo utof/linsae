@@ -24,19 +24,38 @@ interface DockStore {
    * active-tab changes. @see adrs/0047-feed-default-width-docks-fill-gutters.md
    */
   widths: Partial<Record<DockSide, number>>
+  /**
+   * Per-side EXPLICIT-collapse flag (B19). The top side-panel toggle collapses a
+   * whole side: `openPaneIds`/`activeId`/width are kept intact (so a later expand
+   * restores exactly what was there) but the side renders nothing and contributes 0
+   * to the feed-width cap. Distinct from closing a tab (which removes a pane).
+   * @see adrs/0047-feed-default-width-docks-fill-gutters.md
+   */
+  collapsed: Partial<Record<DockSide, boolean>>
   openPane: (paneId: string) => void
   closePane: (paneId: string) => void
   togglePane: (paneId: string) => void
   setActive: (side: DockSide, paneId: string) => void
   setWidth: (paneId: string, width: number) => void
+  /** Collapse a whole side, remembering its panes/active/width (B19). */
+  collapseSide: (side: DockSide) => void
+  /** Expand a side: restore its remembered panes, or open the side default if fresh (B19). */
+  expandSide: (side: DockSide) => void
+  /** Top side-panel toggle (B19): shown → collapse; collapsed/empty → expand/restore. */
+  toggleSide: (side: DockSide) => void
   reset: () => void
 }
 
-const EMPTY = (): Pick<DockStore, 'left' | 'right' | 'widths'> => ({
+const EMPTY = (): Pick<DockStore, 'left' | 'right' | 'widths' | 'collapsed'> => ({
   left: { openPaneIds: [], activeId: null },
   right: { openPaneIds: [], activeId: null },
   widths: {},
+  collapsed: {},
 })
+
+/** The pane a fresh (never-opened) side opens when its toggle is first pressed
+ *  (B19): right defaults to backlinks (matching the prior B2 toggle), left to shelf. */
+const DEFAULT_PANE: Record<DockSide, string> = { left: 'shelf', right: 'backlinks' }
 
 /** The width band a pane belongs to (content panes get the wider band). Exported
  *  so callers computing the window-aware resize cap can size it to the active pane. */
@@ -76,7 +95,11 @@ export const useDockStore = create<DockStore>()((set, get) => ({
         s.widths[side] === undefined
           ? { ...s.widths, [side]: defaultWidthFor(paneKind(paneId)) }
           : s.widths
-      return { ...withSlice(side, { openPaneIds, activeId: paneId }), widths }
+      // Opening a pane REVEALS the side, clearing any explicit collapse (B19). This
+      // is what lets the focus→backlinks auto-open re-show a collapsed dock when the
+      // user focuses a DIFFERENT note (the [focusedId] effect calls openPane).
+      const collapsed = s.collapsed[side] ? { ...s.collapsed, [side]: false } : s.collapsed
+      return { ...withSlice(side, { openPaneIds, activeId: paneId }), widths, collapsed }
     })
   },
   closePane: (paneId) => {
@@ -106,8 +129,33 @@ export const useDockStore = create<DockStore>()((set, get) => ({
       // Per-side width (B15), clamped to the RESIZED pane's kind band.
       return { widths: { ...s.widths, [side]: clampWidth(paneKind(paneId), width) } }
     }),
+  collapseSide: (side) => set((s) => ({ collapsed: { ...s.collapsed, [side]: true } })),
+  expandSide: (side) => {
+    // Restore the remembered panes if any; a fresh side opens its default pane
+    // (openPane also clears the collapse flag). Restoring re-applies the remembered
+    // per-side width within the current window cap (App's dockGeom does that).
+    if (get()[side].openPaneIds.length > 0) {
+      set((s) => ({ collapsed: { ...s.collapsed, [side]: false } }))
+    } else {
+      get().openPane(DEFAULT_PANE[side])
+    }
+  },
+  toggleSide: (side) => {
+    if (isSideShown(get(), side)) get().collapseSide(side)
+    else get().expandSide(side)
+  },
   reset: () => set(EMPTY()),
 }))
+
+/**
+ * Whether a dock side is currently VISIBLE: it has an active pane AND is not
+ * explicitly collapsed (B19). Drives the dock render, the toggle pressed-state, and
+ * the feed-width geometry (a hidden side contributes 0 width).
+ * @see adrs/0047-feed-default-width-docks-fill-gutters.md
+ */
+export function isSideShown(state: DockStore, side: DockSide): boolean {
+  return state[side].activeId != null && !state.collapsed[side]
+}
 
 /**
  * The remembered width for a dock SIDE (B15): the per-side stored width, else the

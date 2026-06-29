@@ -1,6 +1,6 @@
 // src/renderer/src/panes/dockStore.test.ts
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { dockWidthFor, useDockStore } from './dockStore'
+import { dockWidthFor, isSideShown, useDockStore } from './dockStore'
 import type { Pane } from './Pane'
 import * as PaneModule from './Pane'
 
@@ -97,5 +97,51 @@ describe('dockStore', () => {
 
   it('dockWidthFor falls back to the utility default before any pane opens', () => {
     expect(dockWidthFor(s(), 'right')).toBe(280)
+  })
+
+  // B19: the top toggle collapses/restores a WHOLE side; a per-tab close is separate.
+  describe('side collapse / restore (B19)', () => {
+    it('toggleSide collapses a shown side, KEEPING its panes/active/width for restore', () => {
+      s().openPane('pdf')
+      s().openPane('backlinks') // right: [pdf, backlinks], active backlinks
+      s().setWidth('pdf', 700) // per-side right width
+      s().toggleSide('right') // shown → collapse
+      expect(isSideShown(s(), 'right')).toBe(false)
+      expect(s().right.openPaneIds).toEqual(['pdf', 'backlinks']) // panes preserved
+      expect(s().right.activeId).toBe('backlinks') // active preserved
+      expect(s().widths.right).toBe(700) // width preserved (B15 + B19)
+    })
+    it('toggleSide restores a collapsed side (panes + active intact)', () => {
+      s().openPane('pdf')
+      s().toggleSide('right') // collapse
+      expect(isSideShown(s(), 'right')).toBe(false)
+      s().toggleSide('right') // restore
+      expect(isSideShown(s(), 'right')).toBe(true)
+      expect(s().right.activeId).toBe('pdf')
+    })
+    it('toggleSide on a FRESH side opens its default pane (right→backlinks, left→shelf)', () => {
+      s().toggleSide('right')
+      expect(s().right.openPaneIds).toEqual(['backlinks'])
+      expect(isSideShown(s(), 'right')).toBe(true)
+      s().toggleSide('left')
+      expect(s().left.openPaneIds).toEqual(['shelf'])
+      expect(isSideShown(s(), 'left')).toBe(true)
+    })
+    it('openPane clears an explicit collapse so a new open re-reveals the side (B6/B19)', () => {
+      s().openPane('backlinks')
+      s().collapseSide('right')
+      expect(isSideShown(s(), 'right')).toBe(false)
+      s().openPane('backlinks') // re-open → reveals
+      expect(isSideShown(s(), 'right')).toBe(true)
+    })
+    it('collapse is per side and symmetric: collapsing right leaves left shown', () => {
+      s().openPane('shelf') // left
+      s().openPane('pdf') // right
+      s().collapseSide('right')
+      expect(isSideShown(s(), 'left')).toBe(true)
+      expect(isSideShown(s(), 'right')).toBe(false)
+      s().collapseSide('left')
+      expect(isSideShown(s(), 'left')).toBe(false)
+    })
   })
 })
