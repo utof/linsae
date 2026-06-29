@@ -59,6 +59,26 @@ stay horizontally aligned and drift/shrink together (B13). They are not wrapped 
 single band container only because `<Feed>`'s band div hosts its scroller, thumb,
 and scroll-pill — extracting it would be a risky restructure for no behavioral gain.
 
+**The dock is hard-capped so it can never overlap the feed (B14).** App is the
+geometry owner: it derives each dock's *effective* render width and resize cap from
+the measured window and BOTH stored widths (`maxDockWidth(kind, otherWidth, winW)` =
+`clamp(kindMin, kindMax, winW − FEED_BAND.min − otherWidth)`), feeding the SAME
+effective widths to both the rendered docks (`<DockHost width maxWidth>`) and
+`computeFeedBand`. So the feed column always keeps ≥ `FEED_BAND.min` and the docks
+can never draw over the feed — invariant to how many panes/docks are open (each side
+is capped against the other's width, keeping `leftEff + rightEff ≤ winW − feedMin`).
+As reinforcement the feed/composer band divs carry **no CSS `min-width`**: the band
+shrinks to fit `<main>` so it can't overflow under a dock even on a pathologically
+narrow window (there the dock floors at its kind-min and the feed yields past its
+nominal min — degraded, but still no overlap). This replaces the original "floor the
+feed, don't constrain the dock" approach, whose missing dock cap let the dock grow
+until the feed's `min-width` forced an overflow *under* the panel (the reported bug).
+
+**One width per dock SIDE, not per pane (B15).** The store keys `widths` by
+`left`/`right` (seeded to the first-opened pane's kind default, updated on resize,
+clamped to the *resized* pane's kind band), so switching the active tab (pdf ↔
+backlinks) never changes the dock's width.
+
 ### Backlinks collapses to a single dock-pane surface (supersedes ADR 0046)
 
 Model A removes the layout *shift* that was 0046's sole justification for keeping a
@@ -111,11 +131,16 @@ non-placed note is never selected.
   "deliberate open pushes the stage" for the canvas with a larger blast radius than
   the feed-only fix needs. Rejected to keep canvas behavior unchanged.
 
-- **Clamping the dock's max width to preserve the feed floor** — rejected as the
-  primary mechanism. It would couple the dock's resize ceiling (shared chrome, also
-  used on the canvas where there is no feed) to the feed's minimum. Instead the band
-  function floors the feed at `FEED_BAND.min` and clamps its *position* to clear the
-  dock, so the feed never vanishes and never underlaps without constraining the dock.
+- **Position-clamp only, leave the dock uncapped** — this was the *first* cut and it
+  was wrong (the B14 bug). With no dock cap the dock could widen until the feed
+  column dropped below `FEED_BAND.min`; the band's `min-width: 360` then forced an
+  overflow *under* the (later-DOM-sibling, opaque) dock, so the panel drew over the
+  feed. The fix adds the window-aware dock cap (`maxDockWidth`, above) AND drops the
+  band's `min-width`. The earlier worry — that capping the dock couples shared chrome
+  to the feed min — is real but acceptable: the cap only binds on a *narrow* window
+  (e.g. PDF can't reach 900 below ~1260 px wide), and the alternative is the feed
+  vanishing or the dock overlapping it, both worse. On the canvas (no feed) the dock
+  is still flex-capped by `<main>` shrinking, unaffected by this render cap.
 
 ## Consequences
 

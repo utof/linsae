@@ -16,7 +16,14 @@ interface DockSlice {
 interface DockStore {
   left: DockSlice
   right: DockSlice
-  widths: Record<string, number>
+  /**
+   * Remembered width PER DOCK SIDE (B15): one width per `left`/`right`, NOT per
+   * pane — so switching the active tab (pdf ↔ backlinks) never changes the dock's
+   * width. Seeded on the first open of a side to that pane's kind default, updated
+   * on resize (clamped to the resized pane's kind band), preserved verbatim across
+   * active-tab changes. @see adrs/0047-feed-default-width-docks-fill-gutters.md
+   */
+  widths: Partial<Record<DockSide, number>>
   openPane: (paneId: string) => void
   closePane: (paneId: string) => void
   togglePane: (paneId: string) => void
@@ -31,7 +38,9 @@ const EMPTY = (): Pick<DockStore, 'left' | 'right' | 'widths'> => ({
   widths: {},
 })
 
-const kindOf = (paneId: string): PaneKind =>
+/** The width band a pane belongs to (content panes get the wider band). Exported
+ *  so callers computing the window-aware resize cap can size it to the active pane. */
+export const paneKind = (paneId: string): PaneKind =>
   getPane(paneId)?.kind === 'content' ? 'content' : 'utility'
 
 const withSlice = (side: DockSide, slice: DockSlice): Partial<DockStore> =>
@@ -61,7 +70,13 @@ export const useDockStore = create<DockStore>()((set, get) => ({
       const openPaneIds = slice.openPaneIds.includes(paneId)
         ? slice.openPaneIds
         : [...slice.openPaneIds, paneId]
-      return withSlice(side, { openPaneIds, activeId: paneId })
+      // Seed the per-side width on the FIRST open of this side (B15); later opens
+      // (a second tab) leave it untouched so the width is preserved across tabs.
+      const widths =
+        s.widths[side] === undefined
+          ? { ...s.widths, [side]: defaultWidthFor(paneKind(paneId)) }
+          : s.widths
+      return { ...withSlice(side, { openPaneIds, activeId: paneId }), widths }
     })
   },
   closePane: (paneId) => {
@@ -85,14 +100,21 @@ export const useDockStore = create<DockStore>()((set, get) => ({
   },
   setActive: (side, paneId) => set((s) => withSlice(side, { ...s[side], activeId: paneId })),
   setWidth: (paneId, width) =>
-    set((s) => ({ widths: { ...s.widths, [paneId]: clampWidth(kindOf(paneId), width) } })),
+    set((s) => {
+      const side = sideHolding(s, paneId)
+      if (!side) return {}
+      // Per-side width (B15), clamped to the RESIZED pane's kind band.
+      return { widths: { ...s.widths, [side]: clampWidth(paneKind(paneId), width) } }
+    }),
   reset: () => set(EMPTY()),
 }))
 
 /**
- * Active-pane width: remembered width, else the kind default. Used by DockHost.
- * @see docs/specs/v0.6.2-dock-shell.md §1
+ * The remembered width for a dock SIDE (B15): the per-side stored width, else the
+ * utility default as a safe fallback (a side is always seeded on its first open,
+ * so the fallback is only hit before any pane opens). Used by DockHost + App.
+ * @see adrs/0047-feed-default-width-docks-fill-gutters.md
  */
-export function dockWidthFor(state: DockStore, paneId: string): number {
-  return state.widths[paneId] ?? defaultWidthFor(kindOf(paneId))
+export function dockWidthFor(state: DockStore, side: DockSide): number {
+  return state.widths[side] ?? defaultWidthFor('utility')
 }

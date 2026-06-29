@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
+import { maxDockWidth } from '../panes/dock-widths'
 import { computeFeedBand, FEED_BAND } from './feedBand'
 
 /**
@@ -63,5 +64,38 @@ describe('computeFeedBand', () => {
     expect(band).not.toBeNull()
     if (!band) return
     expect(band.maxWidth).toBe(FEED_BAND.min) // remaining 100 < min → floored at 360
+  })
+
+  // B14: feeding the EFFECTIVE (window-capped) dock width into computeFeedBand —
+  // exactly what App does — must put the feed at its min with zero overlap, for one
+  // OR two open docks. "No overlap" ⇒ marginLeft ≥ 0, marginRight ≥ 0, and
+  // marginLeft + maxWidth + marginRight ≤ remaining (the band fits inside <main>).
+  describe('with the dock cap applied (B14, end-to-end)', () => {
+    const fits = (band: NonNullable<ReturnType<typeof computeFeedBand>>, remaining: number) => {
+      expect(band.marginLeft).toBeGreaterThanOrEqual(0)
+      expect(band.marginRight).toBeGreaterThanOrEqual(0)
+      expect(band.marginLeft + band.maxWidth + band.marginRight).toBeLessThanOrEqual(remaining)
+    }
+
+    it('one dock dragged to its cap → feed exactly at min, no overlap', () => {
+      const W = 1200
+      const right = maxDockWidth('content', 0, W) // 840
+      const band = computeFeedBand(W, 0, right)
+      expect(band).not.toBeNull()
+      if (!band) return
+      expect(band.maxWidth).toBe(FEED_BAND.min) // feed sits exactly at 360
+      fits(band, W - right)
+    })
+
+    it('both docks at their caps → combined cap still keeps feed ≥ min, no overlap', () => {
+      const W = 1400
+      const left = 280 // shelf default
+      const right = maxDockWidth('content', left, W) // 760
+      const band = computeFeedBand(W, left, right)
+      expect(band).not.toBeNull()
+      if (!band) return
+      expect(band.maxWidth).toBeGreaterThanOrEqual(FEED_BAND.min)
+      fits(band, W - left - right)
+    })
   })
 })

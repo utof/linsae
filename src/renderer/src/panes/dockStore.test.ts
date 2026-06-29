@@ -68,12 +68,34 @@ describe('dockStore', () => {
     s().togglePane('shelf')
     expect(s().left).toEqual({ openPaneIds: [], activeId: null })
   })
-  it('setWidth clamps per kind; dockWidthFor falls back to the kind default', () => {
-    s().setWidth('shelf', 9999) // utility → 400
-    s().setWidth('pdf', 100) // content → 400
-    expect(s().widths.shelf).toBe(400)
-    expect(s().widths.pdf).toBe(400)
-    expect(dockWidthFor(s(), 'pdf')).toBe(400)
-    expect(dockWidthFor(s(), 'backlinks')).toBe(280) // unset → utility default
+  it('width is per dock SIDE: seeded on first open, preserved across tab switches (B15)', () => {
+    s().openPane('pdf') // right, content → seed 600
+    expect(s().widths.right).toBe(600)
+    s().openPane('backlinks') // second right tab → width unchanged (not re-seeded)
+    expect(s().widths.right).toBe(600)
+    // Switching the active tab must NOT change the dock width.
+    s().setActive('right', 'backlinks')
+    expect(dockWidthFor(s(), 'right')).toBe(600)
+    s().setActive('right', 'pdf')
+    expect(dockWidthFor(s(), 'right')).toBe(600)
+  })
+
+  it('left side seeds its own width independently; utility default 280', () => {
+    s().openPane('shelf') // left, utility → seed 280
+    expect(s().widths.left).toBe(280)
+    expect(s().right).toEqual({ openPaneIds: [], activeId: null })
+    expect(s().widths.right).toBeUndefined()
+  })
+
+  it('setWidth writes per side, clamped to the RESIZED pane kind band; no-op if not open', () => {
+    s().openPane('pdf') // right content
+    s().setWidth('pdf', 9999) // content max 900
+    expect(s().widths.right).toBe(900)
+    s().setWidth('shelf', 100) // shelf not open → sideHolding null → no-op
+    expect(s().widths.left).toBeUndefined()
+  })
+
+  it('dockWidthFor falls back to the utility default before any pane opens', () => {
+    expect(dockWidthFor(s(), 'right')).toBe(280)
   })
 })

@@ -208,11 +208,14 @@ export function Composer({
       }}
     >
       <div
+        // No CSS `min-width` (B14): the band shrinks to fit its container so the
+        // composer can never overflow under a dock; the dock's render width is
+        // window-capped to keep the column ≥ FEED_BAND.min in normal cases. Mirrors
+        // Feed. @see adrs/0047-feed-default-width-docks-fill-gutters.md
         style={
           band
             ? {
                 maxWidth: band.maxWidth,
-                minWidth: FEED_BAND.min,
                 marginLeft: band.marginLeft,
                 marginRight: band.marginRight,
               }

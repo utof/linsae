@@ -792,11 +792,15 @@ export function Feed({
       style={{ flex: 1, minHeight: 0, padding: band ? 0 : '0 32px' }}
     >
       <div
+        // No CSS `min-width` here on purpose (B14): the dock's render width is
+        // window-capped (App + maxDockWidth) so `<main>` keeps ≥ FEED_BAND.min in
+        // normal cases; letting the band shrink to fit its container guarantees the
+        // feed can NEVER overflow under the dock, even in a pathologically narrow
+        // window. @see adrs/0047-feed-default-width-docks-fill-gutters.md
         style={
           band
             ? {
                 maxWidth: band.maxWidth,
-                minWidth: FEED_BAND.min,
                 marginLeft: band.marginLeft,
                 marginRight: band.marginRight,
                 height: '100%',

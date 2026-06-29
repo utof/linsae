@@ -20,7 +20,8 @@ import { ContentSearch } from './palette/ContentSearch'
 import { type Command, useCommandStore } from './palette/command-store'
 import { QuickSwitcher } from './palette/QuickSwitcher'
 import { DockHost } from './panes/DockHost'
-import { dockWidthFor, useDockStore } from './panes/dockStore'
+import { maxDockWidth } from './panes/dock-widths'
+import { dockWidthFor, paneKind, useDockStore } from './panes/dockStore'
 import { ShelfContext } from './panes/ShelfPane'
 import { useExcerptStore } from './pdf/excerptState'
 import { useOpenPdf, usePdfOpenId } from './pdf/usePdfOpenId'
@@ -123,12 +124,14 @@ export function App() {
   // backlinks toggle pressed-state (B2). Since v0.6.3 backlinks is a first-class
   // right-dock pane (no transient overlay — ADR 0047 supersedes 0046's dual surface).
   const backlinksDockOpen = useDockStore((s) => s.right.openPaneIds.includes('backlinks'))
-  // Open dock widths (0 when a side is closed) + measured body-row width drive the
-  // "Model A" feed band (ADR 0047): the feed stays centered in the window while
-  // docks fill the side gutters, shrinking only once a dock is widened past its
-  // gutter. @see src/renderer/src/feed/feedBand.ts
-  const leftDockW = useDockStore((s) => (s.left.activeId ? dockWidthFor(s, s.left.activeId) : 0))
-  const rightDockW = useDockStore((s) => (s.right.activeId ? dockWidthFor(s, s.right.activeId) : 0))
+  // Per-side dock geometry inputs (ADR 0047). App is the geometry owner: it measures
+  // the window (bodyWidth) and reads each side's active pane + stored width, then
+  // derives the window-capped effective widths (B14) below — driving BOTH the feed
+  // band and the rendered dock widths from the same numbers so they can't disagree.
+  const leftActiveId = useDockStore((s) => s.left.activeId)
+  const rightActiveId = useDockStore((s) => s.right.activeId)
+  const leftStoredW = useDockStore((s) => (s.left.activeId ? dockWidthFor(s, 'left') : 0))
+  const rightStoredW = useDockStore((s) => (s.right.activeId ? dockWidthFor(s, 'right') : 0))
   const bodyRowRef = useRef<HTMLDivElement | null>(null)
   const [bodyWidth, setBodyWidth] = useState(0)
   // Recent-popover open state lives in App so the status-bar trigger and (Task
@@ -778,11 +781,33 @@ export function App() {
   // own (identical) values locally. @see docs/specs/v0.6.2-dock-shell.md §3
   const backlinksContextValue = useMemo(() => ({ focusedId, onJump: setFocusedId }), [focusedId])
 
+  // Dock geometry (B14 / ADR 0047). Per side: `max` is the window-aware resize cap
+  // (so a drag can't push the feed below its min or overlap it — capping each side
+  // against the OTHER side's width keeps the result consistent for any pane/dock
+  // count), and `eff` is the effective render width = min(stored, max), which also
+  // re-caps a previously-stored width when the window shrinks. Before measurement
+  // (bodyWidth ≤ 0) capping is skipped so the dock renders at its stored width with
+  // no flash. The SAME eff widths feed both the dock render and the feed band, so
+  // the dock can never overlap the feed at any width.
+  const dockGeom = useMemo(() => {
+    const resolve = (activeId: string | null, stored: number, otherStored: number) => {
+      if (!activeId) return { eff: 0, max: 0 }
+      if (bodyWidth <= 0) return { eff: stored, max: stored }
+      const max = maxDockWidth(paneKind(activeId), otherStored, bodyWidth)
+      return { eff: Math.min(stored, max), max }
+    }
+    return {
+      left: resolve(leftActiveId, leftStoredW, rightStoredW),
+      right: resolve(rightActiveId, rightStoredW, leftStoredW),
+    }
+  }, [leftActiveId, rightActiveId, leftStoredW, rightStoredW, bodyWidth])
+
   // "Model A" feed band (ADR 0047): null while no dock is open (feed uses its
-  // default centered band) or before the body width is measured.
+  // default centered band) or before the body width is measured. Fed the EFFECTIVE
+  // (capped) dock widths so it agrees with what the docks actually render.
   const feedBand = useMemo(
-    () => computeFeedBand(bodyWidth, leftDockW, rightDockW),
-    [bodyWidth, leftDockW, rightDockW],
+    () => computeFeedBand(bodyWidth, dockGeom.left.eff, dockGeom.right.eff),
+    [bodyWidth, dockGeom],
   )
 
   // B4 — feed→canvas selection carry-over. When a note is focused in the feed and
@@ -855,7 +880,12 @@ export function App() {
                 {/* Left dock (spec §2) — window chrome, sits LEFT of <main> and
                 coexists with both views. DockHost self-hides when its side is
                 empty (the store owns open/active/width). */}
-                <DockHost side="left" onPaneClose={handlePaneClose} />
+                <DockHost
+                  side="left"
+                  onPaneClose={handlePaneClose}
+                  width={dockGeom.left.eff}
+                  maxWidth={dockGeom.left.max}
+                />
                 <main
                   style={{
                     display: 'flex',
@@ -1052,7 +1082,12 @@ export function App() {
                 both close via handlePaneClose (I1 clears focus for backlinks). The
                 dock is view-independent chrome, so its close × is reachable from
                 the canvas view too (B5). */}
-                <DockHost side="right" onPaneClose={handlePaneClose} />
+                <DockHost
+                  side="right"
+                  onPaneClose={handlePaneClose}
+                  width={dockGeom.right.eff}
+                  maxWidth={dockGeom.right.max}
+                />
               </>
             )}
           </div>
