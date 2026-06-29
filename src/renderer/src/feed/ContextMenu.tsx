@@ -39,17 +39,26 @@ const mnemonicUnderline: React.CSSProperties = { textUnderlineOffset: 2 }
  * Why split on the real character (not always index 0): some labels don't
  * start with their mnemonic (e.g. "Select up to this note" → `u`), so the
  * underline must land on the actual letter the shortcut fires on.
+ *
+ * Why the single wrapping `<span>` (not a bare fragment): the menu button is a
+ * `display:flex` row with `gap:8` (icon ↔ label spacing). A fragment leaves the
+ * before-text, the `<u>`, and the after-text as separate DIRECT children of the
+ * button, so each becomes its own flex item and the 8px row-gap falls *between
+ * the mnemonic letter and the rest of the word* — "E dit" instead of "E̲dit".
+ * Wrapping the split in one inline span makes the whole label a single flex item;
+ * its parts then flow inline with no inter-letter gap, while the icon ↔ label gap
+ * is preserved (it now sits between the icon and the span).
  */
 function renderMnemonicLabel(label: string, letter: string | undefined): ReactNode {
   if (!letter) return label
   const i = label.toLowerCase().indexOf(letter.toLowerCase())
   if (i === -1) return label
   return (
-    <>
+    <span>
       {label.slice(0, i)}
       <u style={mnemonicUnderline}>{label.slice(i, i + 1)}</u>
       {label.slice(i + 1)}
-    </>
+    </span>
   )
 }
 

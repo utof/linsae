@@ -793,6 +793,36 @@ describe('NoteBubble canvas ▦ traces (§4/§9)', () => {
     expect(screen.queryByRole('menuitem', { name: 'on canvas' })).not.toBeInTheDocument()
   })
 
+  // B11 regression guard: the hover toolbar must expose the FULL action set, not
+  // collapse to a lone trash icon. happy-dom has no layout, so this asserts the
+  // markup renders every button; the toolbar's visual non-clipping across dock
+  // configurations is verified out-of-band with a real-layout Electron probe.
+  it('hover toolbar exposes the full action set (shelf/edit/copy/delete), not just delete (B11)', () => {
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        placed={false}
+        onShelf={vi.fn()}
+        onPlaceOnCanvas={vi.fn()}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.mouseEnter(bubble)
+    expect(screen.getByRole('button', { name: 'add to shelf' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'edit' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'copy link' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'delete' })).toBeInTheDocument()
+  })
+
   it('placed bubble shows the ▦ jump chip + the "on canvas" jump menu verb', () => {
     const onJumpToCard = vi.fn()
     const { container } = render(
