@@ -857,9 +857,10 @@ export function App() {
           {/* Body row: [left dock][center stage][right dock] (ADR 0045). bodyRowRef
          feeds the "Model A" feed-band measurement (ADR 0047) — its width is the
          window width the feed centers within while docks fill the side gutters.
-         When threadNoteId is non-null, ThreadView replaces the feed+composer
-         entirely (they are mutually exclusive UI modes); key={threadNoteId} forces
-         a remount when switching threads so the player singleton and duration
+         Both DockHosts are ALWAYS mounted (v0.6.4 B1); the thread is a branch
+         INSIDE <main>, peer to canvas/feed, so the docked PDF reader / YouTube
+         player is never torn down on thread open. key={threadNoteId} on ThreadView
+         forces a remount when switching threads so the player singleton and duration
          write-back state reset per video. */}
           <div
             ref={bodyRowRef}
@@ -870,77 +871,70 @@ export function App() {
               position: 'relative',
             }}
           >
-            {threadNoteId ? (
-              <ThreadView
-                key={threadNoteId}
-                noteId={threadNoteId}
-                onClose={() => setThreadNoteId(null)}
+            <>
+              {/* Left dock — always mounted (v0.6.4 B1): thread is a sub-state of
+              <main>, so the dock coexists with all center stages (canvas/thread/feed).
+              DockHost self-hides when its side is empty (store owns open/active/width). */}
+              <DockHost
+                side="left"
+                onPaneClose={handlePaneClose}
+                width={dockGeom.left.eff}
+                maxWidth={dockGeom.left.max}
               />
-            ) : (
-              <>
-                {/* Left dock (spec §2) — window chrome, sits LEFT of <main> and
-                coexists with both views. DockHost self-hides when its side is
-                empty (the store owns open/active/width). */}
-                <DockHost
-                  side="left"
-                  onPaneClose={handlePaneClose}
-                  width={dockGeom.left.eff}
-                  maxWidth={dockGeom.left.max}
-                />
-                <main
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    flex: 1,
-                    minWidth: 0,
-                    minHeight: 0,
-                  }}
-                >
-                  {skipped > 0 && !skipBannerDismissed && (
-                    <div
+              <main
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  flex: 1,
+                  minWidth: 0,
+                  minHeight: 0,
+                }}
+              >
+                {skipped > 0 && !skipBannerDismissed && (
+                  <div
+                    style={{
+                      padding: '8px 16px',
+                      background: '#FDECEC',
+                      borderBottom: '1px solid #FAEAC2',
+                      fontSize: 13,
+                      color: 'var(--fg-1)',
+                      display: 'flex',
+                      gap: 12,
+                      alignItems: 'center',
+                    }}
+                  >
+                    <span>{skipped} notes had unreadable frontmatter and were skipped.</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void api.system.openLogsFolder()
+                      }}
                       style={{
-                        padding: '8px 16px',
-                        background: '#FDECEC',
-                        borderBottom: '1px solid #FAEAC2',
-                        fontSize: 13,
-                        color: 'var(--fg-1)',
-                        display: 'flex',
-                        gap: 12,
-                        alignItems: 'center',
+                        border: 0,
+                        background: 'transparent',
+                        color: 'var(--accent)',
+                        cursor: 'pointer',
+                        textDecoration: 'underline',
                       }}
                     >
-                      <span>{skipped} notes had unreadable frontmatter and were skipped.</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void api.system.openLogsFolder()
-                        }}
-                        style={{
-                          border: 0,
-                          background: 'transparent',
-                          color: 'var(--accent)',
-                          cursor: 'pointer',
-                          textDecoration: 'underline',
-                        }}
-                      >
-                        view log.
-                      </button>
-                      <div style={{ flex: 1 }} />
-                      <button
-                        type="button"
-                        onClick={() => setSkipBannerDismissed(true)}
-                        style={{
-                          border: 0,
-                          background: 'transparent',
-                          cursor: 'pointer',
-                          color: 'var(--fg-2)',
-                        }}
-                      >
-                        dismiss
-                      </button>
-                    </div>
-                  )}
-                  {/* §6 stage slide: feed exits left / canvas enters right→left. Only
+                      view log.
+                    </button>
+                    <div style={{ flex: 1 }} />
+                    <button
+                      type="button"
+                      onClick={() => setSkipBannerDismissed(true)}
+                      style={{
+                        border: 0,
+                        background: 'transparent',
+                        cursor: 'pointer',
+                        color: 'var(--fg-2)',
+                      }}
+                    >
+                      dismiss
+                    </button>
+                  </div>
+                )}
+                {/* §6 stage slide: feed exits left / canvas enters right→left. Only
                   the two OUTER stage containers' x-transform animates — the feed's
                   virtualized rows are untouched (ADR 0019 guardrail: no
                   layout/layoutId projection inside the feed). `mode="wait"` keeps
@@ -948,173 +942,193 @@ export function App() {
                   don't both run), `initial={false}` skips the first-paint slide.
                   The two wrappers fill <main>'s flex area with overflow hidden so
                   the off-screen slide never shows a scrollbar. */}
-                  <AnimatePresence mode="wait" initial={false}>
-                    {viewMode === 'canvas' ? (
-                      <motion.div
-                        key="canvas"
-                        initial={{ x: '100%' }}
-                        animate={{ x: 0 }}
-                        exit={{ x: '-100%' }}
-                        transition={slideTransition}
-                        style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          flex: 1,
-                          minHeight: 0,
-                          overflow: 'hidden',
-                        }}
-                      >
-                        <CanvasStage
+                <AnimatePresence mode="wait" initial={false}>
+                  {viewMode === 'canvas' ? (
+                    <motion.div
+                      key="canvas"
+                      initial={{ x: '100%' }}
+                      animate={{ x: 0 }}
+                      exit={{ x: '-100%' }}
+                      transition={slideTransition}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        flex: 1,
+                        minHeight: 0,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <CanvasStage
+                        onWikilinkClick={onWikilinkClick}
+                        resolveSlug={resolveSlug}
+                        selectNoteId={canvasSelectId}
+                        placing={placing}
+                        onPlacingDone={onPlacingDone}
+                        onCameraChange={handleCameraChange}
+                        fitSignal={fitSignal}
+                        resetSignal={resetSignal}
+                        jumpTo={jumpTo}
+                      />
+                    </motion.div>
+                  ) : threadNoteId ? (
+                    /* Thread is a feed sub-state: canvas wins over thread;
+                       toggling canvas while a thread is open shows the canvas,
+                       toggling back reveals the thread again (v0.6.4 B1). */
+                    <motion.div
+                      key="thread"
+                      initial={{ x: '100%' }}
+                      animate={{ x: 0 }}
+                      exit={{ x: '-100%' }}
+                      transition={slideTransition}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        flex: 1,
+                        minHeight: 0,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <ThreadView
+                        key={threadNoteId}
+                        noteId={threadNoteId}
+                        onClose={() => setThreadNoteId(null)}
+                      />
+                    </motion.div>
+                  ) : (
+                    <motion.div
+                      key="feed"
+                      initial={{ x: '100%' }}
+                      animate={{ x: 0 }}
+                      exit={{ x: '-100%' }}
+                      transition={slideTransition}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        flex: 1,
+                        minHeight: 0,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      {notes.length === 0 ? (
+                        <div
+                          style={{
+                            flex: 1,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: 'var(--fg-3)',
+                            fontFamily: 'var(--font-sans)',
+                            fontSize: 14,
+                          }}
+                        >
+                          nothing yet. start anywhere.
+                        </div>
+                      ) : (
+                        <Feed
+                          notes={notes}
+                          scrollerRef={feedScrollerRef}
+                          sendInFlight={sendInFlight}
+                          band={feedBand}
+                          focusedId={focusedId}
+                          // Toggle behaviour: clicking an unfocused bubble focuses it (opens
+                          // BacklinksPane); clicking the already-focused bubble unfocuses it
+                          // (closes the pane). Wikilink / palette / pane-jump callbacks set
+                          // focus directly without toggling — those are navigation gestures.
+                          onFocus={(id) => setFocusedId((cur) => (cur === id ? null : id))}
                           onWikilinkClick={onWikilinkClick}
                           resolveSlug={resolveSlug}
-                          selectNoteId={canvasSelectId}
-                          placing={placing}
-                          onPlacingDone={onPlacingDone}
-                          onCameraChange={handleCameraChange}
-                          fitSignal={fitSignal}
-                          resetSignal={resetSignal}
-                          jumpTo={jumpTo}
+                          onEdit={setEditingNoteId}
+                          onDelete={(id) => {
+                            deleteMut.mutate(id)
+                            if (focusedId === id) setFocusedId(null)
+                          }}
+                          onCopyLink={(id) => {
+                            void navigator.clipboard.writeText(`linsae://note/${id}`)
+                          }}
+                          onOpenThread={openThread}
+                          // Canvas traces + verbs (spec §6/§9) — placedNoteIds drives the
+                          // ▦ chip; the three callbacks are threaded to NoteBubble by id.
+                          placedNoteIds={placedNoteIds}
+                          onShelf={onShelf}
+                          onPlaceOnCanvas={onPlaceOnCanvas}
+                          onJumpToCard={onJumpToCard}
                         />
-                      </motion.div>
-                    ) : (
-                      <motion.div
-                        key="feed"
-                        initial={{ x: '100%' }}
-                        animate={{ x: 0 }}
-                        exit={{ x: '-100%' }}
-                        transition={slideTransition}
-                        style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          flex: 1,
-                          minHeight: 0,
-                          overflow: 'hidden',
-                        }}
-                      >
-                        {notes.length === 0 ? (
-                          <div
-                            style={{
-                              flex: 1,
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              color: 'var(--fg-3)',
-                              fontFamily: 'var(--font-sans)',
-                              fontSize: 14,
-                            }}
-                          >
-                            nothing yet. start anywhere.
-                          </div>
-                        ) : (
-                          <Feed
-                            notes={notes}
-                            scrollerRef={feedScrollerRef}
-                            sendInFlight={sendInFlight}
-                            band={feedBand}
-                            focusedId={focusedId}
-                            // Toggle behaviour: clicking an unfocused bubble focuses it (opens
-                            // BacklinksPane); clicking the already-focused bubble unfocuses it
-                            // (closes the pane). Wikilink / palette / pane-jump callbacks set
-                            // focus directly without toggling — those are navigation gestures.
-                            onFocus={(id) => setFocusedId((cur) => (cur === id ? null : id))}
-                            onWikilinkClick={onWikilinkClick}
-                            resolveSlug={resolveSlug}
-                            onEdit={setEditingNoteId}
-                            onDelete={(id) => {
-                              deleteMut.mutate(id)
-                              if (focusedId === id) setFocusedId(null)
-                            }}
-                            onCopyLink={(id) => {
-                              void navigator.clipboard.writeText(`linsae://note/${id}`)
-                            }}
-                            onOpenThread={openThread}
-                            // Canvas traces + verbs (spec §6/§9) — placedNoteIds drives the
-                            // ▦ chip; the three callbacks are threaded to NoteBubble by id.
-                            placedNoteIds={placedNoteIds}
-                            onShelf={onShelf}
-                            onPlaceOnCanvas={onPlaceOnCanvas}
-                            onJumpToCard={onJumpToCard}
-                          />
-                        )}
-                        {editingNote ? (
-                          <Composer
-                            key={editingNote.id}
-                            band={feedBand}
-                            initialBody={editingNote.body}
-                            initialMode={editingNote.type}
-                            editMode
-                            error={submitError}
-                            onClearError={() => setSubmitError(null)}
-                            onSubmit={({ body, type }) =>
-                              updateMut.mutate({ id: editingNote.id, body, type })
-                            }
-                            onCancel={() => setEditingNoteId(null)}
-                          />
-                        ) : (
-                          // Composite key: `draftBody ?? 'fresh'` handles the dangling-wikilink
-                          // prefill remount; `successCount` ticks on successful create to
-                          // force a remount → fresh empty textarea. Failed creates leave the
-                          // key unchanged so the user's text + cursor survive.
-                          <Composer
-                            key={`${draftBody ?? 'fresh'}-${successCount}`}
-                            band={feedBand}
-                            initialBody={draftBody ?? ''}
-                            initialMode="claim"
-                            error={submitError}
-                            onClearError={() => setSubmitError(null)}
-                            // Flag the send so the Feed suppresses its auto-scroll while the new
-                            // note glides in (see `beginSend`), THEN create it.
-                            onSubmit={({ body, type }) => {
-                              beginSend()
-                              createMut.mutate({ body, type })
-                            }}
-                            onCancel={() => setDraftBody(null)}
-                            onPasteText={handlePasteText}
-                          />
-                        )}
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </main>
-                {/* Right dock (spec §2) — sits RIGHT of <main> so the layout reads
-                [left dock][center stage][right dock]. DockHost self-hides when
-                the right side is empty. Hosts the PDF pane (restore effect /
-                Open PDF…) AND the backlinks pane as peer tabs (B6 / ADR 0047);
-                both close via handlePaneClose (I1 clears focus for backlinks). The
-                dock is view-independent chrome, so its close × is reachable from
-                the canvas view too (B5). */}
-                <DockHost
-                  side="right"
-                  onPaneClose={handlePaneClose}
-                  width={dockGeom.right.eff}
-                  maxWidth={dockGeom.right.max}
-                />
-              </>
-            )}
+                      )}
+                      {editingNote ? (
+                        <Composer
+                          key={editingNote.id}
+                          band={feedBand}
+                          initialBody={editingNote.body}
+                          initialMode={editingNote.type}
+                          editMode
+                          error={submitError}
+                          onClearError={() => setSubmitError(null)}
+                          onSubmit={({ body, type }) =>
+                            updateMut.mutate({ id: editingNote.id, body, type })
+                          }
+                          onCancel={() => setEditingNoteId(null)}
+                        />
+                      ) : (
+                        // Composite key: `draftBody ?? 'fresh'` handles the dangling-wikilink
+                        // prefill remount; `successCount` ticks on successful create to
+                        // force a remount → fresh empty textarea. Failed creates leave the
+                        // key unchanged so the user's text + cursor survive.
+                        <Composer
+                          key={`${draftBody ?? 'fresh'}-${successCount}`}
+                          band={feedBand}
+                          initialBody={draftBody ?? ''}
+                          initialMode="claim"
+                          error={submitError}
+                          onClearError={() => setSubmitError(null)}
+                          // Flag the send so the Feed suppresses its auto-scroll while the new
+                          // note glides in (see `beginSend`), THEN create it.
+                          onSubmit={({ body, type }) => {
+                            beginSend()
+                            createMut.mutate({ body, type })
+                          }}
+                          onCancel={() => setDraftBody(null)}
+                          onPasteText={handlePasteText}
+                        />
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </main>
+              {/* Right dock — always mounted (v0.6.4 B1). Hosts the PDF pane
+              (restore effect / Open PDF…) AND the backlinks pane as peer tabs
+              (B6 / ADR 0047); both close via handlePaneClose (I1 clears focus
+              for backlinks). View-independent chrome: close × reachable from
+              canvas view too (B5). */}
+              <DockHost
+                side="right"
+                onPaneClose={handlePaneClose}
+                width={dockGeom.right.eff}
+                maxWidth={dockGeom.right.max}
+              />
+            </>
           </div>
           {/* App-wide footer (spec §14): the status strip plus the recent popover it
           anchors. position:relative so RecentPopover (position:absolute,
-          bottom:100%) floats UP from the strip. Hidden during a thread so the
-          full-screen ThreadView owns the chrome. */}
-          {!threadNoteId && (
-            <div style={{ position: 'relative', flexShrink: 0 }}>
-              <RecentPopover
-                open={recentOpen}
-                onClose={() => setRecentOpen(false)}
-                onJump={onJumpToCard}
-              />
-              <StatusBar
-                view={viewMode}
-                placedCount={placedNoteIds.size}
-                unplacedCount={unplacedCount}
-                zoomPct={zoomPct}
-                onOpenShelf={() => useDockStore.getState().openPane('shelf')}
-                onResetZoom={() => setResetSignal((s) => s + 1)}
-                onFit={() => setFitSignal((s) => s + 1)}
-                onToggleRecent={() => setRecentOpen((o) => !o)}
-              />
-            </div>
-          )}
+          bottom:100%) floats UP from the strip. Always mounted alongside the
+          thread — the thread owns its own back-bar title, the global StatusBar
+          stays (v0.6.4 B1). */}
+          <div style={{ position: 'relative', flexShrink: 0 }}>
+            <RecentPopover
+              open={recentOpen}
+              onClose={() => setRecentOpen(false)}
+              onJump={onJumpToCard}
+            />
+            <StatusBar
+              view={viewMode}
+              placedCount={placedNoteIds.size}
+              unplacedCount={unplacedCount}
+              zoomPct={zoomPct}
+              onOpenShelf={() => useDockStore.getState().openPane('shelf')}
+              onResetZoom={() => setResetSignal((s) => s + 1)}
+              onFit={() => setFitSignal((s) => s + 1)}
+              onToggleRecent={() => setRecentOpen((o) => !o)}
+            />
+          </div>
           <CommandMenu
             open={activePalette === 'command'}
             onClose={() => setActivePalette('none')}

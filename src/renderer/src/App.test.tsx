@@ -302,6 +302,51 @@ describe('App — paste YouTube URL → source note + oEmbed', () => {
 })
 
 describe('App — ThreadView nav (mutual exclusivity)', () => {
+  /**
+   * v0.6.4 B1 relocation invariant: opening a thread must NOT unmount the
+   * left or right DockHost. Before the fix, the thread replaced the whole
+   * body row (ThreadView vs <>DockHost+main+DockHost</>), so both docks
+   * were torn down every time a thread opened — closing the docked PDF
+   * reader / YouTube player. After the fix the thread is a branch INSIDE
+   * <main>, peer to canvas/feed, so docks are always mounted.
+   *
+   * pane choices: 'shelf' (left) and 'backlinks' (right) are opened
+   * directly via the store — no note focus needed. Because openThread()
+   * calls setFocusedId(null) and focusedId was already null, the I2
+   * effect (null focus → close backlinks) does NOT re-run, so backlinks
+   * stays open throughout the test.
+   *
+   * @see docs/plans/v0.6.4-notes-as-threads.md §Task 1.2
+   * @see src/renderer/src/panes/DockHost.tsx — data-testid="dock-{side}"
+   */
+  it('keeps both docks mounted when a thread opens (v0.6.4 relocation)', async () => {
+    mockApi.notes.list.mockResolvedValue([FEED_NOTE])
+    renderWithProviders(<App />)
+
+    // Open a pane on each side so DockHost renders (null-guard passes).
+    act(() => {
+      useDockStore.getState().openPane('shelf')
+    })
+    act(() => {
+      useDockStore.getState().openPane('backlinks')
+    })
+
+    // Wait for both docks to be in the DOM (state update has committed).
+    await waitFor(() => expect(screen.getByTestId('dock-left')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('dock-right')).toBeInTheDocument())
+
+    // Open a thread via the Feed sentinel button.
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId('open-thread-btn'))
+    })
+    await waitFor(() => expect(screen.getByTestId('thread-view-sentinel')).toBeInTheDocument())
+
+    // Both docks must still be mounted — the thread is a sub-state of
+    // <main>, not a body-level replacement of the dock row (v0.6.4 B1).
+    expect(screen.getByTestId('dock-left')).toBeInTheDocument()
+    expect(screen.getByTestId('dock-right')).toBeInTheDocument()
+  })
+
   it('(c) onOpenThread from Feed renders ThreadView and hides feed+composer', async () => {
     // Provide a note so Feed (not the "nothing yet" fallback) renders.
     mockApi.notes.list.mockResolvedValue([FEED_NOTE])

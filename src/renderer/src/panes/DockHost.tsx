@@ -42,15 +42,19 @@ export function DockHost({
   // its panes in the store but hides the dock and yields its width to the feed.
   if (!activeId || !shown) return null
   const width = widthProp ?? storeWidth
+  // data-testid lets component tests assert the dock stays mounted (v0.6.4 B1):
+  // `display:contents` makes the wrapper transparent to the parent flex layout.
   return (
-    <Dock
-      side={side}
-      openPaneIds={slice.openPaneIds}
-      activeId={activeId}
-      width={width}
-      onActivate={(id) => setActive(side, id)}
-      onClose={onPaneClose}
-      onWidthChange={(w) => setWidth(activeId, maxWidth != null ? Math.min(w, maxWidth) : w)}
-    />
+    <div data-testid={`dock-${side}`} style={{ display: 'contents' }}>
+      <Dock
+        side={side}
+        openPaneIds={slice.openPaneIds}
+        activeId={activeId}
+        width={width}
+        onActivate={(id) => setActive(side, id)}
+        onClose={onPaneClose}
+        onWidthChange={(w) => setWidth(activeId, maxWidth != null ? Math.min(w, maxWidth) : w)}
+      />
+    </div>
   )
 }
