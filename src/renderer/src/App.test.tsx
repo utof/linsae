@@ -551,6 +551,32 @@ describe('App — PDF excerpt → canvas placement bridge (B3)', () => {
     suffix: '',
   }
 
+  /** Source note that the PDF open created for pdfId='p1'. Slug 'd1' is the commentOn target. */
+  const PDF_SRC_NOTE: Note = {
+    id: 'note-pdf-src-p1',
+    slug: 'd1',
+    body: '',
+    type: 'source',
+    created_at: 900,
+    updated_at: 900,
+    deleted_at: null,
+    source_kind: 'pdf',
+    source_locator: { media: 'pdf', pdf_id: 'p1' },
+  }
+
+  /** The excerpt child note returned by api.notes.create for the claim. */
+  const EXCERPT_CHILD: Note = {
+    id: 'excerpt-1',
+    slug: 'excerpt-1',
+    body: 'quote',
+    type: 'claim',
+    created_at: 3000,
+    updated_at: 3000,
+    deleted_at: null,
+    source_kind: 'pdf',
+    source_locator: LOCATOR,
+  }
+
   beforeEach(() => {
     // Reset the excerpt store so state never leaks between tests.
     useExcerptStore.getState().clear()
@@ -571,6 +597,10 @@ describe('App — PDF excerpt → canvas placement bridge (B3)', () => {
    * @see docs/specs/v0.6-pdf-slim-slice.md §7
    */
   it('B3: selection alone does not create a note; arm() triggers exactly one create', async () => {
+    // findSourceByPdfId returns the PDF source note so create is called only once
+    // (for the excerpt child — not also for the fallback source creation).
+    mockApi.notes.findSourceByPdfId.mockResolvedValue(PDF_SRC_NOTE)
+    mockApi.notes.create.mockResolvedValue(EXCERPT_CHILD)
     renderWithProviders(<App />)
     // Wait for App to settle so the bridge useEffect is wired and armed.
     await screen.findByRole('textbox')
@@ -583,56 +613,135 @@ describe('App — PDF excerpt → canvas placement bridge (B3)', () => {
     await new Promise((r) => setTimeout(r, 50))
     expect(mockApi.notes.create).not.toHaveBeenCalled()
 
-    // B3 positive: arm() → bridge effect fires → create called exactly once.
+    // B3 positive: arm() → bridge effect fires → create called exactly once
+    // (findSourceByPdfId resolved so no fallback source-create call).
     await act(async () => {
       useExcerptStore.getState().arm()
     })
     await waitFor(() => {
       expect(mockApi.notes.create).toHaveBeenCalledOnce()
     })
+    // v0.6.4 B4: excerpt is type='claim' + commentOn the PDF source note slug,
+    // not type='source' (v0.6 behaviour). The comment-on edge wires it into the
+    // PDF's thread. @see docs/specs/v0.6.4-notes-as-threads.md §Task 4.1
     expect(mockApi.notes.create).toHaveBeenCalledWith({
       body: 'quote',
-      type: 'source',
+      type: 'claim',
       source_kind: 'pdf',
       source_locator: LOCATOR,
+      commentOn: 'd1',
     })
   })
 
   /**
-   * Bug fix (v0.6.3): arming the PDF "Excerpt → place on canvas" affordance must
-   * not merely create a note that lands in the feed — it must enter the one-shot
-   * ghost-placement flow, which requires the canvas to be the active view (the
-   * ghost only mounts inside CanvasStage, and AnimatePresence keeps a single
-   * stage mounted at a time). The app starts in feed view; after arm() the note
-   * is created AND the view switches to canvas so the draggable ghost is visible,
-   * matching Flow A's feed right-click "place on canvas…" verb.
+   * B4 (v0.6.4): arming the PDF excerpt from the feed view must post a
+   * comment-on child into the PDF's thread WITHOUT switching to the canvas.
+   * The forced setViewMode('canvas') from v0.6.3 is removed — excerpting
+   * from feed/thread must not yank the user to the canvas view.
    *
-   * @see src/renderer/src/App.tsx — excerpt bridge useEffect (setViewMode call)
-   * @see src/renderer/src/canvas/CanvasStage.tsx — one-shot ghost (`placing` prop)
+   * Assertions:
+   *   1. findSourceByPdfId called with the excerpt's pdfId.
+   *   2. notes.create called with type='claim' + commentOn=<source slug>.
+   *   3. View stays 'feed' (canvas toggle stays aria-pressed=false).
+   *
+   * @see src/renderer/src/App.tsx — excerpt bridge useEffect
+   * @see docs/specs/v0.6.4-notes-as-threads.md §Task 4.1
    */
-  it('arming the excerpt switches to the canvas view (so the placement ghost is visible)', async () => {
-    // create must RESOLVE a real note so the bridge can read note.id → setPlacing
-    // + setViewMode (the default vi.fn() resolves undefined and would throw).
-    mockApi.notes.create.mockResolvedValueOnce({
-      id: 'excerpt-1',
-      slug: 'excerpt-1',
-      body: 'quote',
-      type: 'source',
-      created_at: 3000,
-      updated_at: 3000,
-      deleted_at: null,
-      source_kind: 'pdf',
-      source_locator: LOCATOR,
-    })
+  it('B4: arming excerpt from feed creates comment-on child and does NOT switch to canvas', async () => {
+    mockApi.notes.findSourceByPdfId.mockResolvedValue(PDF_SRC_NOTE)
+    mockApi.notes.create.mockResolvedValue(EXCERPT_CHILD)
 
     renderWithProviders(<App />)
     await screen.findByRole('textbox')
 
-    // App boots in feed view: the WindowFrame segmented control reflects this.
+    // Confirm starting on feed view.
+    expect(screen.getByRole('button', { name: 'canvas view' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    )
+
+    // Arm the excerpt (simulates clicking "Excerpt →" in the PDF reader).
+    act(() => {
+      useExcerptStore.getState().set({ text: 'quote', locator: LOCATOR, pdfId: 'p1', page: 1 })
+    })
+    await act(async () => {
+      useExcerptStore.getState().arm()
+    })
+
+    // 1. findSourceByPdfId must resolve the PDF's source note.
+    await waitFor(() =>
+      expect(mockApi.notes.findSourceByPdfId).toHaveBeenCalledWith({ pdfId: 'p1' }),
+    )
+
+    // 2. notes.create called with the excerpt text as a comment-on child.
+    await waitFor(() =>
+      expect(mockApi.notes.create).toHaveBeenCalledWith({
+        body: 'quote',
+        type: 'claim',
+        source_kind: 'pdf',
+        source_locator: LOCATOR,
+        commentOn: 'd1',
+      }),
+    )
+
+    // 3. View must stay feed — no forced canvas switch (B4 spec change).
+    expect(screen.getByRole('button', { name: 'canvas view' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    )
+  })
+
+  /**
+   * B4 (v0.6.4): the bridge consumes the excerpt store synchronously (clearExcerpt
+   * before the await) to guarantee create-exactly-once. The cost: a failed create
+   * would silently drop the user's selection. The catch restores it so the text
+   * survives and the user can retry — without re-creating (restored with armed=false).
+   * @see src/renderer/src/App.tsx — excerpt bridge catch
+   */
+  it('B4: restores the excerpt when the create fails (no silent data-loss)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mockApi.notes.findSourceByPdfId.mockResolvedValue(PDF_SRC_NOTE)
+    mockApi.notes.create.mockRejectedValue(new Error('create failed'))
+
+    renderWithProviders(<App />)
+    await screen.findByRole('textbox')
+
+    const excerpt = { text: 'quote', locator: LOCATOR, pdfId: 'p1', page: 1 }
+    act(() => {
+      useExcerptStore.getState().set(excerpt)
+    })
+    await act(async () => {
+      useExcerptStore.getState().arm()
+    })
+
+    // The child create was attempted and threw...
+    await waitFor(() => expect(mockApi.notes.create).toHaveBeenCalled())
+    // ...and on its rejection the excerpt is restored (not lost), disarmed for retry.
+    await waitFor(() => expect(useExcerptStore.getState().pending).toEqual(excerpt))
+    expect(useExcerptStore.getState().armed).toBe(false)
+    errSpy.mockRestore()
+  })
+
+  /**
+   * v0.6.3 test updated for v0.6.4 (B4): the forced canvas switch is gone.
+   * Arming from feed stays on feed; the excerpt child lands in the PDF thread.
+   * The old test asserted aria-pressed='true' (canvas switch) — that assertion
+   * is now inverted to aria-pressed='false' (stays feed), proving the removal.
+   *
+   * @see src/renderer/src/App.tsx — excerpt bridge useEffect (setViewMode removed)
+   * @see docs/specs/v0.6.4-notes-as-threads.md §Task 4.1 (B4)
+   */
+  it('arming excerpt on feed stays on feed (no forced canvas switch — v0.6.4 B4)', async () => {
+    mockApi.notes.findSourceByPdfId.mockResolvedValue(PDF_SRC_NOTE)
+    mockApi.notes.create.mockResolvedValue(EXCERPT_CHILD)
+
+    renderWithProviders(<App />)
+    await screen.findByRole('textbox')
+
+    // App boots in feed view.
     const canvasToggle = screen.getByRole('button', { name: 'canvas view' })
     expect(canvasToggle).toHaveAttribute('aria-pressed', 'false')
 
-    // Set pending + arm → bridge creates the note, then enters placing + canvas.
     act(() => {
       useExcerptStore.getState().set({ text: 'quote', locator: LOCATOR, pdfId: 'p1', page: 1 })
     })
@@ -641,13 +750,11 @@ describe('App — PDF excerpt → canvas placement bridge (B3)', () => {
     })
     await waitFor(() => expect(mockApi.notes.create).toHaveBeenCalledOnce())
 
-    // The view must now be canvas (where the one-shot ghost can render) — NOT
-    // feed, where arming would have silently created a note with no rectangle.
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'canvas view' })).toHaveAttribute(
-        'aria-pressed',
-        'true',
-      ),
+    // The view must STAY feed (v0.6.4 B4 removes the forced canvas switch).
+    // The excerpt child lands in the PDF thread — no ghost placement needed.
+    expect(screen.getByRole('button', { name: 'canvas view' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
     )
   })
 
@@ -665,6 +772,9 @@ describe('App — PDF excerpt → canvas placement bridge (B3)', () => {
    * @see docs/specs/v0.6-pdf-slim-slice.md §7
    */
   it('B3: arm() invalidates note-titles and note-recent caches (switcher/recent freshness)', async () => {
+    // Mock findSourceByPdfId so create fires once (just the excerpt child).
+    mockApi.notes.findSourceByPdfId.mockResolvedValue(PDF_SRC_NOTE)
+    mockApi.notes.create.mockResolvedValue(EXCERPT_CHILD)
     renderWithProviders(<App />)
     await screen.findByRole('textbox')
 

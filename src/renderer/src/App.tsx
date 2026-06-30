@@ -236,54 +236,81 @@ export function App() {
     void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
   }
 
-  // ── PDF excerpt → canvas ghost-placement bridge (spec §7) ─────────────────
+  // ── PDF excerpt → thread-child bridge (spec §7, v0.6.4 B4) ──────────────
   // The right-dock PDF pane captures a text selection into excerptState; the
   // "Excerpt →" affordance flips `armed`. We watch `armed` (NOT `pending`) so a
-  // note is created + canvas placement armed ONLY on that explicit click —
-  // watching `pending` would persist a note on every selection and orphan one
-  // on re-selection (round-2 review B3). Mirrors the feed→canvas onPlaceOnCanvas
-  // precedent: resolve the note id first, set `placing`, THEN switch to the
-  // canvas so the ghost rectangle is actually visible. The PDF dock is
-  // view-independent chrome (spec §6: it is not a third viewMode), so a user can
-  // excerpt from the FEED view too — and without the switch the note was created
-  // but no ghost ever appeared (it would mount on the off-screen, unmounted
-  // canvas). This restores parity with Flow A's "place on canvas…" verb.
+  // note is created ONLY on that explicit click — watching `pending` would create
+  // on every selection (round-2 review B3). v0.6.4 change: the excerpt becomes
+  // a comment-on CHILD of the PDF's source note (so it appears in the PDF thread)
+  // with type='claim' instead of 'source'. The forced canvas switch is removed —
+  // ghost-placement is now CONDITIONAL on already being in canvas view. Excerpting
+  // from feed/thread drops the child into the PDF's thread without yanking to canvas.
   // @issue v0.6.3 PDF "place on canvas" created a note in the feed instead of a ghost
+  // @see docs/specs/v0.6.4-notes-as-threads.md §Task 4.1
   const pendingExcerpt = useExcerptStore((s) => s.pending)
   const armed = useExcerptStore((s) => s.armed)
   const clearExcerpt = useExcerptStore((s) => s.clear)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: invalidate recreates each render but is behaviorally stable (hardcoded keys, stable queryClient); adding it to deps would churn the bridge on every render
+  // biome-ignore lint/correctness/useExhaustiveDependencies: invalidate + clearExcerpt recreate / are stable zustand actions — adding them churns the bridge every render; queryClient is stable from useQueryClient
   useEffect(() => {
     if (!armed || !pendingExcerpt) return
-    let cancelled = false
+    // Snapshot both values and consume the excerpt store BEFORE any async work.
+    // Create-once guarantee: clearExcerpt() sets armed=false + pending=null so
+    // any viewMode-triggered re-run sees !armed → early-return without re-creating.
+    // viewMode is in deps so modeAtArm captures the correct view at arm-time.
+    const snapshot = pendingExcerpt
+    const modeAtArm = viewMode
+    // MUST stay before the await — moving it below reintroduces the double-create
+    // a viewMode-triggered re-run would otherwise cause (see create-once note above).
+    clearExcerpt()
     void (async () => {
       try {
-        const note = await api.notes.create(pendingExcerpt.text, 'source', {
+        // Resolve the PDF's source note (created on open in Task 3.3).
+        // Null-guard: if missing (doc opened before v0.6.4), create it first.
+        let src = await api.notes.findSourceByPdfId(snapshot.pdfId)
+        if (!src) {
+          src = await api.notes.create('', 'source', {
+            source_kind: 'pdf',
+            source_locator: { media: 'pdf', pdf_id: snapshot.pdfId },
+          })
+        }
+        // Create the excerpt as a comment-on child of the PDF source note.
+        // type='claim' (an excerpt is commentary, not a media source reference);
+        // commentOn wires it into the PDF's thread so it appears there
+        // without requiring a canvas switch (spec §7, v0.6.4 B4).
+        const note = await api.notes.create(snapshot.text, 'claim', {
           source_kind: 'pdf',
-          source_locator: pendingExcerpt.locator,
+          source_locator: snapshot.locator,
+          commentOn: src.slug,
         })
-        // The note exists in the DB at this point regardless of whether canvas
-        // placement proceeds; invalidate feed/switcher/recent now so the note
-        // appears in the feed, ⌘O title switcher, and ⌘J recent (spec §3
-        // invariant). Matches the invalidation every other create path calls.
+        // Invalidate feed + title-switcher + recent + the PDF source note's thread
+        // so the child appears immediately. Thread queryKey is ['thread', noteId]
+        // — see useThreadNotes.ts:92. Invalidate uses the source note's id.
         invalidate()
-        // A clear()/re-selection between arm and resolve flips the deps and runs
-        // this cleanup (cancelled=true), so a late create never sets a stale ghost.
-        if (cancelled) return
-        setPlacing({ noteId: note.id, title: noteTitle(note) })
-        // Switch to the canvas so the one-shot ghost mounts + is visible whether
-        // the user excerpted from feed or canvas view (AnimatePresence keeps only
-        // the active stage mounted — a feed-view excerpt would otherwise drop its
-        // ghost on the unmounted canvas). No-op when already on canvas.
-        setViewMode('canvas')
+        void queryClient.invalidateQueries({ queryKey: ['thread', src.id] })
+        // Conditional placement: ghost-place only when already on the canvas.
+        // Feed / thread view: child is in the PDF's thread — no ghost needed.
+        // Canvas view: also ghost-place so the user can drag-position it
+        //   (v0.6 place-on-canvas path survives — notes are live canvas refs).
+        if (modeAtArm === 'canvas') {
+          setPlacing({ noteId: note.id, title: noteTitle(note) })
+        }
+        // Non-canvas: excerpt already consumed by clearExcerpt() above; done.
+        // setViewMode('canvas') intentionally removed (v0.6.4 B4 spec change).
       } catch (err) {
         console.error('[App] excerpt note create failed', err)
+        // Restore the consumed excerpt so a failed create doesn't silently lose
+        // the user's selection. set() re-stores `pending` with armed:false, so the
+        // effect re-runs but early-returns (!armed) — no double-create. The user
+        // re-clicks "Excerpt →" to retry. (Without this, the sync clearExcerpt()
+        // above would drop the text on any IPC/DB failure — v0.6 kept it.)
+        useExcerptStore.getState().set(snapshot)
       }
     })()
-    return () => {
-      cancelled = true
-    }
-  }, [armed, pendingExcerpt])
+    // No cleanup needed: clearExcerpt() already consumed the excerpt store so any
+    // viewMode-triggered re-run sees !armed → early-return. Creates are
+    // unconditional (the note must land in the DB). React 18 safely ignores
+    // setState-after-unmount for the setPlacing call.
+  }, [armed, pendingExcerpt, viewMode])
   // Shared placement teardown: clears the canvas ghost AND the excerpt store.
   // Passed to CanvasStage (fires on canvas-click commit AND its capture-phase
   // esc) and reused by App's esc ladder for the focus-outside-canvas case.
