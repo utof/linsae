@@ -28,7 +28,7 @@ import {
   SettingsGetInputSchema,
   SettingsSetInputSchema,
 } from '../../shared/zod-schemas'
-import { backlinks, commentsForVideo } from '../db/queries/links'
+import { backlinks, commentsForNote } from '../db/queries/links'
 import { getNote, listNotes } from '../db/queries/notes'
 import { listTitles, recentNotes, recordAccess } from '../db/queries/recency'
 import { resolveWikilink } from '../db/queries/resolver'
@@ -112,7 +112,7 @@ export function registerNotesIpc(db: DB, nd: NotesDir): void {
   ipcMain.handle('links:commentsOf', (_e, input) => {
     const i = CommentsOfInputSchema.parse(input)
     const note = getNote(db, i.noteId)
-    return note ? commentsForVideo(db, note.slug) : []
+    return note ? commentsForNote(db, note.slug) : []
   })
   ipcMain.handle('links:resolve', (_e, input) => {
     const i = ResolveInputSchema.parse(input)
