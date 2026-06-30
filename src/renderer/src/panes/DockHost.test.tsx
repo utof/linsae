@@ -45,6 +45,30 @@ describe('DockHost', () => {
     fireEvent.pointerMove(window, { clientX: 520 }) // +20 → 300
     fireEvent.pointerMove(window, { clientX: 560 }) // +60 → 340 (second move MUST register)
     fireEvent.pointerUp(window)
-    expect(useDockStore.getState().widths.shelf).toBe(340)
+    // Width is now stored per SIDE (B15), not per pane.
+    expect(useDockStore.getState().widths.left).toBe(340)
+  })
+  it('renders null when its side is explicitly collapsed even with an active pane (B19)', () => {
+    useDockStore.getState().openPane('shelf')
+    useDockStore.getState().collapseSide('left')
+    const { container } = render(<DockHost side="left" onPaneClose={vi.fn()} />)
+    expect(container.firstChild).toBeNull()
+  })
+  it('the App-provided width prop overrides the store width for rendering (B14)', () => {
+    useDockStore.getState().openPane('shelf') // store width 280
+    const { container } = render(<DockHost side="left" onPaneClose={vi.fn()} width={150} />)
+    expect((container.querySelector('[data-dock="left"]') as HTMLElement).style.width).toBe('150px')
+  })
+  it('maxWidth hard-caps the resize before the store clamps to the kind band (B14)', () => {
+    useDockStore.getState().openPane('shelf') // left, utility
+    const { container } = render(
+      <DockHost side="left" onPaneClose={vi.fn()} width={280} maxWidth={300} />,
+    )
+    const handle = container.querySelector('[data-dock-resize]') as HTMLElement
+    fireEvent.pointerDown(handle, { clientX: 500 }) // startWidth 280
+    fireEvent.pointerMove(window, { clientX: 600 }) // +100 → 380, but capped at 300
+    fireEvent.pointerUp(window)
+    // Without the cap the utility clamp would allow 380; maxWidth pins it to 300.
+    expect(useDockStore.getState().widths.left).toBe(300)
   })
 })

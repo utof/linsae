@@ -5,13 +5,14 @@ import { useHotkeys } from 'react-hotkeys-hook'
 import { MANUAL_ARRANGEMENT_ID, ROOT_CANVAS_ID } from '../../shared/canvas'
 import type { Note, NoteType } from '../../shared/types'
 import { BacklinksContext } from './backlinks/BacklinksContext'
-import { BacklinksPane } from './backlinks/BacklinksPane'
 import { CanvasStage } from './canvas/CanvasStage'
+import { PlacementGhost } from './canvas/PlacementGhost'
 import { RecentPopover } from './canvas/RecentPopover'
 import { StatusBar } from './canvas/StatusBar'
 import { Composer } from './composer/Composer'
 import { setOverlay, toggleOverlay, useDevOverlay } from './dev/devOverlays'
 import { Feed } from './feed/Feed'
+import { computeFeedBand } from './feed/feedBand'
 import { api } from './lib/api'
 import { noteTitle } from './lib/note-title'
 import { parseYouTubeUrl } from './lib/parse-youtube-url'
@@ -20,7 +21,8 @@ import { ContentSearch } from './palette/ContentSearch'
 import { type Command, useCommandStore } from './palette/command-store'
 import { QuickSwitcher } from './palette/QuickSwitcher'
 import { DockHost } from './panes/DockHost'
-import { useDockStore } from './panes/dockStore'
+import { maxDockWidth } from './panes/dock-widths'
+import { dockWidthFor, isSideShown, paneKind, useDockStore } from './panes/dockStore'
 import { ShelfContext } from './panes/ShelfPane'
 import { useExcerptStore } from './pdf/excerptState'
 import { useOpenPdf, usePdfOpenId } from './pdf/usePdfOpenId'
@@ -116,12 +118,23 @@ export function App() {
   // verb; CanvasStage consumes it to show the ghost + banner, then calls
   // onPlacingDone on commit/cancel. Carries the title for the banner copy.
   const [placing, setPlacing] = useState<{ noteId: string; title: string } | null>(null)
-  // Left dock (shelf) open — derived from the dock store (spec §4). The store is
-  // the single source of truth for which panes are open per side.
-  const shelfOpen = useDockStore((s) => s.left.openPaneIds.includes('shelf'))
-  // Whether the deliberate backlinks dock pane is open — gates the transient
-  // overlay (suppression rule, spec §4 Decision 4): no double backlinks.
-  const backlinksDockOpen = useDockStore((s) => s.right.openPaneIds.includes('backlinks'))
+  // Whether each dock SIDE is shown (has an active pane AND is not explicitly
+  // collapsed — B19). Drives the WindowFrame side toggles' pressed-state and the
+  // geometry below (a collapsed/empty side contributes 0 width so the feed reclaims
+  // it). The top toggle collapses/restores the WHOLE side, not a single tab.
+  const leftShown = useDockStore((s) => isSideShown(s, 'left'))
+  const rightShown = useDockStore((s) => isSideShown(s, 'right'))
+  // Per-side dock geometry inputs (ADR 0047). App is the geometry owner: it measures
+  // the window (bodyWidth) and reads each shown side's active pane + stored width,
+  // then derives the window-capped effective widths (B14) below — driving BOTH the
+  // feed band and the rendered dock widths from the same numbers so they can't
+  // disagree. A hidden (collapsed/empty) side reads as no active pane → 0 width.
+  const leftActiveId = useDockStore((s) => (isSideShown(s, 'left') ? s.left.activeId : null))
+  const rightActiveId = useDockStore((s) => (isSideShown(s, 'right') ? s.right.activeId : null))
+  const leftStoredW = useDockStore((s) => (isSideShown(s, 'left') ? dockWidthFor(s, 'left') : 0))
+  const rightStoredW = useDockStore((s) => (isSideShown(s, 'right') ? dockWidthFor(s, 'right') : 0))
+  const bodyRowRef = useRef<HTMLDivElement | null>(null)
+  const [bodyWidth, setBodyWidth] = useState(0)
   // Recent-popover open state lives in App so the status-bar trigger and (Task
   // 11) ⌘J can both toggle it; rendered above the status bar (spec §14).
   const [recentOpen, setRecentOpen] = useState(false)
@@ -216,9 +229,13 @@ export function App() {
   // note is created + canvas placement armed ONLY on that explicit click —
   // watching `pending` would persist a note on every selection and orphan one
   // on re-selection (round-2 review B3). Mirrors the feed→canvas onPlaceOnCanvas
-  // precedent: resolve the note id first, then set `placing`. No view switch —
-  // the PDF dock coexists with the canvas (spec §6: it is not a third viewMode),
-  // so the user excerpts while already in canvas view.
+  // precedent: resolve the note id first, set `placing`, THEN switch to the
+  // canvas so the ghost rectangle is actually visible. The PDF dock is
+  // view-independent chrome (spec §6: it is not a third viewMode), so a user can
+  // excerpt from the FEED view too — and without the switch the note was created
+  // but no ghost ever appeared (it would mount on the off-screen, unmounted
+  // canvas). This restores parity with Flow A's "place on canvas…" verb.
+  // @issue v0.6.3 PDF "place on canvas" created a note in the feed instead of a ghost
   const pendingExcerpt = useExcerptStore((s) => s.pending)
   const armed = useExcerptStore((s) => s.armed)
   const clearExcerpt = useExcerptStore((s) => s.clear)
@@ -241,6 +258,11 @@ export function App() {
         // this cleanup (cancelled=true), so a late create never sets a stale ghost.
         if (cancelled) return
         setPlacing({ noteId: note.id, title: noteTitle(note) })
+        // Switch to the canvas so the one-shot ghost mounts + is visible whether
+        // the user excerpted from feed or canvas view (AnimatePresence keeps only
+        // the active stage mounted — a feed-view excerpt would otherwise drop its
+        // ghost on the unmounted canvas). No-op when already on canvas.
+        setViewMode('canvas')
       } catch (err) {
         console.error('[App] excerpt note create failed', err)
       }
@@ -378,14 +400,31 @@ export function App() {
     return () => store.unregister('backlinks.open')
   }, [focusedId])
 
-  // I2 (spec §4 Decision 4): a backlinks pane with no focused note is dead chrome —
-  // close it when focus clears. Idempotent with I1's close→clear-focus (the pane is
-  // already gone by the time this runs after a tab-close).
+  // Focus ↔ backlinks-pane coupling (B6 / ADR 0047). Focusing a note OPENS the
+  // backlinks dock pane (this folds in the retired transient overlay's "show on
+  // focus" behavior — Model A's gutter layout removed the shift that justified a
+  // separate overlay, so 0046's dual surface collapses to one dock pane). Clearing
+  // focus auto-closes it (I2: a backlinks pane with no subject is dead chrome).
+  // Idempotent with I1's close→clear-focus (handlePaneClose): after a tab/header
+  // close the pane is already gone, so the null-focus branch is a no-op — no loop.
   useEffect(() => {
-    if (focusedId == null && useDockStore.getState().right.openPaneIds.includes('backlinks')) {
-      useDockStore.getState().closePane('backlinks')
-    }
+    const dock = useDockStore.getState()
+    if (focusedId != null) dock.openPane('backlinks')
+    else if (dock.right.openPaneIds.includes('backlinks')) dock.closePane('backlinks')
   }, [focusedId])
+
+  // Body-row width for the "Model A" feed band (ADR 0047). The body row spans the
+  // full window width; combined with the open dock widths the feed centers in the
+  // window and shrinks only when a dock encroaches. happy-dom reports 0 (no layout)
+  // → computeFeedBand returns null → the feed uses its default centered band.
+  useEffect(() => {
+    const el = bodyRowRef.current
+    if (!el) return
+    setBodyWidth(el.getBoundingClientRect().width)
+    const ro = new ResizeObserver(() => setBodyWidth(el.getBoundingClientRect().width))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   // Remove the static boot splash (index.html #boot-splash) once the notes
   // query has settled. The splash paints on the first frame — before the JS
@@ -743,6 +782,43 @@ export function App() {
   // own (identical) values locally. @see docs/specs/v0.6.2-dock-shell.md §3
   const backlinksContextValue = useMemo(() => ({ focusedId, onJump: setFocusedId }), [focusedId])
 
+  // Dock geometry (B14 / ADR 0047). Per side: `max` is the window-aware resize cap
+  // (so a drag can't push the feed below its min or overlap it — capping each side
+  // against the OTHER side's width keeps the result consistent for any pane/dock
+  // count), and `eff` is the effective render width = min(stored, max), which also
+  // re-caps a previously-stored width when the window shrinks. Before measurement
+  // (bodyWidth ≤ 0) capping is skipped so the dock renders at its stored width with
+  // no flash. The SAME eff widths feed both the dock render and the feed band, so
+  // the dock can never overlap the feed at any width.
+  const dockGeom = useMemo(() => {
+    const resolve = (activeId: string | null, stored: number, otherStored: number) => {
+      if (!activeId) return { eff: 0, max: 0 }
+      if (bodyWidth <= 0) return { eff: stored, max: stored }
+      const max = maxDockWidth(paneKind(activeId), otherStored, bodyWidth)
+      return { eff: Math.min(stored, max), max }
+    }
+    return {
+      left: resolve(leftActiveId, leftStoredW, rightStoredW),
+      right: resolve(rightActiveId, rightStoredW, leftStoredW),
+    }
+  }, [leftActiveId, rightActiveId, leftStoredW, rightStoredW, bodyWidth])
+
+  // "Model A" feed band (ADR 0047): null while no dock is open (feed uses its
+  // default centered band) or before the body width is measured. Fed the EFFECTIVE
+  // (capped) dock widths so it agrees with what the docks actually render.
+  const feedBand = useMemo(
+    () => computeFeedBand(bodyWidth, dockGeom.left.eff, dockGeom.right.eff),
+    [bodyWidth, dockGeom],
+  )
+
+  // B4 — feed→canvas selection carry-over. When a note is focused in the feed and
+  // its card is placed on the canvas, hand its id to CanvasStage so it selects the
+  // card on the view switch. Gated on `placedNoteIds` so we never select a note
+  // that isn't on the canvas. One-directional (feed focus → canvas selection);
+  // CanvasStage reads it once at mount (it remounts on each feed→canvas swap).
+  // @see adrs/0047-feed-default-width-docks-fill-gutters.md
+  const canvasSelectId = focusedId && placedNoteIds.has(focusedId) ? focusedId : null
+
   // ADR-0019 guardrail: every animation respects prefers-reduced-motion. A
   // zero-duration transition keeps the AnimatePresence swap semantics (mount/
   // unmount on view change) but removes the slide motion. @see adrs/0019-motion.md
@@ -773,19 +849,20 @@ export function App() {
             onOpenSettings={() => setSettingsOpen(true)}
             view={viewMode}
             onViewChange={setViewMode}
-            dockOpen={shelfOpen}
-            onToggleDock={() => useDockStore.getState().togglePane('shelf')}
+            dockOpen={leftShown}
+            onToggleDock={() => useDockStore.getState().toggleSide('left')}
+            backlinksOpen={rightShown}
+            onToggleBacklinks={() => useDockStore.getState().toggleSide('right')}
           />
-          {/* Body row: position:relative so BacklinksPane can absolutely overlay
-         it without pushing the feed left when the pane opens (the previous
-         flex-sibling layout shifted the entire feed; user feedback called
-         that "annoying and too much for such a small action"). The pane
-         covers the feed area only — WindowFrame stays visible above.
+          {/* Body row: [left dock][center stage][right dock] (ADR 0045). bodyRowRef
+         feeds the "Model A" feed-band measurement (ADR 0047) — its width is the
+         window width the feed centers within while docks fill the side gutters.
          When threadNoteId is non-null, ThreadView replaces the feed+composer
-         and BacklinksPane entirely (they are mutually exclusive UI modes).
-         key={threadNoteId} forces a remount when switching threads so the
-         player singleton and duration write-back state reset per video. */}
+         entirely (they are mutually exclusive UI modes); key={threadNoteId} forces
+         a remount when switching threads so the player singleton and duration
+         write-back state reset per video. */}
           <div
+            ref={bodyRowRef}
             style={{
               display: 'flex',
               flex: 1,
@@ -804,7 +881,12 @@ export function App() {
                 {/* Left dock (spec §2) — window chrome, sits LEFT of <main> and
                 coexists with both views. DockHost self-hides when its side is
                 empty (the store owns open/active/width). */}
-                <DockHost side="left" onPaneClose={handlePaneClose} />
+                <DockHost
+                  side="left"
+                  onPaneClose={handlePaneClose}
+                  width={dockGeom.left.eff}
+                  maxWidth={dockGeom.left.max}
+                />
                 <main
                   style={{
                     display: 'flex',
@@ -885,6 +967,7 @@ export function App() {
                         <CanvasStage
                           onWikilinkClick={onWikilinkClick}
                           resolveSlug={resolveSlug}
+                          selectNoteId={canvasSelectId}
                           placing={placing}
                           onPlacingDone={onPlacingDone}
                           onCameraChange={handleCameraChange}
@@ -927,6 +1010,7 @@ export function App() {
                             notes={notes}
                             scrollerRef={feedScrollerRef}
                             sendInFlight={sendInFlight}
+                            band={feedBand}
                             focusedId={focusedId}
                             // Toggle behaviour: clicking an unfocused bubble focuses it (opens
                             // BacklinksPane); clicking the already-focused bubble unfocuses it
@@ -955,6 +1039,7 @@ export function App() {
                         {editingNote ? (
                           <Composer
                             key={editingNote.id}
+                            band={feedBand}
                             initialBody={editingNote.body}
                             initialMode={editingNote.type}
                             editMode
@@ -972,6 +1057,7 @@ export function App() {
                           // key unchanged so the user's text + cursor survive.
                           <Composer
                             key={`${draftBody ?? 'fresh'}-${successCount}`}
+                            band={feedBand}
                             initialBody={draftBody ?? ''}
                             initialMode="claim"
                             error={submitError}
@@ -992,16 +1078,17 @@ export function App() {
                 </main>
                 {/* Right dock (spec §2) — sits RIGHT of <main> so the layout reads
                 [left dock][center stage][right dock]. DockHost self-hides when
-                the right side is empty; the PDF pane opens via the restore effect
-                / Open PDF… and closes via handlePaneClose. */}
-                <DockHost side="right" onPaneClose={handlePaneClose} />
-                {focusedId && !backlinksDockOpen && (
-                  <BacklinksPane
-                    focusedNoteId={focusedId}
-                    onClose={() => setFocusedId(null)}
-                    onJump={setFocusedId}
-                  />
-                )}
+                the right side is empty. Hosts the PDF pane (restore effect /
+                Open PDF…) AND the backlinks pane as peer tabs (B6 / ADR 0047);
+                both close via handlePaneClose (I1 clears focus for backlinks). The
+                dock is view-independent chrome, so its close × is reachable from
+                the canvas view too (B5). */}
+                <DockHost
+                  side="right"
+                  onPaneClose={handlePaneClose}
+                  width={dockGeom.right.eff}
+                  maxWidth={dockGeom.right.max}
+                />
               </>
             )}
           </div>
@@ -1043,6 +1130,11 @@ export function App() {
             onJump={onSwitcherJump}
           />
           <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+          {/* B16: window-level placement ghost — follows the cursor over the whole
+              window (dock/PDF included) while a one-shot placement is active, so the
+              note "in hand" is always visible. The drop still commits only on the
+              canvas via CanvasStage's viewport click→placeAt path. */}
+          {placing && <PlacementGhost title={placing.title} />}
           {DEV_PLAYGROUND && revealOpen && RevealPlayground && (
             <Suspense fallback={null}>
               <RevealPlayground onClose={() => setOverlay('reveal', false)} />

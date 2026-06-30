@@ -444,6 +444,14 @@ export function NoteBubble({
             boxShadow: 'var(--shadow-1)',
           }}
         >
+          {/* Every icon button MUST set an explicit `color` (the lucide glyph paints
+             with `stroke: currentColor`). Without it a <button> falls back to the
+             UA-default text color, which is color-scheme-dependent: under a dark OS
+             theme — and the app never pins `color-scheme: light` — that default is
+             WHITE, so the glyph vanishes on this white pill. Only `delete` survived
+             (it alone set `color: inherit` → --fg-0), which is why the bar collapsed
+             to a lone trash icon for dark-theme users (B11). The systemic root cause
+             is that the app never declares `color-scheme: light` on :root. */}
           {/* "▦+" add-to-shelf affordance (§4) — only when unplaced; once placed
              the inline ▦ jump chip in the time row replaces it. */}
           {!placed && handleShelf && (
@@ -460,6 +468,7 @@ export function NoteBubble({
                 cursor: 'pointer',
                 padding: 4,
                 position: 'relative',
+                color: 'var(--fg-0)',
               }}
             >
               <LayoutGrid size={14} />
@@ -476,7 +485,13 @@ export function NoteBubble({
             title="edit"
             aria-label="edit"
             onClick={handleEdit}
-            style={{ border: 0, background: 'transparent', cursor: 'pointer', padding: 4 }}
+            style={{
+              border: 0,
+              background: 'transparent',
+              cursor: 'pointer',
+              padding: 4,
+              color: 'var(--fg-0)',
+            }}
           >
             <Pen size={14} />
           </button>
@@ -485,7 +500,13 @@ export function NoteBubble({
             title="copy link"
             aria-label="copy link"
             onClick={handleCopyLink}
-            style={{ border: 0, background: 'transparent', cursor: 'pointer', padding: 4 }}
+            style={{
+              border: 0,
+              background: 'transparent',
+              cursor: 'pointer',
+              padding: 4,
+              color: 'var(--fg-0)',
+            }}
           >
             <Link2 size={14} />
           </button>
@@ -499,7 +520,9 @@ export function NoteBubble({
               background: deleteArmed ? '#FDECEC' : 'transparent',
               cursor: 'pointer',
               padding: 4,
-              color: deleteArmed ? '#E5484D' : 'inherit',
+              // --fg-0 (not `inherit`) so it matches the other icon buttons and never
+              // resolves to the color-scheme-dependent UA default (B11).
+              color: deleteArmed ? '#E5484D' : 'var(--fg-0)',
             }}
           >
             <Trash2 size={14} />

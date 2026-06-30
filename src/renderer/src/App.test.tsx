@@ -554,6 +554,59 @@ describe('App — PDF excerpt → canvas placement bridge (B3)', () => {
   })
 
   /**
+   * Bug fix (v0.6.3): arming the PDF "Excerpt → place on canvas" affordance must
+   * not merely create a note that lands in the feed — it must enter the one-shot
+   * ghost-placement flow, which requires the canvas to be the active view (the
+   * ghost only mounts inside CanvasStage, and AnimatePresence keeps a single
+   * stage mounted at a time). The app starts in feed view; after arm() the note
+   * is created AND the view switches to canvas so the draggable ghost is visible,
+   * matching Flow A's feed right-click "place on canvas…" verb.
+   *
+   * @see src/renderer/src/App.tsx — excerpt bridge useEffect (setViewMode call)
+   * @see src/renderer/src/canvas/CanvasStage.tsx — one-shot ghost (`placing` prop)
+   */
+  it('arming the excerpt switches to the canvas view (so the placement ghost is visible)', async () => {
+    // create must RESOLVE a real note so the bridge can read note.id → setPlacing
+    // + setViewMode (the default vi.fn() resolves undefined and would throw).
+    mockApi.notes.create.mockResolvedValueOnce({
+      id: 'excerpt-1',
+      slug: 'excerpt-1',
+      body: 'quote',
+      type: 'source',
+      created_at: 3000,
+      updated_at: 3000,
+      deleted_at: null,
+      source_kind: 'pdf',
+      source_locator: LOCATOR,
+    })
+
+    renderWithProviders(<App />)
+    await screen.findByRole('textbox')
+
+    // App boots in feed view: the WindowFrame segmented control reflects this.
+    const canvasToggle = screen.getByRole('button', { name: 'canvas view' })
+    expect(canvasToggle).toHaveAttribute('aria-pressed', 'false')
+
+    // Set pending + arm → bridge creates the note, then enters placing + canvas.
+    act(() => {
+      useExcerptStore.getState().set({ text: 'quote', locator: LOCATOR, pdfId: 'p1', page: 1 })
+    })
+    await act(async () => {
+      useExcerptStore.getState().arm()
+    })
+    await waitFor(() => expect(mockApi.notes.create).toHaveBeenCalledOnce())
+
+    // The view must now be canvas (where the one-shot ghost can render) — NOT
+    // feed, where arming would have silently created a note with no rectangle.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'canvas view' })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      ),
+    )
+  })
+
+  /**
    * Cache-invalidation guard (spec §3 / blocker): arm() must invalidate the
    * ['note-titles'] and ['note-recent'] caches so the excerpted note immediately
    * appears in the ⌘O switcher, ⌘J recent, and the feed — not just on canvas.
@@ -740,66 +793,55 @@ describe('App — backlinks dock pane (spec §3,§4)', () => {
     await waitFor(() => expect(hasOpen()).toBe(false))
   })
 
-  it('opening the backlinks dock pane suppresses the overlay (one list in the DOM)', async () => {
+  it('focusing a note opens the backlinks dock pane (single surface, no overlay)', async () => {
     renderWithProviders(<App />)
     await focusNote('feed-note-1')
 
-    // Focus alone → the transient overlay is present.
-    expect(await screen.findByLabelText(/close pane/i)).toBeInTheDocument()
-
-    // Open the deliberate dock pane.
-    act(() => {
-      useDockStore.getState().openPane('backlinks')
-    })
-
-    // Overlay suppressed; only the dock pane (its quiet header close) remains.
-    await waitFor(() => expect(screen.queryByLabelText(/close pane/i)).toBeNull())
-    expect(screen.getByLabelText(/close backlinks/i)).toBeInTheDocument()
-    // Exactly one backlinks list body (the dock pane) — not two.
+    // Focus opens the dock pane directly (B6 / ADR 0047): the dock chrome's quiet
+    // header close is present; the retired overlay's "close pane" never appears.
+    await waitFor(() => expect(useDockStore.getState().right.openPaneIds).toContain('backlinks'))
+    expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
+    expect(screen.queryByLabelText(/close pane/i)).toBeNull()
+    // Exactly one backlinks list body (the dock pane) — never two surfaces.
     expect(screen.queryAllByText(/nothing links here yet/i)).toHaveLength(1)
   })
 
-  it('closing the dock pane clears focus and does NOT resurrect the overlay (I1)', async () => {
+  it('closing the dock pane clears focus and leaves no backlinks list (I1)', async () => {
     renderWithProviders(<App />)
     await focusNote('feed-note-1')
-    act(() => {
-      useDockStore.getState().openPane('backlinks')
-    })
     const closeBtn = await screen.findByLabelText(/close backlinks/i)
 
     await act(async () => {
       fireEvent.click(closeBtn)
     })
 
-    // Pane gone, focus cleared → overlay must NOT appear, no backlinks list anywhere.
+    // I1: close clears focus; the feed sentinel reflects the cleared focus and the
+    // pane does not resurrect (no list anywhere, pane removed from the store).
     await waitFor(() => expect(screen.queryByLabelText(/close backlinks/i)).toBeNull())
-    expect(screen.queryByLabelText(/close pane/i)).toBeNull()
     expect(useDockStore.getState().right.openPaneIds).not.toContain('backlinks')
+    expect(screen.getByTestId('feed-sentinel')).toHaveAttribute('data-focused-id', '')
     expect(screen.queryAllByText(/nothing links here yet/i)).toHaveLength(0)
   })
 
   it('clearing focus while the dock pane is open auto-closes the pane (I2)', async () => {
     renderWithProviders(<App />)
     await focusNote('feed-note-1')
-    act(() => {
-      useDockStore.getState().openPane('backlinks')
-    })
     await screen.findByLabelText(/close backlinks/i)
 
-    // Re-click the focused note → App toggles focus off → I2 effect closes the pane.
+    // Re-click the focused note → App toggles focus off → I2 closes the pane.
     await focusNote('feed-note-1')
 
     await waitFor(() =>
       expect(useDockStore.getState().right.openPaneIds).not.toContain('backlinks'),
     )
     expect(screen.queryByLabelText(/close backlinks/i)).toBeNull()
-    // Focus is clear, so the overlay must not appear either.
-    expect(screen.queryByLabelText(/close pane/i)).toBeNull()
   })
 
   it('the Open-backlinks command run() opens the dock pane (⌘K wiring)', async () => {
     renderWithProviders(<App />)
-    // Focus a note so the dedicated [focusedId] effect registers backlinks.open.
+    // Focus a note so the dedicated [focusedId] effect registers backlinks.open
+    // (focusing also opens the pane via the coupling); close it so run() is the
+    // thing that re-opens it, exercising the command's real closure in isolation.
     await focusNote('feed-note-1')
     await waitFor(() =>
       expect(
@@ -809,6 +851,12 @@ describe('App — backlinks dock pane (spec §3,§4)', () => {
           .some((c) => c.id === 'backlinks.open'),
       ).toBe(true),
     )
+    act(() => {
+      useDockStore.getState().closePane('backlinks')
+    })
+    await waitFor(() =>
+      expect(useDockStore.getState().right.openPaneIds).not.toContain('backlinks'),
+    )
 
     // Drive the command end-to-end: resolve it from the registry and invoke its
     // real run() closure (the ⌘K "Open backlinks" wiring), not openPane directly.
@@ -817,8 +865,72 @@ describe('App — backlinks dock pane (spec §3,§4)', () => {
     })
 
     await waitFor(() => expect(useDockStore.getState().right.openPaneIds).toContain('backlinks'))
-    // The pane mounted: its quiet header close is in the DOM, overlay suppressed.
     expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
-    expect(screen.queryByLabelText(/close pane/i)).toBeNull()
+  })
+
+  it('B2: the WindowFrame backlinks toggle opens the side independent of focus', async () => {
+    renderWithProviders(<App />)
+    // No note focused. The always-visible toggle opens the (fresh) right side anyway.
+    const toggle = await screen.findByRole('button', { name: /toggle backlinks/i })
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+
+    await act(async () => {
+      fireEvent.click(toggle)
+    })
+    await waitFor(() => expect(useDockStore.getState().right.openPaneIds).toContain('backlinks'))
+    // Pane stays open with no focus (I2 only fires on a focus→null transition, not
+    // when focus was already null), proving open-independent-of-focus.
+    expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /toggle backlinks/i })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+  })
+
+  it('B19: the side toggle COLLAPSES the whole right dock (remembering panes) and restores it', async () => {
+    renderWithProviders(<App />)
+    await focusNote('feed-note-1') // opens the right side (backlinks)
+    expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
+
+    // Top toggle → collapse the WHOLE side. The pane is REMEMBERED (still in
+    // openPaneIds) and focus is preserved — only the dock is hidden.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /toggle backlinks/i }))
+    })
+    await waitFor(() => expect(screen.queryByLabelText(/close backlinks/i)).toBeNull())
+    expect(useDockStore.getState().collapsed.right).toBe(true)
+    expect(useDockStore.getState().right.openPaneIds).toContain('backlinks') // remembered
+    expect(screen.getByRole('button', { name: /toggle backlinks/i })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    )
+
+    // Toggle again → restore exactly what was there.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /toggle backlinks/i }))
+    })
+    expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
+  })
+
+  it('B19: explicit collapse wins over auto-open for the same note; a DIFFERENT note re-opens', async () => {
+    mockApi.notes.list.mockResolvedValue([FEED_NOTE, { ...FEED_NOTE, id: 'feed-note-2' }])
+    renderWithProviders(<App />)
+    await focusNote('feed-note-1')
+    await screen.findByLabelText(/close backlinks/i)
+
+    // Collapse while feed-note-1 stays focused → the auto-open does NOT re-fire for
+    // the same focus (the [focusedId] effect only runs on a focus change).
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /toggle backlinks/i }))
+    })
+    await waitFor(() => expect(screen.queryByLabelText(/close backlinks/i)).toBeNull())
+    expect(useDockStore.getState().collapsed.right).toBe(true)
+    // Focus is preserved (collapse is not a close): the side is hidden despite a
+    // focused note — proving the collapse suppresses auto-open for that note.
+    expect(screen.getByTestId('feed-sentinel')).toHaveAttribute('data-focused-id', 'feed-note-1')
+
+    // Focusing a DIFFERENT note re-opens the side (openPane clears the collapse).
+    await focusNote('feed-note-2')
+    expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
   })
 })

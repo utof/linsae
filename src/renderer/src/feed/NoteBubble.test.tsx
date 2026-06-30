@@ -793,6 +793,68 @@ describe('NoteBubble canvas ▦ traces (§4/§9)', () => {
     expect(screen.queryByRole('menuitem', { name: 'on canvas' })).not.toBeInTheDocument()
   })
 
+  // B11 guard #1: the hover toolbar must expose the FULL action set in the DOM.
+  it('hover toolbar exposes the full action set (shelf/edit/copy/delete), not just delete (B11)', () => {
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        placed={false}
+        onShelf={vi.fn()}
+        onPlaceOnCanvas={vi.fn()}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.mouseEnter(bubble)
+    expect(screen.getByRole('button', { name: 'add to shelf' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'edit' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'copy link' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'delete' })).toBeInTheDocument()
+  })
+
+  // B11 guard #2 (the real bug): each icon button MUST pin an explicit `color`.
+  // The lucide glyph paints with `stroke: currentColor`; a <button> with no color
+  // falls back to the UA-default text color, which is color-scheme-dependent —
+  // under a dark OS theme (the app never pins `color-scheme: light`) that default
+  // is WHITE, so the glyph vanished on the white pill and the bar collapsed to a
+  // lone trash icon (which alone set a color). happy-dom can't observe the UA
+  // default or paint, so we assert the structural invariant that prevents it: a
+  // non-empty, theme-independent color on every button. Falsification: drop the
+  // color from edit/copy/shelf → `style.color` is '' → this fails.
+  it('every hover toolbar icon button pins an explicit --fg-0 color (theme-independent) (B11)', () => {
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        placed={false}
+        onShelf={vi.fn()}
+        onPlaceOnCanvas={vi.fn()}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.mouseEnter(bubble)
+    for (const name of ['add to shelf', 'edit', 'copy link', 'delete']) {
+      const btn = screen.getByRole('button', { name })
+      expect(btn.style.color).toBe('var(--fg-0)')
+    }
+  })
+
   it('placed bubble shows the ▦ jump chip + the "on canvas" jump menu verb', () => {
     const onJumpToCard = vi.fn()
     const { container } = render(

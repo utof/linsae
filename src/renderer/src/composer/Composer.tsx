@@ -8,6 +8,7 @@ import {
   useState,
 } from 'react'
 import type { NoteType } from '../../../shared/types'
+import { FEED_BAND, type FeedBand } from '../feed/feedBand'
 import { SendButton } from './SendButton'
 
 /**
@@ -59,6 +60,16 @@ interface Props {
    * anchor for the planned composer→note morph (the endgame send animation).
    */
   cardRef?: Ref<HTMLDivElement>
+  /**
+   * "Model A" feed band (ADR 0047). The feed-view composer must move + shrink in
+   * lockstep with the feed column — feed and composer are one centered unit. App
+   * computes the band once (`computeFeedBand`) and threads the SAME value to both
+   * `<Feed>` and this composer so their centered band, max/min width, and
+   * shrink-on-dock-encroach are identical. `null`/undefined ⇒ the default centered
+   * `FEED_BAND.default` band with auto margins (byte-identical to the pre-dock
+   * layout, and the shape the canvas edit-composer keeps). @see src/renderer/src/feed/feedBand.ts
+   */
+  band?: FeedBand | null
 }
 
 /**
@@ -102,6 +113,7 @@ export function Composer({
   onClearError,
   onPasteText,
   cardRef,
+  band = null,
 }: Props) {
   const [body, setBody] = useState(initialBody)
   const [mode, setMode] = useState<NoteType>(initialMode)
@@ -187,11 +199,29 @@ export function Composer({
   return (
     <div
       style={{
-        padding: '12px 32px 24px',
+        // Surrender the symmetric 32px horizontal padding to the band's gutters
+        // when a dock is open (mirrors Feed's outer), so the composer's band sits
+        // at the SAME horizontal position as the feed column. Vertical padding is
+        // unchanged. No dock ⇒ the original `12px 32px 24px`.
+        padding: band ? '12px 0 24px' : '12px 32px 24px',
         background: 'var(--bg-0)',
       }}
     >
-      <div style={{ maxWidth: 720, margin: '0 auto' }}>
+      <div
+        // No CSS `min-width` (B14): the band shrinks to fit its container so the
+        // composer can never overflow under a dock; the dock's render width is
+        // window-capped to keep the column ≥ FEED_BAND.min in normal cases. Mirrors
+        // Feed. @see adrs/0047-feed-default-width-docks-fill-gutters.md
+        style={
+          band
+            ? {
+                maxWidth: band.maxWidth,
+                marginLeft: band.marginLeft,
+                marginRight: band.marginRight,
+              }
+            : { maxWidth: FEED_BAND.default, margin: '0 auto' }
+        }
+      >
         <div
           ref={cardRef}
           style={{

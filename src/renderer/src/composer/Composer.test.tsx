@@ -184,6 +184,38 @@ describe('Composer', () => {
     expect(ta.value).toBe('abc')
   })
 
+  // B13 / ADR 0047: the feed-view composer must share the feed's "Model A" band so
+  // they move + shrink as one unit. The band div is the textarea's grandparent
+  // (textarea → card → band → outer-padding).
+  const bandDiv = (ta: HTMLElement): HTMLElement => ta.parentElement?.parentElement as HTMLElement
+
+  it('B13: with no band, the composer keeps the default centered 720 band', () => {
+    render(<Composer onSubmit={() => {}} initialBody="" initialMode="claim" onCancel={() => {}} />)
+    const band = bandDiv(screen.getByRole('textbox'))
+    expect(band.style.maxWidth).toBe('720px')
+    expect(band.style.margin).toBe('0px auto') // centered in its column
+    // Outer keeps its symmetric 32px horizontal padding.
+    expect((band.parentElement as HTMLElement).style.paddingLeft).toBe('32px')
+  })
+
+  it('B13: with a band, the composer adopts the band maxWidth + margins (shares the feed band)', () => {
+    render(
+      <Composer
+        onSubmit={() => {}}
+        initialBody=""
+        initialMode="claim"
+        onCancel={() => {}}
+        band={{ maxWidth: 500, marginLeft: 0, marginRight: 0 }}
+      />,
+    )
+    const band = bandDiv(screen.getByRole('textbox'))
+    expect(band.style.maxWidth).toBe('500px')
+    expect(band.style.marginLeft).toBe('0px')
+    expect(band.style.marginRight).toBe('0px')
+    // Outer surrenders horizontal padding to the band's gutters.
+    expect((band.parentElement as HTMLElement).style.paddingLeft).toBe('0px')
+  })
+
   it('Esc in plain claim mode (no edit, no question) does NOT stopPropagation — lets global handler fire', () => {
     let bubbled = false
     render(

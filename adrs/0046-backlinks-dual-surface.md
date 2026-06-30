@@ -1,6 +1,12 @@
 # 0046 — Backlinks dual surface (transient focus-overlay + deliberate dock pane)
 
-Status: accepted (v0.6.2)
+Status: superseded by [0047](0047-feed-default-width-docks-fill-gutters.md) (v0.6.3)
+
+> **Superseded:** v0.6.3's Model A layout (ADR 0047) removes the dock-open layout
+> *shift* that was this ADR's sole justification for a separate transient overlay.
+> The overlay (`BacklinksPane.tsx`) is retired; backlinks is now a single right-dock
+> pane that opens on focus. The I1 (close → clear focus) and I2 (clear focus → close
+> pane) invariants described below are preserved through that dock-pane path.
 
 ## Context
 
