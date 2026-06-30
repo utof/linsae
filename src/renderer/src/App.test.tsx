@@ -800,6 +800,82 @@ describe('App — PDF boot-restore (C2)', () => {
   })
 })
 
+describe('App — onOpenPdf → source note create-or-resolve (B3)', () => {
+  /**
+   * B3 invariant: opening a PDF for the first time creates a type='source' note
+   * (so the PDF appears in the feed); re-opening the same PDF (sha dedup at
+   * pdf.import) must NOT create a duplicate note. The check is idempotent via
+   * findSourceByPdfId. Empty body → uuid slug (collision-proof). @see spec §Data model
+   * @see docs/specs/v0.6.4-notes-as-threads.md §Data model
+   */
+  const PDF_ID = 'pdf-b3-test'
+
+  const PDF_SOURCE_NOTE: Note = {
+    id: 'note-pdf-b3',
+    slug: 'note-pdf-b3',
+    body: '',
+    type: 'source',
+    created_at: 1000,
+    updated_at: 1000,
+    deleted_at: null,
+    source_kind: 'pdf',
+    source_locator: { media: 'pdf', pdf_id: PDF_ID },
+  }
+
+  beforeEach(() => {
+    mockApi.system.chooseFile.mockResolvedValue({ filePaths: ['/docs/test.pdf'] })
+    mockApi.pdf.import.mockResolvedValue({
+      pdfId: PDF_ID,
+      sha256: 'deadbeef',
+      title: null,
+      pageCount: null,
+    })
+    useCommandStore.getState().reset()
+  })
+
+  afterEach(() => {
+    useCommandStore.getState().reset()
+  })
+
+  it('(a) opening a new PDF calls notes.create once with the right source shape', async () => {
+    mockApi.notes.findSourceByPdfId.mockResolvedValueOnce(null)
+    mockApi.notes.create.mockResolvedValueOnce(PDF_SOURCE_NOTE)
+
+    renderWithProviders(<App />)
+    await waitFor(() => expect(useCommandStore.getState().commands().length).toBeGreaterThan(0))
+
+    await act(async () => {
+      useCommandStore.getState().registry.get('pdf.open')?.run?.()
+    })
+
+    await waitFor(() =>
+      expect(mockApi.notes.create).toHaveBeenCalledWith({
+        body: '',
+        type: 'source',
+        source_kind: 'pdf',
+        source_locator: { media: 'pdf', pdf_id: PDF_ID },
+      }),
+    )
+    expect(mockApi.notes.create).toHaveBeenCalledOnce()
+  })
+
+  it('(b) re-opening an existing PDF does NOT call notes.create', async () => {
+    mockApi.notes.findSourceByPdfId.mockResolvedValueOnce(PDF_SOURCE_NOTE)
+
+    renderWithProviders(<App />)
+    await waitFor(() => expect(useCommandStore.getState().commands().length).toBeGreaterThan(0))
+
+    await act(async () => {
+      useCommandStore.getState().registry.get('pdf.open')?.run?.()
+    })
+
+    await waitFor(() =>
+      expect(mockApi.notes.findSourceByPdfId).toHaveBeenCalledWith({ pdfId: PDF_ID }),
+    )
+    expect(mockApi.notes.create).not.toHaveBeenCalled()
+  })
+})
+
 describe('App — backlinks dock pane (spec §3,§4)', () => {
   beforeEach(() => {
     // Seed a focusable note so the Feed mock renders its focus trigger, and make

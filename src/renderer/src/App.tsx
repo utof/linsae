@@ -201,10 +201,23 @@ export function App() {
       if (!filePaths[0]) return
       const result = await api.pdf.import(filePaths[0])
       await openPdf(result.pdfId)
+      // Create-or-resolve the PDF source note so the PDF persists in the feed
+      // (idempotent — one note per pdf_id; empty body → uuid slug). @see spec §Data model
+      // @see docs/specs/v0.6.4-notes-as-threads.md §Data model
+      const existing = await api.notes.findSourceByPdfId(result.pdfId)
+      if (!existing) {
+        await api.notes.create('', 'source', {
+          source_kind: 'pdf',
+          source_locator: { media: 'pdf', pdf_id: result.pdfId },
+        })
+        void queryClient.invalidateQueries({ queryKey: ['notes'] })
+        void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
+        void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
+      }
     } catch (err) {
       console.error('[App] Open PDF failed', err)
     }
-  }, [openPdf])
+  }, [openPdf, queryClient])
 
   // Widen the pinned-data refetch (spec §3): saves must converge feed↔canvas,
   // and link edits must redraw canvas edges. Invalidates the feed list, every
