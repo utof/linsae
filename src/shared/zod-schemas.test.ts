@@ -8,6 +8,7 @@ import {
   NotesCreateInputSchema,
   NotesUpdateInputSchema,
   SaveOverlayInputSchema,
+  SourceLocatorSchema,
   VideoSourcesGetInputSchema,
   VideoSourcesUpsertInputSchema,
 } from './zod-schemas'
@@ -192,5 +193,35 @@ describe('NotesUpdateInputSchema — empty-body rule', () => {
   it('accepts a non-empty body without source_kind', () => {
     const result = NotesUpdateInputSchema.parse({ id: 'n1', body: 'x', type: 'claim' })
     expect(result.body).toBe('x')
+  })
+})
+
+describe('SourceLocatorSchema — PdfLocator widening (B3)', () => {
+  it('accepts a document-level pdf locator (no page/rect/quote)', () => {
+    expect(SourceLocatorSchema.parse({ media: 'pdf', pdf_id: 'p1' })).toMatchObject({
+      media: 'pdf',
+      pdf_id: 'p1',
+    })
+  })
+  it('still accepts a full excerpt locator and routes pdf vs youtube', () => {
+    expect(
+      SourceLocatorSchema.parse({
+        media: 'pdf',
+        pdf_id: 'p1',
+        page: 42,
+        rect: [0, 0, 1, 1],
+        quote: 'q',
+        prefix: '',
+        suffix: '',
+      }).media,
+    ).toBe('pdf')
+    expect(SourceLocatorSchema.parse({ media: 'youtube', video_id: 'abc' }).media).toBe('youtube')
+  })
+  it('accepts a partial locator (page present, other excerpt fields absent)', () => {
+    // The intermediate state the widening newly admits; the PdfFeedNote
+    // `page == null` discriminator (B3.4) hinges on page being distinguishable.
+    const parsed = SourceLocatorSchema.parse({ media: 'pdf', pdf_id: 'p1', page: 42 })
+    expect(parsed).toMatchObject({ media: 'pdf', pdf_id: 'p1', page: 42 })
+    expect((parsed as { quote?: string }).quote).toBeUndefined()
   })
 })

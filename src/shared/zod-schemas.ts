@@ -37,15 +37,21 @@ const YoutubeLocatorSchema = z.object({
   video_id: z.string().min(1),
   t: z.number().nonnegative().optional(),
 })
-/** The pdf branch of SourceLocatorSchema — W3C text+position selectors over a PDF page. */
+/**
+ * The pdf branch of SourceLocatorSchema — W3C text+position selectors over a PDF page.
+ * `page`/`rect`/`quote`/`prefix`/`suffix` are optional so a document-level anchor
+ * `{media:'pdf', pdf_id}` is valid (spec §Data model, v0.6.4 notes-as-threads widening).
+ * Accepted trade-off: a malformed excerpt locator could pass Zod — excerpts are
+ * constructed internally, never from raw user JSON (spec §Data model explicitly accepted).
+ */
 const PdfLocatorSchema = z.object({
   media: z.literal('pdf'),
   pdf_id: z.string().min(1),
-  page: z.number().int().positive(),
-  rect: z.tuple([z.number(), z.number(), z.number(), z.number()]),
-  quote: z.string(),
-  prefix: z.string(),
-  suffix: z.string(),
+  page: z.number().int().positive().optional(),
+  rect: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(),
+  quote: z.string().optional(),
+  prefix: z.string().optional(),
+  suffix: z.string().optional(),
   textStart: z.number().int().nonnegative().optional(),
   textEnd: z.number().int().nonnegative().optional(),
 })
