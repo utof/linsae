@@ -644,6 +644,49 @@ describe('NoteBubble', () => {
     expect(screen.queryByRole('button', { name: /open video notes/i })).not.toBeInTheDocument()
   })
 
+  it('plain note exposes an open-thread affordance on hover', () => {
+    const onOpenThread = vi.fn()
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        onOpenThread={onOpenThread}
+        focused={false}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.mouseEnter(bubble)
+    fireEvent.click(screen.getByRole('button', { name: /open thread/i }))
+    expect(onOpenThread).toHaveBeenCalledWith(baseNote.id)
+  })
+
+  it('omits the open-thread affordance when onOpenThread is not supplied', () => {
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.mouseEnter(bubble)
+    expect(screen.queryByRole('button', { name: /open thread/i })).not.toBeInTheDocument()
+  })
+
   it('youtube comment-note (type:claim + source_locator.t) renders as a normal bubble, NOT a video card', () => {
     // A comment-note posted by ⌘⇧C has type:'claim', source_kind:'youtube',
     // and source_locator with a timestamp (t). Before the isSource fix these

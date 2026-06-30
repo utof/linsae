@@ -1,4 +1,4 @@
-import { ChevronDown, LayoutGrid, Link2, Pen, Trash2 } from 'lucide-react'
+import { ChevronDown, LayoutGrid, Link2, MessagesSquare, Pen, Trash2 } from 'lucide-react'
 import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { useClock24 } from '../lib/clock-pref'
@@ -123,6 +123,9 @@ export function NoteBubble({
   const handleEdit = () => onEdit(note.id)
   const handleDelete = () => onDelete(note.id)
   const handleCopyLink = () => onCopyLink(note.id)
+  // Optional thread-open — bound in the component body for React Compiler
+  // memoization stability (same rationale as the canvas-trace callbacks below).
+  const handleOpenThread = onOpenThread ? () => onOpenThread(note.id) : undefined
   // Canvas-trace callbacks, bound to this bubble's id in the body (NOT a
   // per-`.map()` closure) so the React Compiler keeps NoteBubble's props stable
   // across feed scroll. `undefined` when the parent didn't supply the verb.
@@ -478,6 +481,23 @@ export function NoteBubble({
               >
                 +
               </span>
+            </button>
+          )}
+          {handleOpenThread && (
+            <button
+              type="button"
+              title="open thread"
+              aria-label="open thread"
+              onClick={handleOpenThread}
+              style={{
+                border: 0,
+                background: 'transparent',
+                cursor: 'pointer',
+                padding: 4,
+                color: 'var(--fg-0)',
+              }}
+            >
+              <MessagesSquare size={14} />
             </button>
           )}
           <button
