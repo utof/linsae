@@ -933,3 +933,60 @@ describe('NoteBubble canvas ▦ traces (§4/§9)', () => {
     expect(screen.queryByRole('menuitem', { name: 'place on canvas…' })).not.toBeInTheDocument()
   })
 })
+
+// ── PDF doc-level branch (page-absent discriminator) ──────────────────────────
+describe('NoteBubble pdf-doc branch (page-absent discriminator)', () => {
+  const pdfDoc: Note = {
+    id: 'd1',
+    slug: 'd1',
+    body: '',
+    type: 'source',
+    source_kind: 'pdf',
+    source_locator: { media: 'pdf', pdf_id: 'p1' },
+    created_at: 1,
+    updated_at: 1,
+    deleted_at: null,
+  }
+  const pdfExcerpt: Note = {
+    id: 'e1',
+    slug: 'e1',
+    body: 'a quote',
+    type: 'source',
+    source_kind: 'pdf',
+    source_locator: {
+      media: 'pdf',
+      pdf_id: 'p1',
+      page: 42,
+      rect: [0, 0, 1, 1],
+      quote: 'a quote',
+      prefix: '',
+      suffix: '',
+    },
+    created_at: 2,
+    updated_at: 2,
+    deleted_at: null,
+  }
+  const props = {
+    focused: false,
+    expanded: false,
+    onToggleExpand: noop,
+    onFocus: noop,
+    onWikilinkClick: noop,
+    onEdit: noop,
+    onDelete: noop,
+    onCopyLink: noop,
+  }
+
+  it('renders a PdfFeedNote card for a document-level pdf note', () => {
+    installMockApi()
+    render(<NoteBubble note={pdfDoc} {...props} />)
+    expect(screen.getByRole('button', { name: /open notes/i })).toBeInTheDocument()
+  })
+
+  it('does NOT render a card for a page-bearing pdf excerpt (renders text)', () => {
+    installMockApi()
+    render(<NoteBubble note={pdfExcerpt} {...props} />)
+    expect(screen.queryByRole('button', { name: /open notes/i })).toBeNull()
+    expect(screen.getByText('a quote')).toBeInTheDocument()
+  })
+})

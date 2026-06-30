@@ -6,6 +6,7 @@ import { Markdown } from '../lib/markdown'
 import { formatTimeOnly } from '../lib/wallclock'
 import { type ContextMenuPos, NoteContextMenu } from './ContextMenu'
 import { MediaFeedNoteContainer } from './MediaFeedNote'
+import { PdfFeedNoteContainer } from './PdfFeedNote'
 
 /**
  * Hard cap on the rendered body length before the fade-out + expand
@@ -233,6 +234,30 @@ export function NoteBubble({
         <LayoutGrid size={11} />
       </button>
     ) : null
+
+  // PDF document-level branch: render PdfFeedNoteContainer for a doc-level PDF
+  // source note (no page anchor). The `page == null` check (covers both null and
+  // undefined) is the load-bearing discriminator: excerpts are ALSO
+  // source_kind:'pdf' but carry a page field, so a source_kind-only check would
+  // mis-render every excerpt as a document card. The `type === 'source'` guard
+  // mirrors the youtube `isSource` branch and pre-empts a page-less PDF comment-
+  // note (a future type:'claim' shape) ever colliding with the doc-card path.
+  // Why checked after all hooks: Rules of Hooks require no conditional hook calls.
+  const isPdfDoc =
+    note.type === 'source' &&
+    note.source_kind === 'pdf' &&
+    note.source_locator?.media === 'pdf' &&
+    note.source_locator.page == null
+  if (isPdfDoc) {
+    return (
+      <PdfFeedNoteContainer
+        note={note}
+        {...(onOpenThread ? { onOpenThread } : {})}
+        onDelete={handleDelete}
+        onCopyLink={handleCopyLink}
+      />
+    )
+  }
 
   // Source-kind branch: render the MediaFeedNoteContainer card instead of a
   // standard text bubble. Checked here (after all hooks) so the Rules of Hooks
