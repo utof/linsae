@@ -668,41 +668,84 @@ describe('ThreadView scroll-never-seeks invariant', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Generic chronological thread (plain / pdf notes) — Task 2.3
+// ---------------------------------------------------------------------------
+
+/** Plain note with NO source_kind — triggers the generic branch. */
+const PLAIN_NOTE: Note = {
+  id: 'n1',
+  slug: 'plain-note',
+  body: 'root body',
+  type: 'claim',
+  created_at: 1000,
+  updated_at: 1000,
+  deleted_at: null,
+}
+
+/** First child note (no timestamp anchor). */
+const CHILD_ONE: Note = {
+  id: 'c1',
+  slug: 'c1',
+  body: 'child one',
+  type: 'claim',
+  created_at: 1100,
+  updated_at: 1100,
+  deleted_at: null,
+}
+
+/** Second child note (no timestamp anchor). */
+const CHILD_TWO: Note = {
+  id: 'c2',
+  slug: 'c2',
+  body: 'child two',
+  type: 'claim',
+  created_at: 1200,
+  updated_at: 1200,
+  deleted_at: null,
+}
+
+describe('ThreadView generic thread (plain/pdf)', () => {
+  it('renders a generic chronological thread for a plain note (no player, no sort pill)', async () => {
+    // Override beforeEach defaults: resolve a plain note with two children (no `t`).
+    mockApi.notes.get.mockResolvedValue(PLAIN_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([
+      { note: CHILD_ONE, attachment: null },
+      { note: CHILD_TWO, attachment: null },
+    ])
+
+    renderWithProviders(<ThreadView noteId="n1" onClose={() => {}} />)
+
+    // Children render via NoteBubble → Markdown pipeline.
+    expect(await screen.findByText(/child one/)).toBeInTheDocument()
+    // No sort pill (video/capture toggle is youtube-only).
+    expect(screen.queryByRole('button', { name: /sort/i })).toBeNull()
+    // SimpleComposer is present (renders a <textarea>).
+    expect(screen.getByRole('textbox')).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // FIX 2: guard against empty commentOn when note hasn't loaded
 // ---------------------------------------------------------------------------
 
 describe('ThreadView FIX 2 — post guard when note not loaded', () => {
-  it('does not call notes.create when note is null (commentOn guard throws)', async () => {
+  it('does not call notes.create when note is null (postPlain guard returns early)', async () => {
     // Override notes.get to return null so `note` never populates.
+    // With branching: note=null → kind='plain' → generic branch renders with SimpleComposer.
+    // postPlain guards: `if (!note?.slug) return` — notes.create is never reached.
     mockApi.notes.get.mockResolvedValue(null)
-    // Capture still works (videoId will be '' but the mock accepts anything).
-    mockApi.youtube.capture.mockResolvedValue({
-      id: 'att3',
-      path: '/store/x.png',
-      sha256: 'x',
-      width: 480,
-      height: 270,
-      devicePixelRatio: 1,
-    })
-    mockApi.youtube.saveOverlay.mockResolvedValue({ overlayPath: null })
 
     renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
-    // Wait for render to settle (title won't appear since videoSource has no title).
+    // Wait for render to settle — back button is always in the header.
     await waitFor(() => expect(screen.getByLabelText('back')).toBeInTheDocument())
 
-    // Trigger capture → editor opens → Done (empty) → pending chip, then try to post.
-    fireEvent.click(screen.getByLabelText('capture frame'))
-    await waitFor(() => expect(screen.getByTestId('annotate-editor')).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: /^done$/i }))
-    await waitFor(() => expect(screen.queryByTestId('annotate-editor')).toBeNull())
-
-    // Type a caption and submit.
+    // The generic branch renders SimpleComposer (note=null → kind='plain').
+    // Type a caption and submit — postPlain returns early because note?.slug is falsy.
     const textarea = screen.getByRole('textbox')
     fireEvent.change(textarea, { target: { value: 'caption' } })
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
 
-    // The mutationFn should throw before reaching notes.create.
-    // Allow React Query a tick to process the mutation.
+    // Allow async postPlain a tick to run its early return.
     await new Promise((r) => setTimeout(r, 50))
     expect(mockApi.notes.create).not.toHaveBeenCalled()
   })

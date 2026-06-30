@@ -992,6 +992,7 @@ export function App() {
                         key={threadNoteId}
                         noteId={threadNoteId}
                         onClose={() => setThreadNoteId(null)}
+                        onWikilinkClick={onWikilinkClick}
                       />
                     </motion.div>
                   ) : (

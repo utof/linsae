@@ -4,6 +4,20 @@ import { Markdown } from '../lib/markdown'
 interface Props {
   /** The root note whose body is displayed as the thread header. */
   note: Note
+  /**
+   * Called when the user clicks a `[[wikilink]]` in the root body.
+   * Defaults to a no-op so existing callers (tests, snapshots) work without
+   * the prop. `ThreadView` passes the same resolver the feed uses so wikilinks
+   * in the root header navigate correctly — satisfying spec §"Wikilink
+   * navigation in thread cards".
+   *
+   * Why optional (not required): keeps `ThreadRoot.test.tsx` passing without
+   * change and reduces the prop-surface for callers that render the header
+   * in a read-only context.
+   *
+   * @see src/renderer/src/lib/markdown.tsx (onWikilinkClick signature)
+   */
+  onWikilinkClick?: (slug: string) => void
 }
 
 /**
@@ -20,14 +34,11 @@ interface Props {
  * read-only and needs only the rendered body. Using `Markdown` directly is the
  * minimal, YAGNI path that still runs the same render pipeline.
  *
- * Why no-op `onWikilinkClick`: wikilink navigation is the caller's concern.
- * The header is read-only at v0.6.4; navigation can be threaded in later when
- * `ThreadView` wires up an app-level navigator.
- *
  * @see src/renderer/src/thread/ThreadView.tsx
  * @see docs/plans/v0.6.4-notes-as-threads.md §Task 2.2
+ * @see docs/plans/v0.6.4-notes-as-threads.md §Task 2.3 (carry-forward: real wikilink handler)
  */
-export function ThreadRoot({ note }: Props) {
+export function ThreadRoot({ note, onWikilinkClick }: Props) {
   return (
     <div
       style={{
@@ -38,7 +49,7 @@ export function ThreadRoot({ note }: Props) {
         fontFamily: 'var(--font-sans)',
       }}
     >
-      <Markdown body={note.body} onWikilinkClick={() => {}} />
+      <Markdown body={note.body} onWikilinkClick={onWikilinkClick ?? (() => {})} />
     </div>
   )
 }

@@ -14,13 +14,16 @@ import { AnnotateEditor } from '../annotate/AnnotateEditor'
 import { ReopenEditor } from '../annotate/ReopenEditor'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { ScrollDatePill } from '../feed/DatePills'
+import { NoteBubble } from '../feed/NoteBubble'
 import { api } from '../lib/api'
 import { getPlayer, setPlayerInteractive } from '../yt/playerSingleton'
 import { usePlayer } from '../yt/usePlayer'
 import { JumpPill } from './JumpPill'
 import { Rail } from './Rail'
 import { activeClusterIndex, jumpPillDirection, markerPositions } from './rail-layout'
+import { SimpleComposer } from './SimpleComposer'
 import { ThreadComposer } from './ThreadComposer'
+import { ThreadRoot } from './ThreadRoot'
 import { TransportBar } from './TransportBar'
 import { useThreadNotes } from './useThreadNotes'
 
@@ -83,10 +86,27 @@ export interface ThreadViewProps {
   noteId: string
   /** Called when the user presses the back button. */
   onClose: () => void
+  /**
+   * Wikilink resolver from the app level — resolves `[[slug]]` clicks to note
+   * navigation or dangling-draft prefill. Passed through to both `ThreadRoot`
+   * (root header) and `NoteBubble` children in the generic plain/pdf branch,
+   * satisfying spec §"Wikilink navigation in thread cards".
+   *
+   * Optional: the generic branch falls back to a no-op when absent (e.g. in
+   * tests that do not wire a navigator). The YouTube branch does not use this
+   * prop (Rail uses a NOOP internally; youtube child notes navigate by seek).
+   *
+   * Why: `App.tsx` owns the resolver (api.links.resolve → setFocusedId or
+   * dangling-draft). Threading it down as a prop is the minimal, YAGNI path
+   * without introducing a context or global store for a single call-site.
+   *
+   * @see src/renderer/src/App.tsx (onWikilinkClick)
+   */
+  onWikilinkClick?: (slug: string) => void
 }
 
 /** @see ThreadViewProps */
-export function ThreadView({ noteId, onClose }: ThreadViewProps) {
+export function ThreadView({ noteId, onClose, onWikilinkClick }: ThreadViewProps) {
   // ── data fetches ──────────────────────────────────────────────────────────
 
   const { data: note } = useQuery({
@@ -94,6 +114,23 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     queryFn: () => api.notes.get(noteId),
     enabled: !!noteId,
   })
+
+  /**
+   * Derived note kind — drives the branch in the render section.
+   * Defaults to 'plain' while `note` is still loading (undefined) so the
+   * generic branch renders an empty placeholder; switches to 'youtube' once the
+   * note resolves, re-rendering into the player/Rail layout. Intermediate
+   * renders are invisible (thread has no data yet).
+   *
+   * Why not 'youtube' while loading: we'd briefly render the player host +
+   * youtube-specific state before the note confirms it's a video note, which
+   * could attach the player singleton for a non-video note. Defaulting to
+   * 'plain' is the safe, visually-silent choice.
+   *
+   * @see docs/plans/v0.6.4-notes-as-threads.md §Task 2.3
+   */
+  const kind =
+    note?.source_kind === 'youtube' ? 'youtube' : note?.source_kind === 'pdf' ? 'pdf' : 'plain'
 
   const videoId = note?.source_locator?.media === 'youtube' ? note.source_locator.video_id : ''
 
@@ -103,7 +140,7 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     enabled: !!videoId,
   })
 
-  const title = videoSource?.title ?? videoId
+  const title = kind === 'youtube' ? (videoSource?.title ?? videoId) : (note?.slug ?? '')
 
   // ── player ────────────────────────────────────────────────────────────────
 
@@ -131,7 +168,10 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   // ── sort + thread notes ───────────────────────────────────────────────────
 
   const [sortMode, setSortMode] = useState<'video' | 'capture'>('video')
-  const { sorted, clusters, anchorless } = useThreadNotes(noteId, sortMode)
+  // plain/pdf use chronological order; youtube respects the user-toggled sortMode.
+  // The query key is always ['thread', noteId] — sortMode only affects local derivation.
+  const effectiveSortMode = kind === 'youtube' ? sortMode : 'capture'
+  const { sorted, clusters, anchorless } = useThreadNotes(noteId, effectiveSortMode)
 
   // ── follow state ──────────────────────────────────────────────────────────
 
@@ -500,6 +540,51 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     onError: (err: Error) => setPostError(err.message),
   })
 
+  // ── generic thread: wikilink handler + plain/pdf post ────────────────────
+
+  /**
+   * Stable wikilink handler forwarded to both `ThreadRoot` and `NoteBubble`
+   * children in the generic (plain/pdf) branch. Delegates to the app-level
+   * resolver prop; no-ops when the prop is absent (e.g. in tests without a
+   * navigator). Same pattern as the feed's `onWikilinkClick` delegation.
+   *
+   * Why useCallback with [onWikilinkClick]: the prop identity is stable
+   * across renders when App.tsx passes a stable function; useCallback avoids
+   * re-rendering every child bubble when unrelated ThreadView state changes.
+   *
+   * @see src/renderer/src/lib/markdown.tsx (onWikilinkClick signature)
+   */
+  const handleWikilink = useCallback(
+    (slug: string) => {
+      onWikilinkClick?.(slug)
+    },
+    [onWikilinkClick],
+  )
+
+  /**
+   * Post a plain comment-note as a child of this thread (plain/pdf branch).
+   * No media anchor — pure text, comment-on the root note's slug.
+   * Invalidates the same keys as the youtube post so the child list re-renders.
+   *
+   * Why useCallback (not useMutation): the plain branch needs no loading/error
+   * surface in the composer — SimpleComposer is intentionally minimal. A
+   * useCallback keeps the wiring thin; error handling can be layered in v0.7+.
+   *
+   * @see src/renderer/src/lib/api.ts (notes.create signature)
+   * @see src/renderer/src/thread/useThreadNotes.ts (queryKey: ['thread', noteId])
+   */
+  const postPlain = useCallback(
+    async (body: string) => {
+      if (!note?.slug) return
+      await api.notes.create(body, 'claim', { commentOn: note.slug })
+      void queryClient.invalidateQueries({ queryKey: ['thread', noteId] })
+      void queryClient.invalidateQueries({ queryKey: ['notes'] })
+      void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
+      void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
+    },
+    [note, noteId, queryClient],
+  )
+
   // ── derived transport values ──────────────────────────────────────────────
 
   // Memoized so the array identity is stable across playhead ticks (sorted is
@@ -791,70 +876,120 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
           </div>
           <div style={{ flex: 1 }} />
           {/* Layout toggle: stacked (video over notes) ↔ split (side-by-side).
-              Icon shows the layout you'll switch TO. */}
-          <button
-            type="button"
-            aria-label="toggle layout"
-            title={layout === 'stacked' ? 'side-by-side view' : 'stacked view'}
-            onClick={() => setLayout((l) => (l === 'stacked' ? 'split' : 'stacked'))}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 28,
-              height: 28,
-              border: 0,
-              background: 'transparent',
-              cursor: 'pointer',
-              borderRadius: 'var(--r-2)',
-              color: 'var(--fg-2)',
-              padding: 0,
-              flexShrink: 0,
-              marginRight: -8,
-            }}
-          >
-            {layout === 'stacked' ? <Columns2 size={16} /> : <Rows2 size={16} />}
-          </button>
+              Only meaningful for YouTube threads — plain/pdf have no player. */}
+          {kind === 'youtube' && (
+            <button
+              type="button"
+              aria-label="toggle layout"
+              title={layout === 'stacked' ? 'side-by-side view' : 'stacked view'}
+              onClick={() => setLayout((l) => (l === 'stacked' ? 'split' : 'stacked'))}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 28,
+                height: 28,
+                border: 0,
+                background: 'transparent',
+                cursor: 'pointer',
+                borderRadius: 'var(--r-2)',
+                color: 'var(--fg-2)',
+                padding: 0,
+                flexShrink: 0,
+                marginRight: -8,
+              }}
+            >
+              {layout === 'stacked' ? <Columns2 size={16} /> : <Rows2 size={16} />}
+            </button>
+          )}
         </div>
       </header>
 
-      {layout === 'stacked' ? (
-        <>
-          {/* ── Player on top ─────────────────────────────────────────────── */}
-          <div style={{ flex: '0 0 auto', padding: '14px 24px 12px' }}>
-            <div style={{ maxWidth: videoWidth, margin: '0 auto' }}>{playerContent}</div>
+      {kind === 'youtube' ? (
+        // ── YouTube: player + Rail + sort pill + ThreadComposer ──────────────
+        // Unchanged from the original ThreadView body — byte-identical behaviour.
+        layout === 'stacked' ? (
+          <>
+            {/* ── Player on top ─────────────────────────────────────────────── */}
+            <div style={{ flex: '0 0 auto', padding: '14px 24px 12px' }}>
+              <div style={{ maxWidth: videoWidth, margin: '0 auto' }}>{playerContent}</div>
+            </div>
+            {/* Horizontal resize handle — drag to scale the player; notes take the
+                freed vertical space. */}
+            <ResizeHandle
+              orientation="row"
+              onPointerDown={onResizeStart}
+              testId="player-resize"
+              title="drag to resize the player"
+            />
+            {notesPane}
+          </>
+        ) : (
+          // ── Side-by-side: player pane | vertical divider | notes pane ──────
+          <div ref={rowRef} style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+            <div
+              style={{
+                width: splitWidth,
+                flexShrink: 0,
+                minWidth: 0,
+                overflowY: 'auto',
+                padding: '14px 16px',
+              }}
+            >
+              {playerContent}
+            </div>
+            <ResizeHandle
+              orientation="col"
+              onPointerDown={onSplitResizeStart}
+              testId="player-resize-v"
+              title="drag to resize the video"
+            />
+            {notesPane}
           </div>
-          {/* Horizontal resize handle — drag to scale the player; notes take the
-              freed vertical space. */}
-          <ResizeHandle
-            orientation="row"
-            onPointerDown={onResizeStart}
-            testId="player-resize"
-            title="drag to resize the player"
-          />
-          {notesPane}
-        </>
+        )
       ) : (
-        // ── Side-by-side: player pane | vertical divider | notes pane ────────
-        <div ref={rowRef} style={{ flex: 1, minHeight: 0, display: 'flex' }}>
-          <div
-            style={{
-              width: splitWidth,
-              flexShrink: 0,
-              minWidth: 0,
-              overflowY: 'auto',
-              padding: '14px 16px',
-            }}
-          >
-            {playerContent}
+        // ── Generic: ThreadRoot header + chronological NoteBubble list + SimpleComposer
+        // Used for plain notes and PDF notes.  PDF's docked reader is the
+        // media; the thread is chronological-only — same layout as plain.
+        // `handleWikilink` forwards to the app-level resolver so wikilinks in
+        // the root header and every child card navigate correctly (spec §"Wikilink
+        // navigation in thread cards"). @see docs/plans/v0.6.4-notes-as-threads.md §Task 2.3
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            padding: '12px 24px 20px',
+          }}
+        >
+          <div style={{ maxWidth: COL, margin: '0 auto' }}>
+            {note && <ThreadRoot note={note} onWikilinkClick={handleWikilink} />}
+            <div style={{ marginTop: 8 }}>
+              {sorted.map((item) => (
+                <NoteBubble
+                  key={item.id}
+                  note={item.note}
+                  focused={false}
+                  expanded={true}
+                  onToggleExpand={() => {}}
+                  onFocus={() => {}}
+                  onWikilinkClick={handleWikilink}
+                  onEdit={() => {}}
+                  onDelete={() => {}}
+                  onCopyLink={() => {}}
+                />
+              ))}
+            </div>
+            <div
+              style={{
+                marginTop: 16,
+                borderTop: '1px solid var(--border-0)',
+                paddingTop: 12,
+              }}
+            >
+              <SimpleComposer onSubmit={postPlain} />
+            </div>
           </div>
-          <ResizeHandle
-            orientation="col"
-            onPointerDown={onSplitResizeStart}
-            testId="player-resize-v"
-            title="drag to resize the video"
-          />
-          {notesPane}
         </div>
       )}
 
