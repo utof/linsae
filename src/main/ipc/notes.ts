@@ -17,6 +17,7 @@ import type { SourceLocator } from '../../shared/types'
 import {
   BacklinksInputSchema,
   CommentsOfInputSchema,
+  FindSourceByPdfIdInputSchema,
   NoteIdSchema,
   NotesCreateInputSchema,
   NotesListInputSchema,
@@ -29,7 +30,7 @@ import {
   SettingsSetInputSchema,
 } from '../../shared/zod-schemas'
 import { backlinks, commentsForNote } from '../db/queries/links'
-import { getNote, listNotes } from '../db/queries/notes'
+import { getNote, getSourceNoteByPdfId, listNotes } from '../db/queries/notes'
 import { listTitles, recentNotes, recordAccess } from '../db/queries/recency'
 import { resolveWikilink } from '../db/queries/resolver'
 import { searchNotes } from '../db/queries/search'
@@ -136,5 +137,9 @@ export function registerNotesIpc(db: DB, nd: NotesDir): void {
     const i = NotesRecordAccessInputSchema.parse(input)
     recordAccess(db, i.noteId)
     return { ok: true as const }
+  })
+  ipcMain.handle('notes:findSourceByPdfId', (_e, input) => {
+    const i = FindSourceByPdfIdInputSchema.parse(input)
+    return getSourceNoteByPdfId(db, i.pdfId)
   })
 }

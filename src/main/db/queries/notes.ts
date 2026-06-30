@@ -148,6 +148,40 @@ export function updateNote(db: DB, input: UpdateNoteInput): Note {
 }
 
 /**
+ * The live source note bound to a PDF document (source_locator.pdf_id), if any.
+ * Why: import idempotency + the excerpt's comment-on target slug.
+ *
+ * At most one *live* source note per pdf_id — that invariant is enforced at
+ * import time (Task 3.3 resolves-or-creates), not by a DB UNIQUE constraint, so
+ * `ORDER BY created_at ASC LIMIT 1` makes the degenerate (duplicate) case
+ * deterministic by returning the canonical oldest row. The `json_extract` filter
+ * is a full scan, acceptable because `type='source'` narrows it to ≈ one row per
+ * imported PDF; do NOT call this in a per-row render loop.
+ *
+ * @param db - Open better-sqlite3 Database.
+ * @param pdfId - The `pdf_documents.id` carried in `source_locator.pdf_id`.
+ * @returns The live `type='source'` pdf note for that id, or `null` if none.
+ * @see docs/specs/v0.6.4-notes-as-threads.md §Data model
+ */
+export function getSourceNoteByPdfId(db: DB, pdfId: string): Note | null {
+  const row = db
+    .prepare(
+      `SELECT id, slug, body, type, created_at, updated_at, deleted_at, source_kind, source_locator
+         FROM notes
+        WHERE deleted_at IS NULL AND type='source' AND source_kind='pdf'
+          AND json_extract(source_locator,'$.pdf_id') = ?
+        ORDER BY created_at ASC
+        LIMIT 1`,
+    )
+    .get(pdfId) as (Omit<Note, 'source_locator'> & { source_locator: string | null }) | undefined
+  if (!row) return null
+  return {
+    ...row,
+    source_locator: row.source_locator ? (JSON.parse(row.source_locator) as SourceLocator) : null,
+  }
+}
+
+/**
  * Marks a note as deleted by setting `deleted_at` to the current Unix-ms timestamp.
  *
  * Soft delete only — the row is never removed. `listNotes` filters deleted rows,

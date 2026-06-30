@@ -15,7 +15,14 @@ import type Database from 'better-sqlite3'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { openDb } from '../client'
 import { runMigrations } from '../migrate'
-import { createNote, getNote, listNotes, softDeleteNote, updateNote } from './notes'
+import {
+  createNote,
+  getNote,
+  getSourceNoteByPdfId,
+  listNotes,
+  softDeleteNote,
+  updateNote,
+} from './notes'
 
 type DB = Database.Database
 
@@ -104,6 +111,30 @@ describe('notes queries', () => {
     const n = getNote(db, 'p1')
     expect(n?.source_kind).toBeNull()
     expect(n?.source_locator).toBeNull()
+  })
+
+  it('getSourceNoteByPdfId returns the live source note for a pdf_id', () => {
+    db.prepare(
+      `INSERT INTO notes (id, slug, body, type, created_at, updated_at, source_kind, source_locator)
+       VALUES ('d1','d1','','source',1,1,'pdf', ?)`,
+    ).run(JSON.stringify({ media: 'pdf', pdf_id: 'pdf-1' }))
+    expect(getSourceNoteByPdfId(db, 'pdf-1')?.id).toBe('d1')
+    expect(getSourceNoteByPdfId(db, 'absent')).toBeNull()
+  })
+
+  it('getSourceNoteByPdfId excludes deleted, non-source, and non-pdf rows sharing the pdf_id', () => {
+    const loc = JSON.stringify({ media: 'pdf', pdf_id: 'pdf-2' })
+    // soft-deleted source note → must NOT resurrect (the deleted_at filter)
+    db.prepare(
+      `INSERT INTO notes (id, slug, body, type, created_at, updated_at, deleted_at, source_kind, source_locator)
+       VALUES ('del','del','','source',1,1,5,'pdf', ?)`,
+    ).run(loc)
+    // a claim/excerpt carrying the same pdf_id → must NOT match (the type filter)
+    db.prepare(
+      `INSERT INTO notes (id, slug, body, type, created_at, updated_at, source_kind, source_locator)
+       VALUES ('exc','exc','q','claim',1,1,'pdf', ?)`,
+    ).run(loc)
+    expect(getSourceNoteByPdfId(db, 'pdf-2')).toBeNull()
   })
 
   it('listNotes hydrates source_kind and parses source_locator for a source note', () => {

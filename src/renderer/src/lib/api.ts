@@ -130,6 +130,15 @@ export const api = {
      * @see docs/specs/v0.5-command-search.md §7 */
     recordAccess: (noteId: string, kind: AccessKind): Promise<{ ok: true }> =>
       window.api.notes.recordAccess({ noteId, kind }),
+    /**
+     * Resolve the live source note whose source_locator.pdf_id matches pdfId, or null.
+     * Why: import idempotency (Task 3.3) + excerpt commentOn target slug (Task 4.1).
+     * The DB function is `getSourceNoteByPdfId`; the renderer-facing name is
+     * `findSourceByPdfId` — two distinct names by design (spec §Name consistency).
+     * @see docs/specs/v0.6.4-notes-as-threads.md §Data model
+     */
+    findSourceByPdfId: (pdfId: string): Promise<Note | null> =>
+      window.api.notes.findSourceByPdfId({ pdfId }),
   },
   /**
    * PDF IPC facade: content-addressed import, open-by-id (with derived

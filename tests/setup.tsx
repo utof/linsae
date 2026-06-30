@@ -63,6 +63,14 @@ export interface MockApi {
     recent: ReturnType<typeof vi.fn>
     /** recordAccess mock — added in v0.5 for access log. @see docs/specs/v0.5-command-search.md §7 */
     recordAccess: ReturnType<typeof vi.fn>
+    /** findSourceByPdfId mock — added in v0.6.4 for PDF import idempotency + excerpt thread target. @see docs/specs/v0.6.4-notes-as-threads.md §Data model */
+    findSourceByPdfId: ReturnType<typeof vi.fn>
+  }
+  /** PDF IPC mocks — added in v0.6. @see src/preload/index.ts */
+  pdf: {
+    import: ReturnType<typeof vi.fn>
+    open: ReturnType<typeof vi.fn>
+    listRecent: ReturnType<typeof vi.fn>
   }
   search: { run: ReturnType<typeof vi.fn> }
   links: {
@@ -115,6 +123,8 @@ export interface MockApi {
     revealNotesFolder: ReturnType<typeof vi.fn>
     openLogsFolder: ReturnType<typeof vi.fn>
     getReconcileSkipped: ReturnType<typeof vi.fn>
+    /** chooseFile mock — added in v0.6 for native file picker (pdf:import flow). @see docs/specs/v0.6-pdf-slim-slice.md §6 */
+    chooseFile: ReturnType<typeof vi.fn>
     window: {
       minimize: ReturnType<typeof vi.fn>
       toggleMaximize: ReturnType<typeof vi.fn>
@@ -143,6 +153,12 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
       listTitles: vi.fn(async (): Promise<NoteTitleRow[]> => []),
       recent: vi.fn(async (): Promise<NoteTitleRow[]> => []),
       recordAccess: vi.fn(async () => ({ ok: true as const })),
+      findSourceByPdfId: vi.fn(async (): Promise<Note | null> => null),
+    },
+    pdf: {
+      import: vi.fn(async () => ({ pdfId: '', sha256: '', title: null, pageCount: null })),
+      open: vi.fn(async () => null),
+      listRecent: vi.fn(async () => []),
     },
     search: { run: vi.fn(async (): Promise<SearchHit[]> => []) },
     links: {
@@ -205,6 +221,7 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
       revealNotesFolder: vi.fn(async () => ({ ok: true })),
       openLogsFolder: vi.fn(async () => ({ ok: true })),
       getReconcileSkipped: vi.fn(async () => 0),
+      chooseFile: vi.fn(async () => ({ filePaths: [] as string[] })),
       window: {
         minimize: vi.fn(async () => ({ ok: true })),
         toggleMaximize: vi.fn(async () => ({ ok: true })),

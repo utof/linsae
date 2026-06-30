@@ -455,3 +455,15 @@ export const ChooseFileInputSchema = z
     filters: z.array(z.object({ name: z.string(), extensions: z.array(z.string()) })).optional(),
   })
   .optional()
+
+// ── v0.6.4 notes-as-threads ───────────────────────────────────────────────
+/**
+ * Input schema for the `notes:findSourceByPdfId` IPC channel.
+ *
+ * Why: resolves the live source note bound to a PDF document — used by import
+ * idempotency (Task 3.3) and the excerpt's commentOn target slug (Task 4.1).
+ * The DB query is `getSourceNoteByPdfId`; the renderer-facing name is
+ * `findSourceByPdfId` — two distinct names by design (spec §Name consistency).
+ * @see docs/specs/v0.6.4-notes-as-threads.md §Data model
+ */
+export const FindSourceByPdfIdInputSchema = z.object({ pdfId: z.string().min(1) })
