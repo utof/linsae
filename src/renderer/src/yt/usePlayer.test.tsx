@@ -2,6 +2,15 @@
 import { renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+// ISOLATION: isolate:false shares the module cache. PlayerPane.test.tsx (which
+// runs earlier alphabetically) imports ./usePlayer → playerSingleton, caching
+// usePlayer.ts with PlayerPane's mock bindings. Clearing the module cache HERE
+// (in vi.hoisted — which runs before imports, even before vi.mock) forces
+// usePlayer.ts to be freshly imported against THIS file's mock of playerSingleton.
+// vi.mock registrations from earlier files survive vi.resetModules() (they are in
+// the mock registry, not the module cache), so the override below re-applies. (ADR 0014)
+vi.hoisted(() => vi.resetModules())
+
 const fakeWrapper = document.createElement('div')
 const onState = vi.fn(() => () => {})
 const mount = vi.fn()

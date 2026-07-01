@@ -19,15 +19,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
 import { serializeScene } from '../ink/svg'
+import { useDockStore } from '../panes/dockStore'
 
-// Mock usePlayer so tests never touch the player singleton / iframe.
+// Mock usePlayerState so tests never touch the player singleton / rAF loop.
 // `seekTo` is a shared spy and `currentTime` is read from a mutable holder so
 // follow-scroll tests can advance the playhead between renders.
+// After B5: ThreadView uses usePlayerState (read-only) — usePlayer lives in PlayerPane.
 const seekTo = vi.fn()
 const player = { seekTo, play: vi.fn(), pause: vi.fn(), mount: vi.fn(), unmount: vi.fn() }
 const playerState = { currentTime: 0 }
-vi.mock('../yt/usePlayer', () => ({
-  usePlayer: () => ({
+vi.mock('../yt/usePlayerState', () => ({
+  usePlayerState: () => ({
     player,
     currentTime: playerState.currentTime,
     state: 'paused',
@@ -105,6 +107,8 @@ const scrollIntoView = vi.fn()
 Element.prototype.scrollIntoView = scrollIntoView
 
 beforeEach(() => {
+  // Reset dockStore so openPane('player') calls start from a clean slate (B5).
+  useDockStore.getState().reset()
   scrollIntoView.mockClear()
   playerState.currentTime = 0
   getMediaRect.mockReturnValue({ x: 0, y: 0, width: 480, height: 270 } as DOMRect)
@@ -139,18 +143,6 @@ describe('ThreadView', () => {
     await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
   })
 
-  it('toggles between stacked and split layouts', async () => {
-    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
-    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
-    // Stacked by default: horizontal resize handle present, vertical absent.
-    expect(screen.getByTestId('player-resize')).toBeInTheDocument()
-    expect(screen.queryByTestId('player-resize-v')).toBeNull()
-    // Switch to split: vertical handle appears, horizontal goes away.
-    fireEvent.click(screen.getByLabelText('toggle layout'))
-    expect(screen.getByTestId('player-resize-v')).toBeInTheDocument()
-    expect(screen.queryByTestId('player-resize')).toBeNull()
-  })
-
   it('(c) SortPill toggles mode and re-orders notes', async () => {
     renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
 
@@ -178,9 +170,16 @@ describe('ThreadView', () => {
     expect(getOrder()).toEqual(['note at five seconds', 'note at ten seconds'])
   })
 
-  it('(d) player host element is in the DOM', async () => {
+  it('(d) opening a youtube thread opens the player pane in dockStore; no in-body player-host', async () => {
+    // B5: player placeholder moved to right-dock PlayerPane; ThreadView opens the pane.
     renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
-    await waitFor(() => expect(screen.getByTestId('player-host')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    // The 'player' pane should now be active in the right dock.
+    await waitFor(() => expect(useDockStore.getState().right.activeId).toBe('player'))
+
+    // ThreadView itself must NOT render the player-host div (it's in PlayerPane now).
+    expect(screen.queryByTestId('player-host')).toBeNull()
   })
 
   it('(c) SortPill: capture mode places earlier-captured note first when order differs', async () => {
@@ -252,21 +251,11 @@ describe('ThreadView follow-scroll + click-to-seek', () => {
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
   })
 
-  it('does NOT scroll on a currentTime change while followOn is false (no reverse coupling)', async () => {
-    const { rerenderThread } = renderThread()
-    await waitFor(() => expect(screen.getByText('note at five seconds')).toBeInTheDocument())
-
-    // Turn follow OFF, then clear any scroll triggered while it was on.
-    fireEvent.click(screen.getByRole('button', { name: /follow playback/i }))
-    scrollIntoView.mockClear()
-
-    // Advance the playhead past a cluster and re-render WITHOUT re-enabling
-    // follow. With follow off, the note list must NOT auto-scroll.
-    playerState.currentTime = 7
-    rerenderThread()
-
-    expect(scrollIntoView).not.toHaveBeenCalled()
-  })
+  // Note: the "turn follow OFF" test is removed in B5 — the follow-toggle button
+  // was part of TransportBar, which now lives in the right-dock PlayerPane (not
+  // ThreadView). Follow defaults to ON and is always active in ThreadView.
+  // The scroll-never-seeks invariant (scroll event ≠ seekTo) is covered by the
+  // separate "scroll-never-seeks invariant" describe block below.
 })
 
 // ---------------------------------------------------------------------------
