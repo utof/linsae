@@ -714,6 +714,75 @@ describe('ThreadView generic thread (plain/pdf)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Media-pane (re)open on thread-open — issue #166
+// Opening a media note's thread MUST (re)open the corresponding dock pane,
+// even if the user had explicitly closed it before.
+// ---------------------------------------------------------------------------
+
+/** PDF source note fixture — triggers the pdf branch in ThreadView. */
+const PDF_SOURCE_NOTE: Note = {
+  id: 'pdf-note-1',
+  slug: 'my-pdf',
+  body: '',
+  type: 'source',
+  created_at: 1000,
+  updated_at: 1000,
+  deleted_at: null,
+  source_kind: 'pdf',
+  source_locator: { media: 'pdf', pdf_id: 'doc-p1' },
+}
+
+describe('ThreadView media-pane reopen on thread-open (#166)', () => {
+  it('(e) opening a PDF note thread opens the pdf dock pane', async () => {
+    mockApi.notes.get.mockResolvedValue(PDF_SOURCE_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([])
+
+    renderWithProviders(<ThreadView noteId="pdf-note-1" onClose={() => {}} />)
+
+    // The 'pdf' pane must be opened in the right dock once the note loads.
+    await waitFor(() => expect(useDockStore.getState().right.activeId).toBe('pdf'))
+    expect(useDockStore.getState().right.openPaneIds).toContain('pdf')
+  })
+
+  it('(f) re-opening a PDF thread re-opens the pdf pane even after it was explicitly closed', async () => {
+    // Why: issue #166 — the pane must re-appear even when the user had dismissed it.
+    mockApi.notes.get.mockResolvedValue(PDF_SOURCE_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([])
+
+    const { unmount } = renderWithProviders(<ThreadView noteId="pdf-note-1" onClose={() => {}} />)
+    // First open: pane appears.
+    await waitFor(() => expect(useDockStore.getState().right.activeId).toBe('pdf'))
+
+    // User explicitly closes the pane (simulates the dock × button).
+    useDockStore.getState().closePane('pdf')
+    expect(useDockStore.getState().right.activeId).not.toBe('pdf')
+
+    // Navigate back to feed (unmount) then open the same thread again (remount).
+    unmount()
+    renderWithProviders(<ThreadView noteId="pdf-note-1" onClose={() => {}} />)
+
+    // Pane must reappear even though it was closed between opens.
+    await waitFor(() => expect(useDockStore.getState().right.activeId).toBe('pdf'))
+  })
+
+  it('(g) re-opening a YouTube thread re-opens the player pane even after it was explicitly closed', async () => {
+    // Confirms the existing YouTube path handles re-open correctly (issue #166 check).
+    const { unmount } = renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(useDockStore.getState().right.activeId).toBe('player'))
+
+    // User closes the player pane.
+    useDockStore.getState().closePane('player')
+    expect(useDockStore.getState().right.activeId).not.toBe('player')
+
+    // Navigate away + back → ThreadView remounts, effect fires again.
+    unmount()
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+
+    await waitFor(() => expect(useDockStore.getState().right.activeId).toBe('player'))
+  })
+})
+
+// ---------------------------------------------------------------------------
 // FIX 2: guard against empty commentOn when note hasn't loaded
 // ---------------------------------------------------------------------------
 

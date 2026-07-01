@@ -143,6 +143,29 @@ export function ThreadView({ noteId, onClose, onWikilinkClick }: ThreadViewProps
     useDockStore.getState().openPane('player')
   }, [videoId, setVideoId.mutateAsync])
 
+  // ── open the PDF pane when a PDF thread loads ─────────────────────────────
+  // Mirrors the YouTube openPane('player') effect above — when the thread's root
+  // note is a PDF source note, write 'pdf.openDocId' (so PdfReader shows the
+  // correct document) and open the right-dock 'pdf' pane synchronously.
+  // Guard: pdfId is '' for youtube/plain notes — no-op in those cases.
+  // Idempotent: openPane is a no-op when already active; the setting write is
+  // the same value, so no observable churn.
+  // Why: drilling into a PDF thread via the feed's "open notes" affordance goes
+  // through setThreadNoteId (NOT through onOpenPdf / the file-picker flow), so
+  // the pane was never opened by that path — this effect is the missing link.
+  // Re-open contract: ThreadView unmounts on back-navigation (threadNoteId→null)
+  // so every thread-open mounts a fresh instance; on remount this effect fires
+  // once, re-opening a pane the user had previously closed. (#166)
+  // @see src/renderer/src/pdf/usePdfOpenId.ts (useOpenPdf — sets the setting)
+  // @see src/renderer/src/App.tsx (handlePaneClose — clears the setting on close)
+  const setPdfOpenId = useSetSetting('pdf.openDocId')
+  const pdfId = note?.source_locator?.media === 'pdf' ? note.source_locator.pdf_id : ''
+  useEffect(() => {
+    if (!pdfId) return
+    void setPdfOpenId.mutateAsync(pdfId)
+    useDockStore.getState().openPane('pdf')
+  }, [pdfId, setPdfOpenId.mutateAsync])
+
   // ── duration write-back (I-4) ─────────────────────────────────────────────
   // Write the resolved duration back to video_sources exactly once per mount.
   // A ref flag prevents repeat writes under React StrictMode double-invoke.
