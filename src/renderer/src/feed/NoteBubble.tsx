@@ -43,6 +43,13 @@ interface Props {
   onCopyLink: (id: string) => void
   /** Called when the user clicks "open video notes" on a source-kind note. */
   onOpenThread?: (id: string) => void
+  /**
+   * Called when the user clicks a PDF card's document title to open the reader
+   * dock WITHOUT navigating to the thread. Passed through to PdfFeedNoteContainer,
+   * which binds the pdf_id before forwarding to the presentational layer.
+   * @issue utof/linsae#168
+   */
+  onOpenReader?: (pdfId: string) => void
   /** True while the Feed's multi-select mode is active. Hides the hover
    * action bar and disables the context menu — row clicks toggle selection
    * (Feed intercepts them in capture phase), so per-note affordances would
@@ -102,6 +109,7 @@ export function NoteBubble({
   onDelete,
   onCopyLink,
   onOpenThread,
+  onOpenReader,
   selecting = false,
   placed = false,
   onShelf,
@@ -253,6 +261,7 @@ export function NoteBubble({
       <PdfFeedNoteContainer
         note={note}
         {...(onOpenThread ? { onOpenThread } : {})}
+        {...(onOpenReader ? { onOpenReader } : {})}
         onDelete={handleDelete}
         onCopyLink={handleCopyLink}
       />

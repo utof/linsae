@@ -38,6 +38,14 @@ export interface PdfFeedNoteProps {
   /** Called when the user activates the "open notes" affordance. */
   onOpenThread: () => void
   /**
+   * Called when the user clicks the document title to open the PDF reader dock
+   * WITHOUT navigating to the thread. Reusable: #167's thumbnail will call the
+   * same prop. When undefined the title renders as non-interactive text.
+   *
+   * @issue utof/linsae#168
+   */
+  onOpenReader?: () => void
+  /**
    * Hover-toolbar actions (parity with MediaFeedNote). `edit` is absent — a source note
    * has no editable body; you annotate inside the thread, not on the card.
    */
@@ -64,11 +72,19 @@ export interface PdfFeedNoteProps {
 export function PdfFeedNoteContainer({
   note,
   onOpenThread,
+  onOpenReader,
   onDelete,
   onCopyLink,
 }: {
   note: Note
   onOpenThread?: (id: string) => void
+  /**
+   * Received from App (via Feed → NoteBubble) as `(pdfId: string) => void`;
+   * the container binds `pdfId` from `note.source_locator.pdf_id` and passes
+   * a pre-bound `() => void` to the presentational layer.
+   * @issue utof/linsae#168
+   */
+  onOpenReader?: (pdfId: string) => void
   onDelete?: () => void
   onCopyLink?: () => void
 }) {
@@ -87,6 +103,7 @@ export function PdfFeedNoteContainer({
       openQuestionCount={openQuestionCount}
       createdAt={note.created_at}
       onOpenThread={() => onOpenThread?.(note.id)}
+      {...(onOpenReader && pdfId ? { onOpenReader: () => onOpenReader(pdfId) } : {})}
       {...(onDelete ? { onDelete } : {})}
       {...(onCopyLink ? { onCopyLink } : {})}
     />
@@ -116,6 +133,7 @@ export function PdfFeedNote({
   openQuestionCount,
   createdAt,
   onOpenThread,
+  onOpenReader,
   onDelete,
   onCopyLink,
 }: PdfFeedNoteProps) {
@@ -126,6 +144,10 @@ export function PdfFeedNote({
   // removes the whole source note, so a single misclick shouldn't nuke it.
   const [deleteArmed, setDeleteArmed] = useState(false)
   const armTimer = useRef<number | null>(null)
+  // Title hover: drives the quiet-chrome underline on the clickable title (#168).
+  // Independent from `hover` (which reveals the action toolbar) — the underline
+  // appears only while the pointer is over the title button itself.
+  const [titleHover, setTitleHover] = useState(false)
 
   // Clear a pending arm timer on unmount so it can't setState a virtualised-out card.
   useEffect(
@@ -189,19 +211,63 @@ export function PdfFeedNote({
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
           <FileText size={18} color="var(--fg-2)" style={{ flexShrink: 0, marginTop: 1 }} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div
-              style={{
-                fontSize: 14,
-                fontWeight: 500,
-                color: 'var(--fg-0)',
-                lineHeight: 'var(--lh-snug)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {displayTitle}
-            </div>
+            {/* Title — interactive button that opens the PDF reader WITHOUT
+                opening the thread (#168). Styled as a title (quiet-chrome):
+                no border/background, underline only on hover. The accessible
+                name is the visible title text (content = accessible name).
+                `onOpenReader` is pre-bound by PdfFeedNoteContainer so the
+                presentational layer stays side-effect-free. Reusable: #167's
+                thumbnail will call the same prop. */}
+            {onOpenReader ? (
+              <button
+                type="button"
+                title="open in pdf reader"
+                onClick={onOpenReader}
+                onMouseEnter={() => setTitleHover(true)}
+                onMouseLeave={() => setTitleHover(false)}
+                style={{
+                  fontSize: 14,
+                  fontWeight: 500,
+                  color: 'var(--fg-0)',
+                  lineHeight: 'var(--lh-snug)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  // Button reset — quiet-chrome: looks like a title, behaves as a button.
+                  border: 0,
+                  background: 'transparent',
+                  padding: 0,
+                  textAlign: 'left',
+                  width: '100%',
+                  fontFamily: 'var(--font-sans)',
+                  cursor: 'pointer',
+                  // Hover underline — visible only while pointer is on the title.
+                  // `var(--fg-3)` keeps it muted (quiet-chrome; not a heavy link style).
+                  textDecoration: titleHover ? 'underline' : 'none',
+                  textDecorationColor: 'var(--fg-3)',
+                }}
+              >
+                {displayTitle}
+              </button>
+            ) : (
+              // No reader-open handler wired → render plain text, not an inert
+              // <button> that announces as actionable but does nothing (a11y, #168 review).
+              <div
+                style={{
+                  fontSize: 14,
+                  fontWeight: 500,
+                  color: 'var(--fg-0)',
+                  lineHeight: 'var(--lh-snug)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  width: '100%',
+                  fontFamily: 'var(--font-sans)',
+                }}
+              >
+                {displayTitle}
+              </div>
+            )}
             <div
               style={{
                 display: 'flex',

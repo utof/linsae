@@ -27,6 +27,12 @@ interface Props {
   /** Called when the user opens the thread panel for a source note. */
   onOpenThread?: (id: string) => void
   /**
+   * Called when the user clicks a PDF card's title to open the reader dock
+   * without navigating to the thread. Threaded to NoteBubble → PdfFeedNoteContainer.
+   * @issue utof/linsae#168
+   */
+  onOpenReader?: (pdfId: string) => void
+  /**
    * Ids of notes that currently have a placed card on the canvas (§9). Drives
    * each bubble's ▦ trace. Defaults to an empty set so callers that don't track
    * canvas placement render unchanged. App provides the real set (Task 10).
@@ -229,6 +235,7 @@ export function Feed({
   onDelete,
   onCopyLink,
   onOpenThread,
+  onOpenReader,
   placedNoteIds = EMPTY_PLACED,
   onShelf,
   onPlaceOnCanvas,
@@ -939,6 +946,7 @@ export function Feed({
                     onDelete={onDelete}
                     onCopyLink={onCopyLink}
                     {...(onOpenThread ? { onOpenThread } : {})}
+                    {...(onOpenReader ? { onOpenReader } : {})}
                     selecting={selectionMode}
                     // Canvas ▦ traces — stable id-callbacks bound in NoteBubble's
                     // body (ADR 0006). `placed` flips the bubble's affordance set.

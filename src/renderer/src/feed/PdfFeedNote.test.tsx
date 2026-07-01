@@ -192,6 +192,44 @@ describe('PdfFeedNote (presentational)', () => {
     )
     expect(screen.getByText(/2:23/)).toBeInTheDocument()
   })
+
+  it('(l) clicking the document title fires onOpenReader without firing onOpenThread (#168)', () => {
+    const onOpenReader = vi.fn()
+    const onOpenThread = vi.fn()
+    renderWithProviders(
+      <PdfFeedNote
+        title="Research Paper"
+        pageCount={null}
+        noteCount={0}
+        openQuestionCount={0}
+        createdAt={pdfDocNote.created_at}
+        onOpenThread={onOpenThread}
+        onOpenReader={onOpenReader}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Research Paper' }))
+    expect(onOpenReader).toHaveBeenCalledTimes(1)
+    expect(onOpenThread).not.toHaveBeenCalled()
+  })
+
+  it('(m) "open notes" button fires onOpenThread and NOT onOpenReader (#168)', () => {
+    const onOpenReader = vi.fn()
+    const onOpenThread = vi.fn()
+    renderWithProviders(
+      <PdfFeedNote
+        title="Research Paper"
+        pageCount={null}
+        noteCount={0}
+        openQuestionCount={0}
+        createdAt={pdfDocNote.created_at}
+        onOpenThread={onOpenThread}
+        onOpenReader={onOpenReader}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /open notes/i }))
+    expect(onOpenThread).toHaveBeenCalledTimes(1)
+    expect(onOpenReader).not.toHaveBeenCalled()
+  })
 })
 
 describe('PdfFeedNoteContainer', () => {
@@ -228,5 +266,13 @@ describe('PdfFeedNoteContainer', () => {
     await waitFor(() => expect(screen.getByText('Loaded Title')).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: /open notes/i }))
     expect(onOpenThread).toHaveBeenCalledWith('doc1')
+  })
+
+  it('clicking the document title calls onOpenReader with the pdf_id (#168)', async () => {
+    const onOpenReader = vi.fn()
+    renderWithProviders(<PdfFeedNoteContainer note={pdfDocNote} onOpenReader={onOpenReader} />)
+    await waitFor(() => expect(screen.getByText('Loaded Title')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Loaded Title' }))
+    expect(onOpenReader).toHaveBeenCalledWith('p1')
   })
 })

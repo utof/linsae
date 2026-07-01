@@ -702,6 +702,24 @@ export function App() {
   )
 
   /**
+   * Opens the PDF reader dock for a specific pdf_id without navigating to its
+   * thread (#168). Called by the feed's PdfFeedNote title-click path (via Feed →
+   * NoteBubble → PdfFeedNoteContainer → PdfFeedNote). Mirrors ThreadView.tsx's
+   * PDF-open effect: writes `pdf.openDocId` asynchronously (so the setting persists
+   * across restarts) and calls `openPane('pdf')` synchronously (so the dock opens
+   * immediately without waiting for the DB write).
+   *
+   * @issue utof/linsae#168
+   */
+  const handleOpenPdfReader = useCallback(
+    (pdfId: string) => {
+      void openPdf(pdfId)
+      useDockStore.getState().openPane('pdf')
+    },
+    [openPdf],
+  )
+
+  /**
    * Opens the ThreadView for a source note, clearing focusedId so the
    * BacklinksPane doesn't linger while the thread is open, and clearing
    * editingNoteId so a stale edit-mode Composer cannot reappear when the
@@ -1095,6 +1113,7 @@ export function App() {
                             void navigator.clipboard.writeText(`linsae://note/${id}`)
                           }}
                           onOpenThread={openThread}
+                          onOpenReader={handleOpenPdfReader}
                           // Canvas traces + verbs (spec §6/§9) — placedNoteIds drives the
                           // ▦ chip; the three callbacks are threaded to NoteBubble by id.
                           placedNoteIds={placedNoteIds}
