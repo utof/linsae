@@ -12,6 +12,15 @@ import { installMockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
 import { PdfFeedNote, PdfFeedNoteContainer } from './PdfFeedNote'
 
+// Mock usePdfThumbnail so tests do not invoke pdfjs-dist (happy-dom has no
+// real canvas renderer). Default: data = undefined (thumbnail pending/absent).
+// Individual tests override via vi.mocked(usePdfThumbnail).mockReturnValue().
+vi.mock('../pdf/usePdfThumbnail', () => ({
+  usePdfThumbnail: vi.fn().mockReturnValue({ data: undefined }),
+}))
+
+import { usePdfThumbnail } from '../pdf/usePdfThumbnail'
+
 const noop = () => {}
 
 const pdfDocNote: Note = {
@@ -274,5 +283,73 @@ describe('PdfFeedNoteContainer', () => {
     await waitFor(() => expect(screen.getByText('Loaded Title')).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'Loaded Title' }))
     expect(onOpenReader).toHaveBeenCalledWith('p1')
+  })
+
+  it('thumbnail from usePdfThumbnail is rendered in the card (#167)', async () => {
+    vi.mocked(usePdfThumbnail).mockReturnValue({
+      data: 'data:image/jpeg;base64,/9j/thumbnaildata',
+    } as ReturnType<typeof usePdfThumbnail>)
+    renderWithProviders(<PdfFeedNoteContainer note={pdfDocNote} />)
+    await waitFor(() => {
+      const img = screen.getByRole('img')
+      expect(img).toHaveAttribute('src', 'data:image/jpeg;base64,/9j/thumbnaildata')
+    })
+    // Restore default mock for subsequent tests.
+    vi.mocked(usePdfThumbnail).mockReturnValue({ data: undefined } as ReturnType<
+      typeof usePdfThumbnail
+    >)
+  })
+})
+
+describe('PdfFeedNote (presentational) — thumbnail (#167)', () => {
+  it('(n) renders a thumbnail <img> when thumbnailDataUrl is provided', () => {
+    renderWithProviders(
+      <PdfFeedNote
+        title="Paper"
+        pageCount={null}
+        noteCount={0}
+        openQuestionCount={0}
+        createdAt={pdfDocNote.created_at}
+        onOpenThread={noop}
+        thumbnailDataUrl="data:image/jpeg;base64,/9j/test"
+      />,
+    )
+    const img = screen.getByRole('img')
+    expect(img).toHaveAttribute('src', 'data:image/jpeg;base64,/9j/test')
+  })
+
+  it('(o) no <img> when thumbnailDataUrl is null (FileText glyph shows via header)', () => {
+    renderWithProviders(
+      <PdfFeedNote
+        title="Paper"
+        pageCount={null}
+        noteCount={0}
+        openQuestionCount={0}
+        createdAt={pdfDocNote.created_at}
+        onOpenThread={noop}
+        thumbnailDataUrl={null}
+      />,
+    )
+    expect(screen.queryByRole('img')).toBeNull()
+  })
+
+  it('(p) clicking the thumbnail strip fires onOpenReader and NOT onOpenThread (#167)', () => {
+    const onOpenReader = vi.fn()
+    const onOpenThread = vi.fn()
+    renderWithProviders(
+      <PdfFeedNote
+        title="Paper"
+        pageCount={null}
+        noteCount={0}
+        openQuestionCount={0}
+        createdAt={pdfDocNote.created_at}
+        onOpenThread={onOpenThread}
+        onOpenReader={onOpenReader}
+        thumbnailDataUrl="data:image/jpeg;base64,/9j/test"
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'open in pdf reader' }))
+    expect(onOpenReader).toHaveBeenCalledTimes(1)
+    expect(onOpenThread).not.toHaveBeenCalled()
   })
 })

@@ -146,11 +146,27 @@ function isTypingTarget(target: EventTarget | null): boolean {
  */
 const SOURCE_NOTE_HEIGHT_ESTIMATE = 320
 
+/**
+ * Height estimate (px) for a PDF source-note card in the feed WITH thumbnail.
+ *
+ * Breakdown: thumbnail strip 96px + header (title 22px + chips 22px +
+ * padding 28px) + open-notes row 44px ≈ 212px. The virtualizer re-measures
+ * on first paint; the estimate only needs to be close enough to prevent a
+ * visible scroll jump when the card first enters the virtual window.
+ *
+ * Why: `estimateBubbleHeight` comment explains close estimates prevent blank
+ * frames on fast scroll. @issue utof/linsae#167
+ */
+const PDF_SOURCE_NOTE_HEIGHT_ESTIMATE = 210
+
 function estimateBubbleHeight(note: Note): number {
   // Source notes render a fixed-height media card — use a constant estimate.
   // The virtualizer replaces this with the measured value on first paint.
   if (note.source_kind === 'youtube' && note.source_locator?.media === 'youtube') {
     return SOURCE_NOTE_HEIGHT_ESTIMATE
+  }
+  if (note.source_kind === 'pdf' && note.source_locator?.media === 'pdf') {
+    return PDF_SOURCE_NOTE_HEIGHT_ESTIMATE
   }
   const body = note.body
   const RENDER_CAP = 4096
