@@ -94,18 +94,39 @@ export function getNote(db: DB, id: string): Note | null {
  * Cursor-based pagination: supply `before` to fetch the most-recent notes created
  * strictly before that Unix-ms timestamp (the previous page when scrolling up).
  *
+ * `excludeThreadChildren`: when `true`, notes that are the `from_note_id` of a
+ * `comment-on` edge are excluded — they belong only in their thread, not the
+ * rolling feed. Thread ROOT notes (the `to_slug` target) are unaffected because
+ * they never appear as `from_note_id` of a comment-on edge. ONLY the FEED passes
+ * this flag (App.tsx ['notes','feed'] query); canvas pickers leave it unset so
+ * comment-on children (e.g. PDF excerpts already placed on the canvas) remain
+ * reachable. @issue utof/linsae#165
+ *
  * @param db - Open better-sqlite3 Database.
  * @param opts.limit - Maximum rows to return (the newest this many).
  * @param opts.before - Optional cursor: only return notes with `created_at < before`.
+ * @param opts.excludeThreadChildren - When true, hide comment-on children from the result.
  * @returns Array of Notes, oldest first.
  * @see docs/specs/v0.1-rolling-feed-and-search.md §User-facing surfaces
+ * @issue utof/linsae#165
  */
-export function listNotes(db: DB, opts: { limit: number; before?: number }): Note[] {
+export function listNotes(
+  db: DB,
+  opts: { limit: number; before?: number; excludeThreadChildren?: boolean },
+): Note[] {
+  // When excludeThreadChildren is set, append a NOT IN subquery that removes every
+  // note whose id appears as from_note_id of a comment-on edge. The subquery is a
+  // full-table scan over `links` (small table), but it is filtered to a single
+  // edge_type value and SQLite can use the composite PK index on (from_note_id,
+  // to_slug, edge_type) — acceptable at personal-vault scale.
+  const excludeClause = opts.excludeThreadChildren
+    ? " AND id NOT IN (SELECT from_note_id FROM links WHERE edge_type='comment-on')"
+    : ''
   // Use `!== undefined` so `before: 0` (valid epoch cursor) doesn't get treated as "no cursor".
   const where =
     opts.before !== undefined
-      ? 'WHERE deleted_at IS NULL AND created_at < ?'
-      : 'WHERE deleted_at IS NULL'
+      ? `WHERE deleted_at IS NULL AND created_at < ?${excludeClause}`
+      : `WHERE deleted_at IS NULL${excludeClause}`
   const params = opts.before !== undefined ? [opts.before, opts.limit] : [opts.limit]
   const rows = db
     .prepare(
@@ -145,6 +166,40 @@ export function updateNote(db: DB, input: UpdateNoteInput): Note {
   // Why: a missing row produces a no-op UPDATE (changes() === 0) with no error;
   // callers that need to detect "not found" should call getNote first.
   return getNote(db, input.id)!
+}
+
+/**
+ * The live source note bound to a PDF document (source_locator.pdf_id), if any.
+ * Why: import idempotency + the excerpt's comment-on target slug.
+ *
+ * At most one *live* source note per pdf_id — that invariant is enforced at
+ * import time (Task 3.3 resolves-or-creates), not by a DB UNIQUE constraint, so
+ * `ORDER BY created_at ASC LIMIT 1` makes the degenerate (duplicate) case
+ * deterministic by returning the canonical oldest row. The `json_extract` filter
+ * is a full scan, acceptable because `type='source'` narrows it to ≈ one row per
+ * imported PDF; do NOT call this in a per-row render loop.
+ *
+ * @param db - Open better-sqlite3 Database.
+ * @param pdfId - The `pdf_documents.id` carried in `source_locator.pdf_id`.
+ * @returns The live `type='source'` pdf note for that id, or `null` if none.
+ * @see docs/specs/v0.6.4-notes-as-threads.md §Data model
+ */
+export function getSourceNoteByPdfId(db: DB, pdfId: string): Note | null {
+  const row = db
+    .prepare(
+      `SELECT id, slug, body, type, created_at, updated_at, deleted_at, source_kind, source_locator
+         FROM notes
+        WHERE deleted_at IS NULL AND type='source' AND source_kind='pdf'
+          AND json_extract(source_locator,'$.pdf_id') = ?
+        ORDER BY created_at ASC
+        LIMIT 1`,
+    )
+    .get(pdfId) as (Omit<Note, 'source_locator'> & { source_locator: string | null }) | undefined
+  if (!row) return null
+  return {
+    ...row,
+    source_locator: row.source_locator ? (JSON.parse(row.source_locator) as SourceLocator) : null,
+  }
 }
 
 /**

@@ -1,4 +1,4 @@
-import { ChevronDown, LayoutGrid, Link2, Pen, Trash2 } from 'lucide-react'
+import { ChevronDown, LayoutGrid, Link2, MessagesSquare, Pen, Trash2 } from 'lucide-react'
 import { type MouseEvent, useEffect, useRef, useState } from 'react'
 import type { Note } from '../../../shared/types'
 import { useClock24 } from '../lib/clock-pref'
@@ -6,6 +6,7 @@ import { Markdown } from '../lib/markdown'
 import { formatTimeOnly } from '../lib/wallclock'
 import { type ContextMenuPos, NoteContextMenu } from './ContextMenu'
 import { MediaFeedNoteContainer } from './MediaFeedNote'
+import { PdfFeedNoteContainer } from './PdfFeedNote'
 
 /**
  * Hard cap on the rendered body length before the fade-out + expand
@@ -42,6 +43,13 @@ interface Props {
   onCopyLink: (id: string) => void
   /** Called when the user clicks "open video notes" on a source-kind note. */
   onOpenThread?: (id: string) => void
+  /**
+   * Called when the user clicks a PDF card's document title to open the reader
+   * dock WITHOUT navigating to the thread. Passed through to PdfFeedNoteContainer,
+   * which binds the pdf_id before forwarding to the presentational layer.
+   * @issue utof/linsae#168
+   */
+  onOpenReader?: (pdfId: string) => void
   /** True while the Feed's multi-select mode is active. Hides the hover
    * action bar and disables the context menu — row clicks toggle selection
    * (Feed intercepts them in capture phase), so per-note affordances would
@@ -101,6 +109,7 @@ export function NoteBubble({
   onDelete,
   onCopyLink,
   onOpenThread,
+  onOpenReader,
   selecting = false,
   placed = false,
   onShelf,
@@ -123,6 +132,9 @@ export function NoteBubble({
   const handleEdit = () => onEdit(note.id)
   const handleDelete = () => onDelete(note.id)
   const handleCopyLink = () => onCopyLink(note.id)
+  // Optional thread-open — bound in the component body for React Compiler
+  // memoization stability (same rationale as the canvas-trace callbacks below).
+  const handleOpenThread = onOpenThread ? () => onOpenThread(note.id) : undefined
   // Canvas-trace callbacks, bound to this bubble's id in the body (NOT a
   // per-`.map()` closure) so the React Compiler keeps NoteBubble's props stable
   // across feed scroll. `undefined` when the parent didn't supply the verb.
@@ -230,6 +242,31 @@ export function NoteBubble({
         <LayoutGrid size={11} />
       </button>
     ) : null
+
+  // PDF document-level branch: render PdfFeedNoteContainer for a doc-level PDF
+  // source note (no page anchor). The `page == null` check (covers both null and
+  // undefined) is the load-bearing discriminator: excerpts are ALSO
+  // source_kind:'pdf' but carry a page field, so a source_kind-only check would
+  // mis-render every excerpt as a document card. The `type === 'source'` guard
+  // mirrors the youtube `isSource` branch and pre-empts a page-less PDF comment-
+  // note (a future type:'claim' shape) ever colliding with the doc-card path.
+  // Why checked after all hooks: Rules of Hooks require no conditional hook calls.
+  const isPdfDoc =
+    note.type === 'source' &&
+    note.source_kind === 'pdf' &&
+    note.source_locator?.media === 'pdf' &&
+    note.source_locator.page == null
+  if (isPdfDoc) {
+    return (
+      <PdfFeedNoteContainer
+        note={note}
+        {...(onOpenThread ? { onOpenThread } : {})}
+        {...(onOpenReader ? { onOpenReader } : {})}
+        onDelete={handleDelete}
+        onCopyLink={handleCopyLink}
+      />
+    )
+  }
 
   // Source-kind branch: render the MediaFeedNoteContainer card instead of a
   // standard text bubble. Checked here (after all hooks) so the Rules of Hooks
@@ -444,6 +481,14 @@ export function NoteBubble({
             boxShadow: 'var(--shadow-1)',
           }}
         >
+          {/* Every icon button MUST set an explicit `color` (the lucide glyph paints
+             with `stroke: currentColor`). Without it a <button> falls back to the
+             UA-default text color, which is color-scheme-dependent: under a dark OS
+             theme — and the app never pins `color-scheme: light` — that default is
+             WHITE, so the glyph vanishes on this white pill. Only `delete` survived
+             (it alone set `color: inherit` → --fg-0), which is why the bar collapsed
+             to a lone trash icon for dark-theme users (B11). The systemic root cause
+             is that the app never declares `color-scheme: light` on :root. */}
           {/* "▦+" add-to-shelf affordance (§4) — only when unplaced; once placed
              the inline ▦ jump chip in the time row replaces it. */}
           {!placed && handleShelf && (
@@ -460,6 +505,7 @@ export function NoteBubble({
                 cursor: 'pointer',
                 padding: 4,
                 position: 'relative',
+                color: 'var(--fg-0)',
               }}
             >
               <LayoutGrid size={14} />
@@ -471,12 +517,35 @@ export function NoteBubble({
               </span>
             </button>
           )}
+          {handleOpenThread && (
+            <button
+              type="button"
+              title="open thread"
+              aria-label="open thread"
+              onClick={handleOpenThread}
+              style={{
+                border: 0,
+                background: 'transparent',
+                cursor: 'pointer',
+                padding: 4,
+                color: 'var(--fg-0)',
+              }}
+            >
+              <MessagesSquare size={14} />
+            </button>
+          )}
           <button
             type="button"
             title="edit"
             aria-label="edit"
             onClick={handleEdit}
-            style={{ border: 0, background: 'transparent', cursor: 'pointer', padding: 4 }}
+            style={{
+              border: 0,
+              background: 'transparent',
+              cursor: 'pointer',
+              padding: 4,
+              color: 'var(--fg-0)',
+            }}
           >
             <Pen size={14} />
           </button>
@@ -485,7 +554,13 @@ export function NoteBubble({
             title="copy link"
             aria-label="copy link"
             onClick={handleCopyLink}
-            style={{ border: 0, background: 'transparent', cursor: 'pointer', padding: 4 }}
+            style={{
+              border: 0,
+              background: 'transparent',
+              cursor: 'pointer',
+              padding: 4,
+              color: 'var(--fg-0)',
+            }}
           >
             <Link2 size={14} />
           </button>
@@ -499,7 +574,9 @@ export function NoteBubble({
               background: deleteArmed ? '#FDECEC' : 'transparent',
               cursor: 'pointer',
               padding: 4,
-              color: deleteArmed ? '#E5484D' : 'inherit',
+              // --fg-0 (not `inherit`) so it matches the other icon buttons and never
+              // resolves to the color-scheme-dependent UA default (B11).
+              color: deleteArmed ? '#E5484D' : 'var(--fg-0)',
             }}
           >
             <Trash2 size={14} />

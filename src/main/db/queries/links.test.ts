@@ -19,7 +19,7 @@ import type { Wikilink } from '../../text/wikilinks'
 import { openDb } from '../client'
 import { runMigrations } from '../migrate'
 import { insertAttachment } from './attachments'
-import { backlinks, commentsForVideo, replaceLinksForNote, setCommentOnEdge } from './links'
+import { backlinks, commentsForNote, replaceLinksForNote, setCommentOnEdge } from './links'
 import { createNote, softDeleteNote } from './notes'
 
 type DB = Database.Database
@@ -91,7 +91,7 @@ describe('links queries', () => {
   })
 })
 
-describe('commentsForVideo', () => {
+describe('commentsForNote', () => {
   // Shared base for attachment insertion
   const attachBase = {
     kind: 'screenshot' as const,
@@ -110,13 +110,13 @@ describe('commentsForVideo', () => {
     // comment-note linked via comment-on
     createNote(db, { id: 'cm1', slug: 'cm 1', body: 'a comment', type: 'claim' })
     setCommentOnEdge(db, 'cm1', video.slug)
-    // wikilink reference to the video — must NOT appear in commentsForVideo
+    // wikilink reference to the video — must NOT appear in commentsForNote
     createNote(db, { id: 'ref1', slug: 'ref 1', body: '[[video 1]]', type: 'claim' })
     replaceLinksForNote(db, 'ref1', [
       { slug: 'video 1', display: 'video 1', section: null, raw: '[[video 1]]' },
     ])
 
-    const results = commentsForVideo(db, video.slug)
+    const results = commentsForNote(db, video.slug)
     expect(results.map((r) => r.note.id)).toEqual(['cm1'])
   })
 
@@ -133,7 +133,7 @@ describe('commentsForVideo', () => {
     setCommentOnEdge(db, 'cm3', video.slug)
     softDeleteNote(db, deleted.id)
 
-    const results = commentsForVideo(db, video.slug)
+    const results = commentsForNote(db, video.slug)
     expect(results.map((r) => r.note.id)).toEqual(['cm2'])
   })
 
@@ -143,7 +143,7 @@ describe('commentsForVideo', () => {
     setCommentOnEdge(db, cm.id, video.slug)
     const att = insertAttachment(db, { ...attachBase, note_id: cm.id })
 
-    const results = commentsForVideo(db, video.slug)
+    const results = commentsForNote(db, video.slug)
     expect(results).toHaveLength(1)
     expect(results[0]?.attachment?.id).toBe(att.id)
     expect(results[0]?.attachment?.base_path).toBe('/tmp/cm1.png')
@@ -154,7 +154,7 @@ describe('commentsForVideo', () => {
     createNote(db, { id: 'cm5', slug: 'cm 5', body: 'no screenshot', type: 'claim' })
     setCommentOnEdge(db, 'cm5', video.slug)
 
-    const results = commentsForVideo(db, video.slug)
+    const results = commentsForNote(db, video.slug)
     expect(results).toHaveLength(1)
     expect(results[0]?.attachment).toBeNull()
   })
@@ -172,7 +172,7 @@ describe('commentsForVideo', () => {
     // soft-delete the attachment
     db.prepare('UPDATE attachments SET deleted_at = 1 WHERE id = ?').run(att.id)
 
-    const results = commentsForVideo(db, video.slug)
+    const results = commentsForNote(db, video.slug)
     expect(results).toHaveLength(1)
     expect(results[0]?.attachment).toBeNull()
   })
@@ -189,7 +189,7 @@ describe('commentsForVideo', () => {
     setCommentOnEdge(db, 'cm7', video.slug)
     setCommentOnEdge(db, 'cm8', video.slug)
 
-    const results = commentsForVideo(db, video.slug)
+    const results = commentsForNote(db, video.slug)
     expect(results.map((r) => r.note.id)).toEqual(['cm8', 'cm7'])
   })
 
@@ -201,7 +201,7 @@ describe('commentsForVideo', () => {
     ).run()
     setCommentOnEdge(db, 'cm9', video.slug)
 
-    const results = commentsForVideo(db, video.slug)
+    const results = commentsForNote(db, video.slug)
     expect(results[0]?.note.source_locator).toEqual({ media: 'youtube', video_id: 'vid1', t: 83 })
   })
 })

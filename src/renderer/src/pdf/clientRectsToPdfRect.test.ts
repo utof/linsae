@@ -26,6 +26,20 @@ describe('clientRectsToPdfRect', () => {
     expect(x).toBeCloseTo(100)
   })
 
+  it('is zoom-invariant: a 2× viewport maps to the same PDF rect (B18)', () => {
+    // At zoom 2 the page renders 2× larger (height 1600) and the client rect is
+    // 2× the pixels — but convertToPdfPoint divides by the same (zoomed) scale,
+    // so the captured PDF-space rect is identical to the scale-1 case above.
+    const viewport = makeViewport(2, 1600)
+    const pageRect = { left: 0, top: 0, right: 1200, bottom: 1600, width: 1200, height: 1600 }
+    const clientRects = [{ left: 200, top: 200, right: 300, bottom: 240, width: 100, height: 40 }]
+    const [x, y, w, h] = clientRectsToPdfRect(viewport as never, pageRect, clientRects as never)
+    expect(x).toBeCloseTo(100)
+    expect(y).toBeCloseTo(680)
+    expect(w).toBeCloseTo(50)
+    expect(h).toBeCloseTo(20)
+  })
+
   it('returns [0,0,0,0] for empty clientRects', () => {
     const viewport = makeViewport(1, 800)
     const pageRect = { left: 0, top: 0, right: 600, bottom: 800, width: 600, height: 800 }

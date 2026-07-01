@@ -6,8 +6,10 @@ import {
   CaptureInputSchema,
   FetchOEmbedInputSchema,
   NotesCreateInputSchema,
+  NotesListInputSchema,
   NotesUpdateInputSchema,
   SaveOverlayInputSchema,
+  SourceLocatorSchema,
   VideoSourcesGetInputSchema,
   VideoSourcesUpsertInputSchema,
 } from './zod-schemas'
@@ -192,5 +194,58 @@ describe('NotesUpdateInputSchema — empty-body rule', () => {
   it('accepts a non-empty body without source_kind', () => {
     const result = NotesUpdateInputSchema.parse({ id: 'n1', body: 'x', type: 'claim' })
     expect(result.body).toBe('x')
+  })
+})
+
+describe('NotesListInputSchema — excludeThreadChildren scope (#165)', () => {
+  it('defaults excludeThreadChildren to undefined (absent) so the IPC handler is unfiltered by default (canvas pickers stay unfiltered)', () => {
+    // The IPC handler uses `...(i.excludeThreadChildren ? { excludeThreadChildren: true } : {})`,
+    // so `undefined` → the flag is never passed to listNotes → no child filtering.
+    // This locks the "pickers unfiltered" invariant: as long as the schema produces
+    // `undefined` when the field is absent, adding excludeThreadChildren: false to a
+    // picker call would have identical effect to omitting it entirely.
+    const parsed = NotesListInputSchema.parse({})
+    expect(parsed.excludeThreadChildren).toBeUndefined()
+    expect(parsed.limit).toBe(500) // default limit unchanged
+  })
+
+  it('passes excludeThreadChildren: true through when set (feed query path)', () => {
+    const parsed = NotesListInputSchema.parse({ excludeThreadChildren: true })
+    expect(parsed.excludeThreadChildren).toBe(true)
+  })
+
+  it('passes excludeThreadChildren: false through when explicitly set', () => {
+    const parsed = NotesListInputSchema.parse({ excludeThreadChildren: false })
+    expect(parsed.excludeThreadChildren).toBe(false)
+  })
+})
+
+describe('SourceLocatorSchema — PdfLocator widening (B3)', () => {
+  it('accepts a document-level pdf locator (no page/rect/quote)', () => {
+    expect(SourceLocatorSchema.parse({ media: 'pdf', pdf_id: 'p1' })).toMatchObject({
+      media: 'pdf',
+      pdf_id: 'p1',
+    })
+  })
+  it('still accepts a full excerpt locator and routes pdf vs youtube', () => {
+    expect(
+      SourceLocatorSchema.parse({
+        media: 'pdf',
+        pdf_id: 'p1',
+        page: 42,
+        rect: [0, 0, 1, 1],
+        quote: 'q',
+        prefix: '',
+        suffix: '',
+      }).media,
+    ).toBe('pdf')
+    expect(SourceLocatorSchema.parse({ media: 'youtube', video_id: 'abc' }).media).toBe('youtube')
+  })
+  it('accepts a partial locator (page present, other excerpt fields absent)', () => {
+    // The intermediate state the widening newly admits; the PdfFeedNote
+    // `page == null` discriminator (B3.4) hinges on page being distinguishable.
+    const parsed = SourceLocatorSchema.parse({ media: 'pdf', pdf_id: 'p1', page: 42 })
+    expect(parsed).toMatchObject({ media: 'pdf', pdf_id: 'p1', page: 42 })
+    expect((parsed as { quote?: string }).quote).toBeUndefined()
   })
 })

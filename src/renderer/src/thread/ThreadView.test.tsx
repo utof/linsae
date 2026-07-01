@@ -19,15 +19,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
 import { serializeScene } from '../ink/svg'
+import { useDockStore } from '../panes/dockStore'
 
-// Mock usePlayer so tests never touch the player singleton / iframe.
+// Mock usePlayerState so tests never touch the player singleton / rAF loop.
 // `seekTo` is a shared spy and `currentTime` is read from a mutable holder so
 // follow-scroll tests can advance the playhead between renders.
+// After B5: ThreadView uses usePlayerState (read-only) — usePlayer lives in PlayerPane.
 const seekTo = vi.fn()
 const player = { seekTo, play: vi.fn(), pause: vi.fn(), mount: vi.fn(), unmount: vi.fn() }
 const playerState = { currentTime: 0 }
-vi.mock('../yt/usePlayer', () => ({
-  usePlayer: () => ({
+vi.mock('../yt/usePlayerState', () => ({
+  usePlayerState: () => ({
     player,
     currentTime: playerState.currentTime,
     state: 'paused',
@@ -105,6 +107,8 @@ const scrollIntoView = vi.fn()
 Element.prototype.scrollIntoView = scrollIntoView
 
 beforeEach(() => {
+  // Reset dockStore so openPane('player') calls start from a clean slate (B5).
+  useDockStore.getState().reset()
   scrollIntoView.mockClear()
   playerState.currentTime = 0
   getMediaRect.mockReturnValue({ x: 0, y: 0, width: 480, height: 270 } as DOMRect)
@@ -139,18 +143,6 @@ describe('ThreadView', () => {
     await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
   })
 
-  it('toggles between stacked and split layouts', async () => {
-    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
-    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
-    // Stacked by default: horizontal resize handle present, vertical absent.
-    expect(screen.getByTestId('player-resize')).toBeInTheDocument()
-    expect(screen.queryByTestId('player-resize-v')).toBeNull()
-    // Switch to split: vertical handle appears, horizontal goes away.
-    fireEvent.click(screen.getByLabelText('toggle layout'))
-    expect(screen.getByTestId('player-resize-v')).toBeInTheDocument()
-    expect(screen.queryByTestId('player-resize')).toBeNull()
-  })
-
   it('(c) SortPill toggles mode and re-orders notes', async () => {
     renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
 
@@ -178,9 +170,16 @@ describe('ThreadView', () => {
     expect(getOrder()).toEqual(['note at five seconds', 'note at ten seconds'])
   })
 
-  it('(d) player host element is in the DOM', async () => {
+  it('(d) opening a youtube thread opens the player pane in dockStore; no in-body player-host', async () => {
+    // B5: player placeholder moved to right-dock PlayerPane; ThreadView opens the pane.
     renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
-    await waitFor(() => expect(screen.getByTestId('player-host')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    // The 'player' pane should now be active in the right dock.
+    await waitFor(() => expect(useDockStore.getState().right.activeId).toBe('player'))
+
+    // ThreadView itself must NOT render the player-host div (it's in PlayerPane now).
+    expect(screen.queryByTestId('player-host')).toBeNull()
   })
 
   it('(c) SortPill: capture mode places earlier-captured note first when order differs', async () => {
@@ -252,21 +251,11 @@ describe('ThreadView follow-scroll + click-to-seek', () => {
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
   })
 
-  it('does NOT scroll on a currentTime change while followOn is false (no reverse coupling)', async () => {
-    const { rerenderThread } = renderThread()
-    await waitFor(() => expect(screen.getByText('note at five seconds')).toBeInTheDocument())
-
-    // Turn follow OFF, then clear any scroll triggered while it was on.
-    fireEvent.click(screen.getByRole('button', { name: /follow playback/i }))
-    scrollIntoView.mockClear()
-
-    // Advance the playhead past a cluster and re-render WITHOUT re-enabling
-    // follow. With follow off, the note list must NOT auto-scroll.
-    playerState.currentTime = 7
-    rerenderThread()
-
-    expect(scrollIntoView).not.toHaveBeenCalled()
-  })
+  // Note: the "turn follow OFF" test is removed in B5 — the follow-toggle button
+  // was part of TransportBar, which now lives in the right-dock PlayerPane (not
+  // ThreadView). Follow defaults to ON and is always active in ThreadView.
+  // The scroll-never-seeks invariant (scroll event ≠ seekTo) is covered by the
+  // separate "scroll-never-seeks invariant" describe block below.
 })
 
 // ---------------------------------------------------------------------------
@@ -668,41 +657,153 @@ describe('ThreadView scroll-never-seeks invariant', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Generic chronological thread (plain / pdf notes) — Task 2.3
+// ---------------------------------------------------------------------------
+
+/** Plain note with NO source_kind — triggers the generic branch. */
+const PLAIN_NOTE: Note = {
+  id: 'n1',
+  slug: 'plain-note',
+  body: 'root body',
+  type: 'claim',
+  created_at: 1000,
+  updated_at: 1000,
+  deleted_at: null,
+}
+
+/** First child note (no timestamp anchor). */
+const CHILD_ONE: Note = {
+  id: 'c1',
+  slug: 'c1',
+  body: 'child one',
+  type: 'claim',
+  created_at: 1100,
+  updated_at: 1100,
+  deleted_at: null,
+}
+
+/** Second child note (no timestamp anchor). */
+const CHILD_TWO: Note = {
+  id: 'c2',
+  slug: 'c2',
+  body: 'child two',
+  type: 'claim',
+  created_at: 1200,
+  updated_at: 1200,
+  deleted_at: null,
+}
+
+describe('ThreadView generic thread (plain/pdf)', () => {
+  it('renders a generic chronological thread for a plain note (no player, no sort pill)', async () => {
+    // Override beforeEach defaults: resolve a plain note with two children (no `t`).
+    mockApi.notes.get.mockResolvedValue(PLAIN_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([
+      { note: CHILD_ONE, attachment: null },
+      { note: CHILD_TWO, attachment: null },
+    ])
+
+    renderWithProviders(<ThreadView noteId="n1" onClose={() => {}} />)
+
+    // Children render via NoteBubble → Markdown pipeline.
+    expect(await screen.findByText(/child one/)).toBeInTheDocument()
+    // No sort pill (video/capture toggle is youtube-only).
+    expect(screen.queryByRole('button', { name: /sort/i })).toBeNull()
+    // SimpleComposer is present (renders a <textarea>).
+    expect(screen.getByRole('textbox')).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Media-pane (re)open on thread-open — issue #166
+// Opening a media note's thread MUST (re)open the corresponding dock pane,
+// even if the user had explicitly closed it before.
+// ---------------------------------------------------------------------------
+
+/** PDF source note fixture — triggers the pdf branch in ThreadView. */
+const PDF_SOURCE_NOTE: Note = {
+  id: 'pdf-note-1',
+  slug: 'my-pdf',
+  body: '',
+  type: 'source',
+  created_at: 1000,
+  updated_at: 1000,
+  deleted_at: null,
+  source_kind: 'pdf',
+  source_locator: { media: 'pdf', pdf_id: 'doc-p1' },
+}
+
+describe('ThreadView media-pane reopen on thread-open (#166)', () => {
+  it('(e) opening a PDF note thread opens the pdf dock pane', async () => {
+    mockApi.notes.get.mockResolvedValue(PDF_SOURCE_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([])
+
+    renderWithProviders(<ThreadView noteId="pdf-note-1" onClose={() => {}} />)
+
+    // The 'pdf' pane must be opened in the right dock once the note loads.
+    await waitFor(() => expect(useDockStore.getState().right.activeId).toBe('pdf'))
+    expect(useDockStore.getState().right.openPaneIds).toContain('pdf')
+  })
+
+  it('(f) re-opening a PDF thread re-opens the pdf pane even after it was explicitly closed', async () => {
+    // Why: issue #166 — the pane must re-appear even when the user had dismissed it.
+    mockApi.notes.get.mockResolvedValue(PDF_SOURCE_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([])
+
+    const { unmount } = renderWithProviders(<ThreadView noteId="pdf-note-1" onClose={() => {}} />)
+    // First open: pane appears.
+    await waitFor(() => expect(useDockStore.getState().right.activeId).toBe('pdf'))
+
+    // User explicitly closes the pane (simulates the dock × button).
+    useDockStore.getState().closePane('pdf')
+    expect(useDockStore.getState().right.activeId).not.toBe('pdf')
+
+    // Navigate back to feed (unmount) then open the same thread again (remount).
+    unmount()
+    renderWithProviders(<ThreadView noteId="pdf-note-1" onClose={() => {}} />)
+
+    // Pane must reappear even though it was closed between opens.
+    await waitFor(() => expect(useDockStore.getState().right.activeId).toBe('pdf'))
+  })
+
+  it('(g) re-opening a YouTube thread re-opens the player pane even after it was explicitly closed', async () => {
+    // Confirms the existing YouTube path handles re-open correctly (issue #166 check).
+    const { unmount } = renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(useDockStore.getState().right.activeId).toBe('player'))
+
+    // User closes the player pane.
+    useDockStore.getState().closePane('player')
+    expect(useDockStore.getState().right.activeId).not.toBe('player')
+
+    // Navigate away + back → ThreadView remounts, effect fires again.
+    unmount()
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+
+    await waitFor(() => expect(useDockStore.getState().right.activeId).toBe('player'))
+  })
+})
+
+// ---------------------------------------------------------------------------
 // FIX 2: guard against empty commentOn when note hasn't loaded
 // ---------------------------------------------------------------------------
 
 describe('ThreadView FIX 2 — post guard when note not loaded', () => {
-  it('does not call notes.create when note is null (commentOn guard throws)', async () => {
+  it('does not call notes.create when note is null (postPlain guard returns early)', async () => {
     // Override notes.get to return null so `note` never populates.
+    // With branching: note=null → kind='plain' → generic branch renders with SimpleComposer.
+    // postPlain guards: `if (!note?.slug) return` — notes.create is never reached.
     mockApi.notes.get.mockResolvedValue(null)
-    // Capture still works (videoId will be '' but the mock accepts anything).
-    mockApi.youtube.capture.mockResolvedValue({
-      id: 'att3',
-      path: '/store/x.png',
-      sha256: 'x',
-      width: 480,
-      height: 270,
-      devicePixelRatio: 1,
-    })
-    mockApi.youtube.saveOverlay.mockResolvedValue({ overlayPath: null })
 
     renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
-    // Wait for render to settle (title won't appear since videoSource has no title).
+    // Wait for render to settle — back button is always in the header.
     await waitFor(() => expect(screen.getByLabelText('back')).toBeInTheDocument())
 
-    // Trigger capture → editor opens → Done (empty) → pending chip, then try to post.
-    fireEvent.click(screen.getByLabelText('capture frame'))
-    await waitFor(() => expect(screen.getByTestId('annotate-editor')).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: /^done$/i }))
-    await waitFor(() => expect(screen.queryByTestId('annotate-editor')).toBeNull())
-
-    // Type a caption and submit.
+    // The generic branch renders SimpleComposer (note=null → kind='plain').
+    // Type a caption and submit — postPlain returns early because note?.slug is falsy.
     const textarea = screen.getByRole('textbox')
     fireEvent.change(textarea, { target: { value: 'caption' } })
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
 
-    // The mutationFn should throw before reaching notes.create.
-    // Allow React Query a tick to process the mutation.
+    // Allow async postPlain a tick to run its early return.
     await new Promise((r) => setTimeout(r, 50))
     expect(mockApi.notes.create).not.toHaveBeenCalled()
   })

@@ -6,6 +6,7 @@
       "!!dist",
       "!!out",
       "!!node_modules",
+      "!!.claude",
       "!!v21-design-system",
       "!!.vite",
       "!!src/renderer/src/styles/colors_and_type.css",

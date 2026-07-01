@@ -44,12 +44,20 @@ export const api = {
     /**
      * Paginated feed of non-deleted notes, newest-first.
      * Why optional `input`: lets components call `api.notes.list()` without
-     * payload; defaults (e.g. `limit: 100`) are applied by the main-process
+     * payload; defaults (e.g. `limit: 500`) are applied by the main-process
      * Zod parse on `NotesListInputSchema`.
+     *
+     * `excludeThreadChildren`: pass `true` from the FEED query only (#165);
+     * canvas pickers (EdgeTargetPicker, Picker, DevBootMeter) omit it so they
+     * can reach every note including comment-on children placed on the canvas.
      * @see src/main/ipc/notes.ts
+     * @issue utof/linsae#165
      */
-    list: (input?: { limit?: number; before?: number }): Promise<Note[]> =>
-      window.api.notes.list(input ?? {}),
+    list: (input?: {
+      limit?: number
+      before?: number
+      excludeThreadChildren?: boolean
+    }): Promise<Note[]> => window.api.notes.list(input ?? {}),
     /**
      * Fetch a single note by id (returns `null` if not found / soft-deleted).
      * @see src/main/ipc/notes.ts
@@ -130,6 +138,15 @@ export const api = {
      * @see docs/specs/v0.5-command-search.md §7 */
     recordAccess: (noteId: string, kind: AccessKind): Promise<{ ok: true }> =>
       window.api.notes.recordAccess({ noteId, kind }),
+    /**
+     * Resolve the live source note whose source_locator.pdf_id matches pdfId, or null.
+     * Why: import idempotency (Task 3.3) + excerpt commentOn target slug (Task 4.1).
+     * The DB function is `getSourceNoteByPdfId`; the renderer-facing name is
+     * `findSourceByPdfId` — two distinct names by design (spec §Name consistency).
+     * @see docs/specs/v0.6.4-notes-as-threads.md §Data model
+     */
+    findSourceByPdfId: (pdfId: string): Promise<Note | null> =>
+      window.api.notes.findSourceByPdfId({ pdfId }),
   },
   /**
    * PDF IPC facade: content-addressed import, open-by-id (with derived

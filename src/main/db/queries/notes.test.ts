@@ -15,7 +15,14 @@ import type Database from 'better-sqlite3'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { openDb } from '../client'
 import { runMigrations } from '../migrate'
-import { createNote, getNote, listNotes, softDeleteNote, updateNote } from './notes'
+import {
+  createNote,
+  getNote,
+  getSourceNoteByPdfId,
+  listNotes,
+  softDeleteNote,
+  updateNote,
+} from './notes'
 
 type DB = Database.Database
 
@@ -106,6 +113,30 @@ describe('notes queries', () => {
     expect(n?.source_locator).toBeNull()
   })
 
+  it('getSourceNoteByPdfId returns the live source note for a pdf_id', () => {
+    db.prepare(
+      `INSERT INTO notes (id, slug, body, type, created_at, updated_at, source_kind, source_locator)
+       VALUES ('d1','d1','','source',1,1,'pdf', ?)`,
+    ).run(JSON.stringify({ media: 'pdf', pdf_id: 'pdf-1' }))
+    expect(getSourceNoteByPdfId(db, 'pdf-1')?.id).toBe('d1')
+    expect(getSourceNoteByPdfId(db, 'absent')).toBeNull()
+  })
+
+  it('getSourceNoteByPdfId excludes deleted, non-source, and non-pdf rows sharing the pdf_id', () => {
+    const loc = JSON.stringify({ media: 'pdf', pdf_id: 'pdf-2' })
+    // soft-deleted source note → must NOT resurrect (the deleted_at filter)
+    db.prepare(
+      `INSERT INTO notes (id, slug, body, type, created_at, updated_at, deleted_at, source_kind, source_locator)
+       VALUES ('del','del','','source',1,1,5,'pdf', ?)`,
+    ).run(loc)
+    // a claim/excerpt carrying the same pdf_id → must NOT match (the type filter)
+    db.prepare(
+      `INSERT INTO notes (id, slug, body, type, created_at, updated_at, source_kind, source_locator)
+       VALUES ('exc','exc','q','claim',1,1,'pdf', ?)`,
+    ).run(loc)
+    expect(getSourceNoteByPdfId(db, 'pdf-2')).toBeNull()
+  })
+
   it('listNotes hydrates source_kind and parses source_locator for a source note', () => {
     db.prepare(
       `INSERT INTO notes (id, slug, body, type, created_at, updated_at, source_kind, source_locator)
@@ -115,5 +146,28 @@ describe('notes queries', () => {
     expect(n?.source_kind).toBe('youtube')
     expect(n?.source_locator).toEqual({ media: 'youtube', video_id: 'dQw4w9WgXcQ', t: 83 })
     expect(typeof n?.source_locator).toBe('object') // guards against the string-not-parsed regression
+  })
+
+  it('listNotes({ excludeThreadChildren: true }) hides comment-on children but keeps roots and standalones (#165)', () => {
+    // (a) standalone plain note
+    createNote(db, { id: 'standalone', slug: 'standalone', body: 'standalone', type: 'claim' })
+    // (b) source/root note — thread ROOT, not a child; must stay in feed
+    createNote(db, { id: 'root', slug: 'root', body: 'root', type: 'source' })
+    // (c) comment-on child — its from_note_id is in links WHERE edge_type='comment-on'; must be hidden
+    createNote(db, { id: 'child', slug: 'child', body: 'child', type: 'claim' })
+    db.prepare(
+      `INSERT INTO links (from_note_id, to_slug, edge_type) VALUES ('child', 'root', 'comment-on')`,
+    ).run()
+
+    // Without the flag: all three visible (backward compat — other consumers still see children)
+    expect(listNotes(db, { limit: 10 }).map((n) => n.id)).toEqual(['standalone', 'root', 'child'])
+
+    // With the flag: only standalone and root survive; child is excluded.
+    // Root is the comment-on TARGET (to_slug), NOT the from_note_id, so the subquery
+    // `SELECT from_note_id FROM links WHERE edge_type='comment-on'` does NOT contain root.
+    const feedIds = listNotes(db, { limit: 10, excludeThreadChildren: true }).map((n) => n.id)
+    expect(feedIds).toContain('standalone')
+    expect(feedIds).toContain('root')
+    expect(feedIds).not.toContain('child')
   })
 })

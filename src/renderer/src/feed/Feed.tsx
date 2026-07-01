@@ -8,6 +8,7 @@ import { dayKey, formatDayLabel } from '../lib/day'
 import { type ContextMenuItem, type ContextMenuPos, ContextMenuShell } from './ContextMenu'
 import { DayDivider, ScrollDatePill } from './DatePills'
 import { useEntranceAnimation } from './entrance/useEntranceAnimation'
+import { FEED_BAND, type FeedBand } from './feedBand'
 import { NoteBubble } from './NoteBubble'
 import { SelectionBar } from './SelectionBar'
 import { fillToIndex } from './selectionRange'
@@ -25,6 +26,12 @@ interface Props {
   onCopyLink: (id: string) => void
   /** Called when the user opens the thread panel for a source note. */
   onOpenThread?: (id: string) => void
+  /**
+   * Called when the user clicks a PDF card's title to open the reader dock
+   * without navigating to the thread. Threaded to NoteBubble → PdfFeedNoteContainer.
+   * @issue utof/linsae#168
+   */
+  onOpenReader?: (pdfId: string) => void
   /**
    * Ids of notes that currently have a placed card on the canvas (§9). Drives
    * each bubble's ▦ trace. Defaults to an empty set so callers that don't track
@@ -54,6 +61,15 @@ interface Props {
    * desync the rendered range (the #66 white wall). No ghost (ADR 0020).
    */
   sendInFlight?: boolean
+  /**
+   * "Model A" feed band (ADR 0047): when a dock is open, App measures the window
+   * and the open dock widths and passes the resolved `{ maxWidth, marginLeft,
+   * marginRight }` so the feed stays centered in the WINDOW (docks fill the side
+   * gutters) and shrinks only once a dock is widened past its gutter. `null`/
+   * undefined ⇒ the default centered `FEED_BAND.default` band with auto margins
+   * (the pre-dock layout, unchanged). @see src/renderer/src/feed/feedBand.ts
+   */
+  band?: FeedBand | null
 }
 
 /** Stable empty set so the default `placedNoteIds` keeps a frozen identity
@@ -130,11 +146,27 @@ function isTypingTarget(target: EventTarget | null): boolean {
  */
 const SOURCE_NOTE_HEIGHT_ESTIMATE = 320
 
+/**
+ * Height estimate (px) for a PDF source-note card in the feed WITH thumbnail.
+ *
+ * Breakdown: thumbnail strip 96px + header (title 22px + chips 22px +
+ * padding 28px) + open-notes row 44px ≈ 212px. The virtualizer re-measures
+ * on first paint; the estimate only needs to be close enough to prevent a
+ * visible scroll jump when the card first enters the virtual window.
+ *
+ * Why: `estimateBubbleHeight` comment explains close estimates prevent blank
+ * frames on fast scroll. @issue utof/linsae#167
+ */
+const PDF_SOURCE_NOTE_HEIGHT_ESTIMATE = 210
+
 function estimateBubbleHeight(note: Note): number {
   // Source notes render a fixed-height media card — use a constant estimate.
   // The virtualizer replaces this with the measured value on first paint.
   if (note.source_kind === 'youtube' && note.source_locator?.media === 'youtube') {
     return SOURCE_NOTE_HEIGHT_ESTIMATE
+  }
+  if (note.source_kind === 'pdf' && note.source_locator?.media === 'pdf') {
+    return PDF_SOURCE_NOTE_HEIGHT_ESTIMATE
   }
   const body = note.body
   const RENDER_CAP = 4096
@@ -219,12 +251,14 @@ export function Feed({
   onDelete,
   onCopyLink,
   onOpenThread,
+  onOpenReader,
   placedNoteIds = EMPTY_PLACED,
   onShelf,
   onPlaceOnCanvas,
   onJumpToCard,
   scrollerRef,
   sendInFlight = false,
+  band = null,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
@@ -774,9 +808,35 @@ export function Feed({
       onPointerEnter={thumb.onAreaEnter}
       onPointerLeave={thumb.onAreaLeave}
       onPointerMove={thumb.onAreaPointerMove}
-      style={{ flex: 1, minHeight: 0, padding: '0 32px' }}
+      // Model A (ADR 0047): when a dock is open App passes `band`, and the feed
+      // surrenders its symmetric 32px padding to the computed gutters so the band
+      // can sit centered-in-window (or flush against a wide dock). No dock ⇒ the
+      // original `0 32px` padding + centered 720 band.
+      style={{ flex: 1, minHeight: 0, padding: band ? 0 : '0 32px' }}
     >
-      <div style={{ maxWidth: 720, margin: '0 auto', height: '100%', position: 'relative' }}>
+      <div
+        // No CSS `min-width` here on purpose (B14): the dock's render width is
+        // window-capped (App + maxDockWidth) so `<main>` keeps ≥ FEED_BAND.min in
+        // normal cases; letting the band shrink to fit its container guarantees the
+        // feed can NEVER overflow under the dock, even in a pathologically narrow
+        // window. @see adrs/0047-feed-default-width-docks-fill-gutters.md
+        style={
+          band
+            ? {
+                maxWidth: band.maxWidth,
+                marginLeft: band.marginLeft,
+                marginRight: band.marginRight,
+                height: '100%',
+                position: 'relative',
+              }
+            : {
+                maxWidth: FEED_BAND.default,
+                margin: '0 auto',
+                height: '100%',
+                position: 'relative',
+              }
+        }
+      >
         <div
           ref={handleScrollerRef}
           onScroll={onFeedScroll}
@@ -902,6 +962,7 @@ export function Feed({
                     onDelete={onDelete}
                     onCopyLink={onCopyLink}
                     {...(onOpenThread ? { onOpenThread } : {})}
+                    {...(onOpenReader ? { onOpenReader } : {})}
                     selecting={selectionMode}
                     // Canvas ▦ traces — stable id-callbacks bound in NoteBubble's
                     // body (ADR 0006). `placed` flips the bubble's affordance set.

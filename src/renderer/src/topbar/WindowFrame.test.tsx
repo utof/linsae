@@ -21,6 +21,8 @@ const baseProps = {
   onViewChange: () => {},
   dockOpen: false,
   onToggleDock: () => {},
+  backlinksOpen: false,
+  onToggleBacklinks: () => {},
 }
 
 describe('WindowFrame', () => {
@@ -75,6 +77,25 @@ describe('WindowFrame', () => {
   it('dock toggle reflects aria-pressed=true when dockOpen', () => {
     render(<WindowFrame {...baseProps} dockOpen={true} />)
     expect(screen.getByRole('button', { name: /toggle shelf/i })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+  })
+
+  it('B2: backlinks toggle renders, reflects backlinksOpen, and fires onToggleBacklinks', () => {
+    const onToggleBacklinks = vi.fn()
+    render(
+      <WindowFrame {...baseProps} backlinksOpen={false} onToggleBacklinks={onToggleBacklinks} />,
+    )
+    const toggle = screen.getByRole('button', { name: /toggle backlinks/i })
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(toggle)
+    expect(onToggleBacklinks).toHaveBeenCalledOnce()
+  })
+
+  it('B2: backlinks toggle reflects aria-pressed=true when backlinksOpen', () => {
+    render(<WindowFrame {...baseProps} backlinksOpen={true} />)
+    expect(screen.getByRole('button', { name: /toggle backlinks/i })).toHaveAttribute(
       'aria-pressed',
       'true',
     )

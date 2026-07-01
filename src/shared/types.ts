@@ -20,17 +20,22 @@ export interface YoutubeLocator {
  * selectors, so the anchor survives re-flow / re-extraction). The exact
  * selected text plus prefix/suffix disambiguators let a quote be re-found even
  * when the page's text-position offsets drift.
+ *
+ * The excerpt-only fields (`page`/`rect`/`quote`/`prefix`/`suffix`) are optional
+ * so a document-level anchor needs only `{media:'pdf', pdf_id}` — see the
+ * optional-widening trade-off in the v0.6.4 spec.
  * @see docs/specs/v0.6-pdf-slim-slice.md
+ * @see docs/specs/v0.6.4-notes-as-threads.md
  * @see https://www.w3.org/TR/annotation-model/#text-quote-selector
  */
 export interface PdfLocator {
   media: 'pdf'
   pdf_id: string // → pdf_documents.id
-  page: number // 1-indexed
-  rect: [number, number, number, number] // PDF user-space [x, y, w, h]
-  quote: string // TextQuoteSelector — exact selected text
-  prefix: string // disambiguator
-  suffix: string // disambiguator
+  page?: number // 1-indexed; omitted for document-level (non-excerpt) anchors
+  rect?: [number, number, number, number] // PDF user-space [x, y, w, h]; excerpt-only
+  quote?: string // TextQuoteSelector — exact selected text; excerpt-only
+  prefix?: string // disambiguator; excerpt-only
+  suffix?: string // disambiguator; excerpt-only
   textStart?: number // TextPositionSelector over page text (best-effort)
   textEnd?: number // best-effort; omitted if getTextContent() ordering is unreliable
 }

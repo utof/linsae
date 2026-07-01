@@ -4,13 +4,15 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useHotkeys } from 'react-hotkeys-hook'
 import { MANUAL_ARRANGEMENT_ID, ROOT_CANVAS_ID } from '../../shared/canvas'
 import type { Note, NoteType } from '../../shared/types'
-import { BacklinksPane } from './backlinks/BacklinksPane'
+import { BacklinksContext } from './backlinks/BacklinksContext'
 import { CanvasStage } from './canvas/CanvasStage'
+import { PlacementGhost } from './canvas/PlacementGhost'
 import { RecentPopover } from './canvas/RecentPopover'
 import { StatusBar } from './canvas/StatusBar'
 import { Composer } from './composer/Composer'
 import { setOverlay, toggleOverlay, useDevOverlay } from './dev/devOverlays'
 import { Feed } from './feed/Feed'
+import { computeFeedBand } from './feed/feedBand'
 import { api } from './lib/api'
 import { noteTitle } from './lib/note-title'
 import { parseYouTubeUrl } from './lib/parse-youtube-url'
@@ -18,7 +20,9 @@ import { CommandMenu } from './palette/CommandMenu'
 import { ContentSearch } from './palette/ContentSearch'
 import { type Command, useCommandStore } from './palette/command-store'
 import { QuickSwitcher } from './palette/QuickSwitcher'
-import { Dock } from './panes/Dock'
+import { DockHost } from './panes/DockHost'
+import { maxDockWidth } from './panes/dock-widths'
+import { dockWidthFor, isSideShown, paneKind, useDockStore } from './panes/dockStore'
 import { ShelfContext } from './panes/ShelfPane'
 import { useExcerptStore } from './pdf/excerptState'
 import { useOpenPdf, usePdfOpenId } from './pdf/usePdfOpenId'
@@ -86,13 +90,21 @@ type ActivePalette = 'none' | 'command' | 'title' | 'content'
  */
 export function App() {
   const queryClient = useQueryClient()
+  // Feed query: distinct key ['notes','feed'] so it lives in a separate cache
+  // entry from the pickers' ['notes'] key. invalidateQueries({ queryKey: ['notes'] })
+  // (prefix match, no exact:true anywhere in the codebase) still invalidates this
+  // query on every create/update/delete/excerpt (verified via context7 TanStack Query
+  // v5 docs — prefix matching is the default). Canvas pickers keep queryKey:['notes']
+  // + api.notes.list() (no flag) → unfiltered, so comment-on children (PDF excerpts
+  // placed on the canvas) remain reachable. @issue utof/linsae#165
   const { data: notes = [], isPending: notesPending } = useQuery({
-    queryKey: ['notes'],
+    queryKey: ['notes', 'feed'],
     // limit defaults to 500 (the Zod max) — the NEWEST 500 notes, oldest-first
     // (listNotes). A new note is always in this page; older notes beyond 500 wait
     // on scroll-back pagination (issue #20). The plan literal said 5000 but the
-    // schema caps at 500.
-    queryFn: () => api.notes.list(),
+    // schema caps at 500. excludeThreadChildren hides comment-on children (#165)
+    // from the feed — they belong only in their thread (PDF thread, YouTube thread).
+    queryFn: () => api.notes.list({ excludeThreadChildren: true }),
   })
   const [focusedId, setFocusedId] = useState<string | null>(null)
   const [activePalette, setActivePalette] = useState<ActivePalette>('none')
@@ -114,8 +126,23 @@ export function App() {
   // verb; CanvasStage consumes it to show the ghost + banner, then calls
   // onPlacingDone on commit/cancel. Carries the title for the banner copy.
   const [placing, setPlacing] = useState<{ noteId: string; title: string } | null>(null)
-  // Left dock (shelf) open state — in-memory view-state, not persisted (§10).
-  const [dockOpen, setDockOpen] = useState(false)
+  // Whether each dock SIDE is shown (has an active pane AND is not explicitly
+  // collapsed — B19). Drives the WindowFrame side toggles' pressed-state and the
+  // geometry below (a collapsed/empty side contributes 0 width so the feed reclaims
+  // it). The top toggle collapses/restores the WHOLE side, not a single tab.
+  const leftShown = useDockStore((s) => isSideShown(s, 'left'))
+  const rightShown = useDockStore((s) => isSideShown(s, 'right'))
+  // Per-side dock geometry inputs (ADR 0047). App is the geometry owner: it measures
+  // the window (bodyWidth) and reads each shown side's active pane + stored width,
+  // then derives the window-capped effective widths (B14) below — driving BOTH the
+  // feed band and the rendered dock widths from the same numbers so they can't
+  // disagree. A hidden (collapsed/empty) side reads as no active pane → 0 width.
+  const leftActiveId = useDockStore((s) => (isSideShown(s, 'left') ? s.left.activeId : null))
+  const rightActiveId = useDockStore((s) => (isSideShown(s, 'right') ? s.right.activeId : null))
+  const leftStoredW = useDockStore((s) => (isSideShown(s, 'left') ? dockWidthFor(s, 'left') : 0))
+  const rightStoredW = useDockStore((s) => (isSideShown(s, 'right') ? dockWidthFor(s, 'right') : 0))
+  const bodyRowRef = useRef<HTMLDivElement | null>(null)
+  const [bodyWidth, setBodyWidth] = useState(0)
   // Recent-popover open state lives in App so the status-bar trigger and (Task
   // 11) ⌘J can both toggle it; rendered above the status bar (spec §14).
   const [recentOpen, setRecentOpen] = useState(false)
@@ -149,11 +176,28 @@ export function App() {
   const [successCount, setSuccessCount] = useState(0)
 
   // Right-dock PDF reader (spec §6): the open-pdf id is persisted in the
-  // app_settings store so the dock restores on boot. `pdfPaneOpen` mounts the
-  // right <Dock>; `openPdf(null)` (Dock onClose) clears it.
+  // app_settings store so the dock restores on boot. `openPdf(null)`
+  // (pane onClose, via handlePaneClose) clears it.
   const pdfOpenId = usePdfOpenId()
   const openPdf = useOpenPdf()
-  const pdfPaneOpen = pdfOpenId !== null
+  // Boot/restore: when the persisted open-pdf id resolves, open its dock pane.
+  // The store starts empty (in-memory), so the v0.6 "restore on boot" behavior
+  // must be reasserted explicitly here. Intentionally one-way (open only) — the
+  // close path flows solely through handlePaneClose, which clears the persisted
+  // id so this effect won't reopen it. @see docs/specs/v0.6.2-dock-shell.md §4 (C2)
+  useEffect(() => {
+    if (pdfOpenId != null) useDockStore.getState().openPane('pdf')
+  }, [pdfOpenId])
+  // closePane + side effects App owns: closing 'pdf' clears the persisted id
+  // (else the restore effect reopens it); 'backlinks' clears focus (I1, Task 6).
+  const handlePaneClose = useCallback(
+    (paneId: string) => {
+      useDockStore.getState().closePane(paneId)
+      if (paneId === 'pdf') void openPdf(null)
+      if (paneId === 'backlinks') setFocusedId(null)
+    },
+    [openPdf],
+  )
   // Open PDF…: native picker → content-addressed import → set the open-pdf id
   // (the right dock mounts + the next boot restores from `pdf.openDocId`).
   // openPdf is stable (useOpenPdf memoizes), so this stays stable for the
@@ -165,10 +209,23 @@ export function App() {
       if (!filePaths[0]) return
       const result = await api.pdf.import(filePaths[0])
       await openPdf(result.pdfId)
+      // Create-or-resolve the PDF source note so the PDF persists in the feed
+      // (idempotent — one note per pdf_id; empty body → uuid slug). @see spec §Data model
+      // @see docs/specs/v0.6.4-notes-as-threads.md §Data model
+      const existing = await api.notes.findSourceByPdfId(result.pdfId)
+      if (!existing) {
+        await api.notes.create('', 'source', {
+          source_kind: 'pdf',
+          source_locator: { media: 'pdf', pdf_id: result.pdfId },
+        })
+        void queryClient.invalidateQueries({ queryKey: ['notes'] })
+        void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
+        void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
+      }
     } catch (err) {
       console.error('[App] Open PDF failed', err)
     }
-  }, [openPdf])
+  }, [openPdf, queryClient])
 
   // Widen the pinned-data refetch (spec §3): saves must converge feed↔canvas,
   // and link edits must redraw canvas edges. Invalidates the feed list, every
@@ -187,45 +244,81 @@ export function App() {
     void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
   }
 
-  // ── PDF excerpt → canvas ghost-placement bridge (spec §7) ─────────────────
+  // ── PDF excerpt → thread-child bridge (spec §7, v0.6.4 B4) ──────────────
   // The right-dock PDF pane captures a text selection into excerptState; the
   // "Excerpt →" affordance flips `armed`. We watch `armed` (NOT `pending`) so a
-  // note is created + canvas placement armed ONLY on that explicit click —
-  // watching `pending` would persist a note on every selection and orphan one
-  // on re-selection (round-2 review B3). Mirrors the feed→canvas onPlaceOnCanvas
-  // precedent: resolve the note id first, then set `placing`. No view switch —
-  // the PDF dock coexists with the canvas (spec §6: it is not a third viewMode),
-  // so the user excerpts while already in canvas view.
+  // note is created ONLY on that explicit click — watching `pending` would create
+  // on every selection (round-2 review B3). v0.6.4 change: the excerpt becomes
+  // a comment-on CHILD of the PDF's source note (so it appears in the PDF thread)
+  // with type='claim' instead of 'source'. The forced canvas switch is removed —
+  // ghost-placement is now CONDITIONAL on already being in canvas view. Excerpting
+  // from feed/thread drops the child into the PDF's thread without yanking to canvas.
+  // @issue v0.6.3 PDF "place on canvas" created a note in the feed instead of a ghost
+  // @see docs/specs/v0.6.4-notes-as-threads.md §Task 4.1
   const pendingExcerpt = useExcerptStore((s) => s.pending)
   const armed = useExcerptStore((s) => s.armed)
   const clearExcerpt = useExcerptStore((s) => s.clear)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: invalidate recreates each render but is behaviorally stable (hardcoded keys, stable queryClient); adding it to deps would churn the bridge on every render
+  // biome-ignore lint/correctness/useExhaustiveDependencies: invalidate + clearExcerpt recreate / are stable zustand actions — adding them churns the bridge every render; queryClient is stable from useQueryClient
   useEffect(() => {
     if (!armed || !pendingExcerpt) return
-    let cancelled = false
+    // Snapshot both values and consume the excerpt store BEFORE any async work.
+    // Create-once guarantee: clearExcerpt() sets armed=false + pending=null so
+    // any viewMode-triggered re-run sees !armed → early-return without re-creating.
+    // viewMode is in deps so modeAtArm captures the correct view at arm-time.
+    const snapshot = pendingExcerpt
+    const modeAtArm = viewMode
+    // MUST stay before the await — moving it below reintroduces the double-create
+    // a viewMode-triggered re-run would otherwise cause (see create-once note above).
+    clearExcerpt()
     void (async () => {
       try {
-        const note = await api.notes.create(pendingExcerpt.text, 'source', {
+        // Resolve the PDF's source note (created on open in Task 3.3).
+        // Null-guard: if missing (doc opened before v0.6.4), create it first.
+        let src = await api.notes.findSourceByPdfId(snapshot.pdfId)
+        if (!src) {
+          src = await api.notes.create('', 'source', {
+            source_kind: 'pdf',
+            source_locator: { media: 'pdf', pdf_id: snapshot.pdfId },
+          })
+        }
+        // Create the excerpt as a comment-on child of the PDF source note.
+        // type='claim' (an excerpt is commentary, not a media source reference);
+        // commentOn wires it into the PDF's thread so it appears there
+        // without requiring a canvas switch (spec §7, v0.6.4 B4).
+        const note = await api.notes.create(snapshot.text, 'claim', {
           source_kind: 'pdf',
-          source_locator: pendingExcerpt.locator,
+          source_locator: snapshot.locator,
+          commentOn: src.slug,
         })
-        // The note exists in the DB at this point regardless of whether canvas
-        // placement proceeds; invalidate feed/switcher/recent now so the note
-        // appears in the feed, ⌘O title switcher, and ⌘J recent (spec §3
-        // invariant). Matches the invalidation every other create path calls.
+        // Invalidate feed + title-switcher + recent + the PDF source note's thread
+        // so the child appears immediately. Thread queryKey is ['thread', noteId]
+        // — see useThreadNotes.ts:92. Invalidate uses the source note's id.
         invalidate()
-        // A clear()/re-selection between arm and resolve flips the deps and runs
-        // this cleanup (cancelled=true), so a late create never sets a stale ghost.
-        if (cancelled) return
-        setPlacing({ noteId: note.id, title: noteTitle(note) })
+        void queryClient.invalidateQueries({ queryKey: ['thread', src.id] })
+        // Conditional placement: ghost-place only when already on the canvas.
+        // Feed / thread view: child is in the PDF's thread — no ghost needed.
+        // Canvas view: also ghost-place so the user can drag-position it
+        //   (v0.6 place-on-canvas path survives — notes are live canvas refs).
+        if (modeAtArm === 'canvas') {
+          setPlacing({ noteId: note.id, title: noteTitle(note) })
+        }
+        // Non-canvas: excerpt already consumed by clearExcerpt() above; done.
+        // setViewMode('canvas') intentionally removed (v0.6.4 B4 spec change).
       } catch (err) {
         console.error('[App] excerpt note create failed', err)
+        // Restore the consumed excerpt so a failed create doesn't silently lose
+        // the user's selection. set() re-stores `pending` with armed:false, so the
+        // effect re-runs but early-returns (!armed) — no double-create. The user
+        // re-clicks "Excerpt →" to retry. (Without this, the sync clearExcerpt()
+        // above would drop the text on any IPC/DB failure — v0.6 kept it.)
+        useExcerptStore.getState().set(snapshot)
       }
     })()
-    return () => {
-      cancelled = true
-    }
-  }, [armed, pendingExcerpt])
+    // No cleanup needed: clearExcerpt() already consumed the excerpt store so any
+    // viewMode-triggered re-run sees !armed → early-return. Creates are
+    // unconditional (the note must land in the DB). React 18 safely ignores
+    // setState-after-unmount for the setPlacing call.
+  }, [armed, pendingExcerpt, viewMode])
   // Shared placement teardown: clears the canvas ghost AND the excerpt store.
   // Passed to CanvasStage (fires on canvas-click commit AND its capture-phase
   // esc) and reused by App's esc ladder for the focus-outside-canvas case.
@@ -338,6 +431,48 @@ export function App() {
       for (const c of base) store.unregister(c.id)
     }
   }, [viewMode, onOpenPdf])
+
+  // Register "Open backlinks" only while a note is focused. A dedicated [focusedId]
+  // effect (not a `when` gate) because CommandMenu evaluates when() against the
+  // closure captured at registration time, so a register-once
+  // `when: () => focusedId != null` would capture the mount-render null and never
+  // update. @see docs/specs/v0.6.2-dock-shell.md Decision 5
+  useEffect(() => {
+    if (focusedId == null) return
+    const store = useCommandStore.getState()
+    store.register({
+      id: 'backlinks.open',
+      label: 'Open backlinks',
+      run: () => useDockStore.getState().openPane('backlinks'),
+    })
+    return () => store.unregister('backlinks.open')
+  }, [focusedId])
+
+  // Focus ↔ backlinks-pane coupling (B6 / ADR 0047). Focusing a note OPENS the
+  // backlinks dock pane (this folds in the retired transient overlay's "show on
+  // focus" behavior — Model A's gutter layout removed the shift that justified a
+  // separate overlay, so 0046's dual surface collapses to one dock pane). Clearing
+  // focus auto-closes it (I2: a backlinks pane with no subject is dead chrome).
+  // Idempotent with I1's close→clear-focus (handlePaneClose): after a tab/header
+  // close the pane is already gone, so the null-focus branch is a no-op — no loop.
+  useEffect(() => {
+    const dock = useDockStore.getState()
+    if (focusedId != null) dock.openPane('backlinks')
+    else if (dock.right.openPaneIds.includes('backlinks')) dock.closePane('backlinks')
+  }, [focusedId])
+
+  // Body-row width for the "Model A" feed band (ADR 0047). The body row spans the
+  // full window width; combined with the open dock widths the feed centers in the
+  // window and shrinks only when a dock encroaches. happy-dom reports 0 (no layout)
+  // → computeFeedBand returns null → the feed uses its default centered band.
+  useEffect(() => {
+    const el = bodyRowRef.current
+    if (!el) return
+    setBodyWidth(el.getBoundingClientRect().width)
+    const ro = new ResizeObserver(() => setBodyWidth(el.getBoundingClientRect().width))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   // Remove the static boot splash (index.html #boot-splash) once the notes
   // query has settled. The splash paints on the first frame — before the JS
@@ -567,6 +702,24 @@ export function App() {
   )
 
   /**
+   * Opens the PDF reader dock for a specific pdf_id without navigating to its
+   * thread (#168). Called by the feed's PdfFeedNote title-click path (via Feed →
+   * NoteBubble → PdfFeedNoteContainer → PdfFeedNote). Mirrors ThreadView.tsx's
+   * PDF-open effect: writes `pdf.openDocId` asynchronously (so the setting persists
+   * across restarts) and calls `openPane('pdf')` synchronously (so the dock opens
+   * immediately without waiting for the DB write).
+   *
+   * @issue utof/linsae#168
+   */
+  const handleOpenPdfReader = useCallback(
+    (pdfId: string) => {
+      void openPdf(pdfId)
+      useDockStore.getState().openPane('pdf')
+    },
+    [openPdf],
+  )
+
+  /**
    * Opens the ThreadView for a source note, clearing focusedId so the
    * BacklinksPane doesn't linger while the thread is open, and clearing
    * editingNoteId so a stale edit-mode Composer cannot reappear when the
@@ -690,6 +843,48 @@ export function App() {
     [viewMode, onGotoNote, onJumpToCard, onBeginShelfDrag],
   )
 
+  // BacklinksContext value (mirrors shelfContextValue) — feeds the backlinks dock
+  // pane's prop-free body the focused note + jump verb. The overlay re-provides its
+  // own (identical) values locally. @see docs/specs/v0.6.2-dock-shell.md §3
+  const backlinksContextValue = useMemo(() => ({ focusedId, onJump: setFocusedId }), [focusedId])
+
+  // Dock geometry (B14 / ADR 0047). Per side: `max` is the window-aware resize cap
+  // (so a drag can't push the feed below its min or overlap it — capping each side
+  // against the OTHER side's width keeps the result consistent for any pane/dock
+  // count), and `eff` is the effective render width = min(stored, max), which also
+  // re-caps a previously-stored width when the window shrinks. Before measurement
+  // (bodyWidth ≤ 0) capping is skipped so the dock renders at its stored width with
+  // no flash. The SAME eff widths feed both the dock render and the feed band, so
+  // the dock can never overlap the feed at any width.
+  const dockGeom = useMemo(() => {
+    const resolve = (activeId: string | null, stored: number, otherStored: number) => {
+      if (!activeId) return { eff: 0, max: 0 }
+      if (bodyWidth <= 0) return { eff: stored, max: stored }
+      const max = maxDockWidth(paneKind(activeId), otherStored, bodyWidth)
+      return { eff: Math.min(stored, max), max }
+    }
+    return {
+      left: resolve(leftActiveId, leftStoredW, rightStoredW),
+      right: resolve(rightActiveId, rightStoredW, leftStoredW),
+    }
+  }, [leftActiveId, rightActiveId, leftStoredW, rightStoredW, bodyWidth])
+
+  // "Model A" feed band (ADR 0047): null while no dock is open (feed uses its
+  // default centered band) or before the body width is measured. Fed the EFFECTIVE
+  // (capped) dock widths so it agrees with what the docks actually render.
+  const feedBand = useMemo(
+    () => computeFeedBand(bodyWidth, dockGeom.left.eff, dockGeom.right.eff),
+    [bodyWidth, dockGeom],
+  )
+
+  // B4 — feed→canvas selection carry-over. When a note is focused in the feed and
+  // its card is placed on the canvas, hand its id to CanvasStage so it selects the
+  // card on the view switch. Gated on `placedNoteIds` so we never select a note
+  // that isn't on the canvas. One-directional (feed focus → canvas selection);
+  // CanvasStage reads it once at mount (it remounts on each feed→canvas swap).
+  // @see adrs/0047-feed-default-width-docks-fill-gutters.md
+  const canvasSelectId = focusedId && placedNoteIds.has(focusedId) ? focusedId : null
+
   // ADR-0019 guardrail: every animation respects prefers-reduced-motion. A
   // zero-duration transition keeps the AnimatePresence swap semantics (mount/
   // unmount on view change) but removes the slide motion. @see adrs/0019-motion.md
@@ -703,51 +898,55 @@ export function App() {
     // navigation surface (spec §4). The dock is window chrome — it coexists with
     // both views and reads `view` to branch its row-click behaviour.
     <ShelfContext.Provider value={shelfContextValue}>
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          height: '100vh',
-          overflow: 'hidden',
-          background: 'var(--bg-0)',
-        }}
-      >
-        <WindowFrame
-          onOpenPalette={() => setActivePalette('command')}
-          onOpenSettings={() => setSettingsOpen(true)}
-          view={viewMode}
-          onViewChange={setViewMode}
-          dockOpen={dockOpen}
-          onToggleDock={() => setDockOpen((o) => !o)}
-        />
-        {/* Body row: position:relative so BacklinksPane can absolutely overlay
-         it without pushing the feed left when the pane opens (the previous
-         flex-sibling layout shifted the entire feed; user feedback called
-         that "annoying and too much for such a small action"). The pane
-         covers the feed area only — WindowFrame stays visible above.
-         When threadNoteId is non-null, ThreadView replaces the feed+composer
-         and BacklinksPane entirely (they are mutually exclusive UI modes).
-         key={threadNoteId} forces a remount when switching threads so the
-         player singleton and duration write-back state reset per video. */}
+      {/* BacklinksContext feeds the dock pane's prop-free body (spec §3); both
+       DockHosts and the transient overlay live inside it. */}
+      <BacklinksContext.Provider value={backlinksContextValue}>
         <div
           style={{
             display: 'flex',
-            flex: 1,
-            minHeight: 0,
-            position: 'relative',
+            flexDirection: 'column',
+            height: '100vh',
+            overflow: 'hidden',
+            background: 'var(--bg-0)',
           }}
         >
-          {threadNoteId ? (
-            <ThreadView
-              key={threadNoteId}
-              noteId={threadNoteId}
-              onClose={() => setThreadNoteId(null)}
-            />
-          ) : (
+          <WindowFrame
+            onOpenPalette={() => setActivePalette('command')}
+            onOpenSettings={() => setSettingsOpen(true)}
+            view={viewMode}
+            onViewChange={setViewMode}
+            dockOpen={leftShown}
+            onToggleDock={() => useDockStore.getState().toggleSide('left')}
+            backlinksOpen={rightShown}
+            onToggleBacklinks={() => useDockStore.getState().toggleSide('right')}
+          />
+          {/* Body row: [left dock][center stage][right dock] (ADR 0045). bodyRowRef
+         feeds the "Model A" feed-band measurement (ADR 0047) — its width is the
+         window width the feed centers within while docks fill the side gutters.
+         Both DockHosts are ALWAYS mounted (v0.6.4 B1); the thread is a branch
+         INSIDE <main>, peer to canvas/feed, so the docked PDF reader / YouTube
+         player is never torn down on thread open. key={threadNoteId} on ThreadView
+         forces a remount when switching threads so the player singleton and duration
+         write-back state reset per video. */}
+          <div
+            ref={bodyRowRef}
+            style={{
+              display: 'flex',
+              flex: 1,
+              minHeight: 0,
+              position: 'relative',
+            }}
+          >
             <>
-              {/* Dock (spec §10) — window chrome, sits LEFT of <main> and coexists
-                with both views. Returns null when closed. */}
-              <Dock open={dockOpen} paneId="shelf" onClose={() => setDockOpen(false)} />
+              {/* Left dock — always mounted (v0.6.4 B1): thread is a sub-state of
+              <main>, so the dock coexists with all center stages (canvas/thread/feed).
+              DockHost self-hides when its side is empty (store owns open/active/width). */}
+              <DockHost
+                side="left"
+                onPaneClose={handlePaneClose}
+                width={dockGeom.left.eff}
+                maxWidth={dockGeom.left.max}
+              />
               <main
                 style={{
                   display: 'flex',
@@ -828,12 +1027,38 @@ export function App() {
                       <CanvasStage
                         onWikilinkClick={onWikilinkClick}
                         resolveSlug={resolveSlug}
+                        selectNoteId={canvasSelectId}
                         placing={placing}
                         onPlacingDone={onPlacingDone}
                         onCameraChange={handleCameraChange}
                         fitSignal={fitSignal}
                         resetSignal={resetSignal}
                         jumpTo={jumpTo}
+                      />
+                    </motion.div>
+                  ) : threadNoteId ? (
+                    /* Thread is a feed sub-state: canvas wins over thread;
+                       toggling canvas while a thread is open shows the canvas,
+                       toggling back reveals the thread again (v0.6.4 B1). */
+                    <motion.div
+                      key="thread"
+                      initial={{ x: '100%' }}
+                      animate={{ x: 0 }}
+                      exit={{ x: '-100%' }}
+                      transition={slideTransition}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        flex: 1,
+                        minHeight: 0,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <ThreadView
+                        key={threadNoteId}
+                        noteId={threadNoteId}
+                        onClose={() => setThreadNoteId(null)}
+                        onWikilinkClick={onWikilinkClick}
                       />
                     </motion.div>
                   ) : (
@@ -870,6 +1095,7 @@ export function App() {
                           notes={notes}
                           scrollerRef={feedScrollerRef}
                           sendInFlight={sendInFlight}
+                          band={feedBand}
                           focusedId={focusedId}
                           // Toggle behaviour: clicking an unfocused bubble focuses it (opens
                           // BacklinksPane); clicking the already-focused bubble unfocuses it
@@ -887,6 +1113,7 @@ export function App() {
                             void navigator.clipboard.writeText(`linsae://note/${id}`)
                           }}
                           onOpenThread={openThread}
+                          onOpenReader={handleOpenPdfReader}
                           // Canvas traces + verbs (spec §6/§9) — placedNoteIds drives the
                           // ▦ chip; the three callbacks are threaded to NoteBubble by id.
                           placedNoteIds={placedNoteIds}
@@ -898,6 +1125,7 @@ export function App() {
                       {editingNote ? (
                         <Composer
                           key={editingNote.id}
+                          band={feedBand}
                           initialBody={editingNote.body}
                           initialMode={editingNote.type}
                           editMode
@@ -915,6 +1143,7 @@ export function App() {
                         // key unchanged so the user's text + cursor survive.
                         <Composer
                           key={`${draftBody ?? 'fresh'}-${successCount}`}
+                          band={feedBand}
                           initialBody={draftBody ?? ''}
                           initialMode="claim"
                           error={submitError}
@@ -933,34 +1162,24 @@ export function App() {
                   )}
                 </AnimatePresence>
               </main>
-              {/* Right dock (spec §6) — the PDF reader, sits RIGHT of <main> so
-                the layout reads [left dock][center stage][right dock: pdf].
-                Mounts only when a PDF is open (`pdf.openDocId` set). */}
-              {pdfPaneOpen && (
-                <Dock
-                  open
-                  paneId="pdf"
-                  side="right"
-                  onClose={() => {
-                    void openPdf(null)
-                  }}
-                />
-              )}
-              {focusedId && (
-                <BacklinksPane
-                  focusedNoteId={focusedId}
-                  onClose={() => setFocusedId(null)}
-                  onJump={setFocusedId}
-                />
-              )}
+              {/* Right dock — always mounted (v0.6.4 B1). Hosts the PDF pane
+              (restore effect / Open PDF…) AND the backlinks pane as peer tabs
+              (B6 / ADR 0047); both close via handlePaneClose (I1 clears focus
+              for backlinks). View-independent chrome: close × reachable from
+              canvas view too (B5). */}
+              <DockHost
+                side="right"
+                onPaneClose={handlePaneClose}
+                width={dockGeom.right.eff}
+                maxWidth={dockGeom.right.max}
+              />
             </>
-          )}
-        </div>
-        {/* App-wide footer (spec §14): the status strip plus the recent popover it
+          </div>
+          {/* App-wide footer (spec §14): the status strip plus the recent popover it
           anchors. position:relative so RecentPopover (position:absolute,
-          bottom:100%) floats UP from the strip. Hidden during a thread so the
-          full-screen ThreadView owns the chrome. */}
-        {!threadNoteId && (
+          bottom:100%) floats UP from the strip. Always mounted alongside the
+          thread — the thread owns its own back-bar title, the global StatusBar
+          stays (v0.6.4 B1). */}
           <div style={{ position: 'relative', flexShrink: 0 }}>
             <RecentPopover
               open={recentOpen}
@@ -972,36 +1191,44 @@ export function App() {
               placedCount={placedNoteIds.size}
               unplacedCount={unplacedCount}
               zoomPct={zoomPct}
-              onOpenShelf={() => setDockOpen(true)}
+              onOpenShelf={() => useDockStore.getState().openPane('shelf')}
               onResetZoom={() => setResetSignal((s) => s + 1)}
               onFit={() => setFitSignal((s) => s + 1)}
               onToggleRecent={() => setRecentOpen((o) => !o)}
             />
           </div>
-        )}
-        <CommandMenu open={activePalette === 'command'} onClose={() => setActivePalette('none')} />
-        <QuickSwitcher
-          open={activePalette === 'title'}
-          onJump={onSwitcherJump}
-          onClose={() => setActivePalette('none')}
-        />
-        <ContentSearch
-          open={activePalette === 'content'}
-          onClose={() => setActivePalette('none')}
-          onJump={onSwitcherJump}
-        />
-        <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-        {DEV_PLAYGROUND && revealOpen && RevealPlayground && (
-          <Suspense fallback={null}>
-            <RevealPlayground onClose={() => setOverlay('reveal', false)} />
-          </Suspense>
-        )}
-        {WaveTuner && waveOn && (
-          <Suspense fallback={null}>
-            <WaveTuner />
-          </Suspense>
-        )}
-      </div>
+          <CommandMenu
+            open={activePalette === 'command'}
+            onClose={() => setActivePalette('none')}
+          />
+          <QuickSwitcher
+            open={activePalette === 'title'}
+            onJump={onSwitcherJump}
+            onClose={() => setActivePalette('none')}
+          />
+          <ContentSearch
+            open={activePalette === 'content'}
+            onClose={() => setActivePalette('none')}
+            onJump={onSwitcherJump}
+          />
+          <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+          {/* B16: window-level placement ghost — follows the cursor over the whole
+              window (dock/PDF included) while a one-shot placement is active, so the
+              note "in hand" is always visible. The drop still commits only on the
+              canvas via CanvasStage's viewport click→placeAt path. */}
+          {placing && <PlacementGhost title={placing.title} />}
+          {DEV_PLAYGROUND && revealOpen && RevealPlayground && (
+            <Suspense fallback={null}>
+              <RevealPlayground onClose={() => setOverlay('reveal', false)} />
+            </Suspense>
+          )}
+          {WaveTuner && waveOn && (
+            <Suspense fallback={null}>
+              <WaveTuner />
+            </Suspense>
+          )}
+        </div>
+      </BacklinksContext.Provider>
     </ShelfContext.Provider>
   )
 }

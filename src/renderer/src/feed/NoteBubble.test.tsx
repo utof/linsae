@@ -644,6 +644,49 @@ describe('NoteBubble', () => {
     expect(screen.queryByRole('button', { name: /open video notes/i })).not.toBeInTheDocument()
   })
 
+  it('plain note exposes an open-thread affordance on hover', () => {
+    const onOpenThread = vi.fn()
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        onOpenThread={onOpenThread}
+        focused={false}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.mouseEnter(bubble)
+    fireEvent.click(screen.getByRole('button', { name: /open thread/i }))
+    expect(onOpenThread).toHaveBeenCalledWith(baseNote.id)
+  })
+
+  it('omits the open-thread affordance when onOpenThread is not supplied', () => {
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.mouseEnter(bubble)
+    expect(screen.queryByRole('button', { name: /open thread/i })).not.toBeInTheDocument()
+  })
+
   it('youtube comment-note (type:claim + source_locator.t) renders as a normal bubble, NOT a video card', () => {
     // A comment-note posted by ⌘⇧C has type:'claim', source_kind:'youtube',
     // and source_locator with a timestamp (t). Before the isSource fix these
@@ -793,6 +836,68 @@ describe('NoteBubble canvas ▦ traces (§4/§9)', () => {
     expect(screen.queryByRole('menuitem', { name: 'on canvas' })).not.toBeInTheDocument()
   })
 
+  // B11 guard #1: the hover toolbar must expose the FULL action set in the DOM.
+  it('hover toolbar exposes the full action set (shelf/edit/copy/delete), not just delete (B11)', () => {
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        placed={false}
+        onShelf={vi.fn()}
+        onPlaceOnCanvas={vi.fn()}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.mouseEnter(bubble)
+    expect(screen.getByRole('button', { name: 'add to shelf' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'edit' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'copy link' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'delete' })).toBeInTheDocument()
+  })
+
+  // B11 guard #2 (the real bug): each icon button MUST pin an explicit `color`.
+  // The lucide glyph paints with `stroke: currentColor`; a <button> with no color
+  // falls back to the UA-default text color, which is color-scheme-dependent —
+  // under a dark OS theme (the app never pins `color-scheme: light`) that default
+  // is WHITE, so the glyph vanished on the white pill and the bar collapsed to a
+  // lone trash icon (which alone set a color). happy-dom can't observe the UA
+  // default or paint, so we assert the structural invariant that prevents it: a
+  // non-empty, theme-independent color on every button. Falsification: drop the
+  // color from edit/copy/shelf → `style.color` is '' → this fails.
+  it('every hover toolbar icon button pins an explicit --fg-0 color (theme-independent) (B11)', () => {
+    const { container } = render(
+      <NoteBubble
+        note={baseNote}
+        focused={false}
+        expanded={false}
+        placed={false}
+        onShelf={vi.fn()}
+        onPlaceOnCanvas={vi.fn()}
+        onToggleExpand={noop}
+        onFocus={noop}
+        onWikilinkClick={noop}
+        onEdit={noop}
+        onDelete={noop}
+        onCopyLink={noop}
+      />,
+    )
+    const bubble = container.querySelector('[data-bubble]')
+    if (!bubble) throw new Error('bubble not found')
+    fireEvent.mouseEnter(bubble)
+    for (const name of ['add to shelf', 'edit', 'copy link', 'delete']) {
+      const btn = screen.getByRole('button', { name })
+      expect(btn.style.color).toBe('var(--fg-0)')
+    }
+  })
+
   it('placed bubble shows the ▦ jump chip + the "on canvas" jump menu verb', () => {
     const onJumpToCard = vi.fn()
     const { container } = render(
@@ -826,5 +931,62 @@ describe('NoteBubble canvas ▦ traces (§4/§9)', () => {
     expect(screen.getByRole('menuitem', { name: 'on canvas' })).toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: '→ shelf' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'place on canvas…' })).not.toBeInTheDocument()
+  })
+})
+
+// ── PDF doc-level branch (page-absent discriminator) ──────────────────────────
+describe('NoteBubble pdf-doc branch (page-absent discriminator)', () => {
+  const pdfDoc: Note = {
+    id: 'd1',
+    slug: 'd1',
+    body: '',
+    type: 'source',
+    source_kind: 'pdf',
+    source_locator: { media: 'pdf', pdf_id: 'p1' },
+    created_at: 1,
+    updated_at: 1,
+    deleted_at: null,
+  }
+  const pdfExcerpt: Note = {
+    id: 'e1',
+    slug: 'e1',
+    body: 'a quote',
+    type: 'source',
+    source_kind: 'pdf',
+    source_locator: {
+      media: 'pdf',
+      pdf_id: 'p1',
+      page: 42,
+      rect: [0, 0, 1, 1],
+      quote: 'a quote',
+      prefix: '',
+      suffix: '',
+    },
+    created_at: 2,
+    updated_at: 2,
+    deleted_at: null,
+  }
+  const props = {
+    focused: false,
+    expanded: false,
+    onToggleExpand: noop,
+    onFocus: noop,
+    onWikilinkClick: noop,
+    onEdit: noop,
+    onDelete: noop,
+    onCopyLink: noop,
+  }
+
+  it('renders a PdfFeedNote card for a document-level pdf note', () => {
+    installMockApi()
+    render(<NoteBubble note={pdfDoc} {...props} />)
+    expect(screen.getByRole('button', { name: /open notes/i })).toBeInTheDocument()
+  })
+
+  it('does NOT render a card for a page-bearing pdf excerpt (renders text)', () => {
+    installMockApi()
+    render(<NoteBubble note={pdfExcerpt} {...props} />)
+    expect(screen.queryByRole('button', { name: /open notes/i })).toBeNull()
+    expect(screen.getByText('a quote')).toBeInTheDocument()
   })
 })

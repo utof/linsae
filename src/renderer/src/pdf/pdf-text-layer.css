@@ -1,0 +1,34 @@
+/*
+ * B7 — make drag-selection visible in the pdf.js text layer.
+ *
+ * pdf.js's bundled `web/pdf_viewer.css` (imported in main.tsx) DELIBERATELY
+ * zeroes the native selection highlight:
+ *
+ *     .textLayer ::selection     { background: transparent; }
+ *     .textLayer ::-moz-selection { background: transparent; }
+ *
+ * The full viewer paints its own `.highlight` editor spans instead, but this
+ * slim single-page reader never wires that up — so dragging across text in the
+ * (transparent-glyph) overlay produced NO visible highlight at all.
+ *
+ * Re-enable a normal selection highlight. The text spans carry
+ * `color: transparent` (the real glyphs are on the canvas BELOW), so the
+ * highlight MUST be translucent or it would hide the underlying glyphs — hence
+ * the accent token at 0.3 alpha via relative-color syntax (Chromium 148 /
+ * Electron 42; @see adrs/0044-electron-42-bump.md). Higher specificity than
+ * pdf.js's `.textLayer ::selection` (this is `.textLayer span::selection`) so
+ * it wins independent of CSS bundle order. `::selection` and `::-moz-selection`
+ * are split into separate rules: an unknown pseudo-element invalidates the
+ * whole selector list in the other engine.
+ *
+ * This styles the REAL DOM selection only — `window.getSelection()` and excerpt
+ * capture are unaffected.
+ *
+ * @see node_modules/pdfjs-dist/web/pdf_viewer.css (.textLayer ::selection rule)
+ */
+.textLayer span::selection {
+  background: rgb(from var(--accent) r g b / 0.3);
+}
+.textLayer span::-moz-selection {
+  background: rgb(from var(--accent) r g b / 0.3);
+}

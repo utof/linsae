@@ -37,15 +37,21 @@ const YoutubeLocatorSchema = z.object({
   video_id: z.string().min(1),
   t: z.number().nonnegative().optional(),
 })
-/** The pdf branch of SourceLocatorSchema — W3C text+position selectors over a PDF page. */
+/**
+ * The pdf branch of SourceLocatorSchema — W3C text+position selectors over a PDF page.
+ * `page`/`rect`/`quote`/`prefix`/`suffix` are optional so a document-level anchor
+ * `{media:'pdf', pdf_id}` is valid (spec §Data model, v0.6.4 notes-as-threads widening).
+ * Accepted trade-off: a malformed excerpt locator could pass Zod — excerpts are
+ * constructed internally, never from raw user JSON (spec §Data model explicitly accepted).
+ */
 const PdfLocatorSchema = z.object({
   media: z.literal('pdf'),
   pdf_id: z.string().min(1),
-  page: z.number().int().positive(),
-  rect: z.tuple([z.number(), z.number(), z.number(), z.number()]),
-  quote: z.string(),
-  prefix: z.string(),
-  suffix: z.string(),
+  page: z.number().int().positive().optional(),
+  rect: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(),
+  quote: z.string().optional(),
+  prefix: z.string().optional(),
+  suffix: z.string().optional(),
   textStart: z.number().int().nonnegative().optional(),
   textEnd: z.number().int().nonnegative().optional(),
 })
@@ -70,8 +76,12 @@ export const SourceLocatorSchema = z.discriminatedUnion('media', [
  *
  * Why: `limit` caps the page size so the renderer cannot request an unbounded
  * result set. `before` is an optional cursor (Unix ms timestamp) for
- * infinite-scroll pagination.
+ * infinite-scroll pagination. `excludeThreadChildren` filters comment-on
+ * children from the result — used by the FEED only (#165); canvas pickers
+ * leave it unset (false/undefined) so they can reach every note including
+ * PDF excerpts that are comment-on children but live on the canvas.
  * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 6
+ * @issue utof/linsae#165
  */
 export const NotesListInputSchema = z.object({
   // Default to the max page size: `listNotes` returns the NEWEST `limit` notes, so
@@ -79,6 +89,7 @@ export const NotesListInputSchema = z.object({
   // covers most personal vaults in one page until scroll-back pagination (#20).
   limit: z.number().int().positive().max(500).default(500),
   before: z.number().int().nonnegative().optional(),
+  excludeThreadChildren: z.boolean().optional(),
 })
 
 /**
@@ -449,3 +460,15 @@ export const ChooseFileInputSchema = z
     filters: z.array(z.object({ name: z.string(), extensions: z.array(z.string()) })).optional(),
   })
   .optional()
+
+// ── v0.6.4 notes-as-threads ───────────────────────────────────────────────
+/**
+ * Input schema for the `notes:findSourceByPdfId` IPC channel.
+ *
+ * Why: resolves the live source note bound to a PDF document — used by import
+ * idempotency (Task 3.3) and the excerpt's commentOn target slug (Task 4.1).
+ * The DB query is `getSourceNoteByPdfId`; the renderer-facing name is
+ * `findSourceByPdfId` — two distinct names by design (spec §Name consistency).
+ * @see docs/specs/v0.6.4-notes-as-threads.md §Data model
+ */
+export const FindSourceByPdfIdInputSchema = z.object({ pdfId: z.string().min(1) })

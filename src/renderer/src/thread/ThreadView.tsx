@@ -1,92 +1,93 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronLeft, Clock, Columns2, Film, Rows2 } from 'lucide-react'
-import {
-  type PointerEvent as ReactPointerEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react'
+import { ChevronLeft, Clock, Film } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import type { Attachment } from '../../../shared/types'
 import { AnnotateEditor } from '../annotate/AnnotateEditor'
 import { ReopenEditor } from '../annotate/ReopenEditor'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { ScrollDatePill } from '../feed/DatePills'
+import { NoteBubble } from '../feed/NoteBubble'
 import { api } from '../lib/api'
-import { getPlayer, setPlayerInteractive } from '../yt/playerSingleton'
-import { usePlayer } from '../yt/usePlayer'
+import { useSetSetting } from '../lib/use-setting'
+import { useDockStore } from '../panes/dockStore'
+import { getPlayer } from '../yt/playerSingleton'
+import { usePlayerState } from '../yt/usePlayerState'
 import { JumpPill } from './JumpPill'
 import { Rail } from './Rail'
-import { activeClusterIndex, jumpPillDirection, markerPositions } from './rail-layout'
+import { activeClusterIndex, jumpPillDirection } from './rail-layout'
+import { SimpleComposer } from './SimpleComposer'
 import { ThreadComposer } from './ThreadComposer'
-import { TransportBar } from './TransportBar'
+import { ThreadRoot } from './ThreadRoot'
 import { useThreadNotes } from './useThreadNotes'
 
 /** ms the accent flash ring stays on a cluster after follow-scroll / click-to-seek. */
 const FLASH_MS = 600
 
-/** Playback-rate cycle for the transport speed badge. */
-const RATES = [1, 1.25, 1.5, 1.75, 2]
-
 /**
  * Centered content column width — matches ThreadView.jsx in the design-system
  * handoff (v21-design-system/v21-youtube-view-handoff/ThreadView.jsx line 51).
  *
- * Why: shared column for player, sort pill, notes, and composer so rail gutters
- * align correctly when the Rail lands in D4.
+ * Why: shared column for sort pill, notes, and composer so rail gutters align
+ * correctly. After B5 the player lives in the right-dock PlayerPane, not here.
  */
 const COL = 520
 
-/** Smallest the player unit (video + transport) can be dragged down to. */
-const MIN_VIDEO_W = 240
-
-/** Split-view left-pane bounds (px). Max is `rowWidth - MIN_NOTES_W` at drag time. */
-const MIN_SPLIT_W = 320
-const MIN_NOTES_W = 360
-const DEFAULT_SPLIT_W = 480
-
 /**
- * Spring-overshoot easing for the resize-handle thicken-on-hover, matched to the
- * custom scrollbar thumb (ScrollArea) so the divider grows with the same feel.
- */
-const SPRING_EASE = 'cubic-bezier(0.34, 1.56, 0.64, 1)'
-
-/**
- * ThreadView — shell for a single video-annotation thread.
+ * ThreadView — shell for a single note thread.
  *
  * Regions (top → bottom):
- *   1. Slim top bar: back button + video title.
- *   2. Pinned 16:9 player region (singleton iframe re-parents into hostRef).
- *   3. Scrollable content column: SortPill + minimal note list (Rail in D4).
- *   4. Pinned composer slot (ThreadComposer in E3).
+ *   1. Slim top bar: back button + note/video title.
+ *   2. Scrollable content column: SortPill (YouTube only) + note list (Rail or
+ *      NoteBubble list) + composer.
  *
- * Behavior notes:
+ * YouTube-thread behaviour:
+ * - On mount (once videoId resolves) writes `'player.videoId'` setting and calls
+ *   `openPane('player')` so the right-dock PlayerPane shows the player (B5).
+ * - Reads playback state (currentTime / duration) from `usePlayerState` for the
+ *   Rail, follow-scroll, and duration write-back; the SINGLETON MOUNT lives in
+ *   PlayerPane — ThreadView never calls `player.mount()` directly (ADR 0016).
  * - Duration write-back (I-4): when `duration` first becomes non-null on this
- *   mount, `api.videoSources.upsert` is called once with `{ durationSec }` so
- *   the value is cached for offline use. A ref flag prevents repeat calls even
- *   if the effect fires more than once (StrictMode double-invoke).
+ *   mount, `api.videoSources.upsert` is called once with `{ durationSec }`.
  * - `followOn` defaults to true per spec §TransportBar.
  * - Sort defaults to 'video' (video-time order); pill toggles to 'capture'.
  *
  * Visual source: v21-design-system/v21-youtube-view-handoff/ThreadView.jsx
  * (shell region lines 276–334).
  *
+ * @see src/renderer/src/yt/PlayerPane.tsx (holds the player placeholder, B5)
+ * @see src/renderer/src/yt/usePlayerState.ts (read-only playback state)
  * @see src/renderer/src/thread/useThreadNotes.ts
- * @see src/renderer/src/thread/TransportBar.tsx
  * @see src/renderer/src/thread/rail-layout.ts
  * @see docs/specs/v0.2-youtube-annotation.md §ThreadView
+ * @see docs/plans/v0.6.4-notes-as-threads.md §Task 5.1
  */
 export interface ThreadViewProps {
   /** UUID of the source-type note representing the video. */
   noteId: string
   /** Called when the user presses the back button. */
   onClose: () => void
+  /**
+   * Wikilink resolver from the app level — resolves `[[slug]]` clicks to note
+   * navigation or dangling-draft prefill. Passed through to both `ThreadRoot`
+   * (root header) and `NoteBubble` children in the generic plain/pdf branch,
+   * satisfying spec §"Wikilink navigation in thread cards".
+   *
+   * Optional: the generic branch falls back to a no-op when absent (e.g. in
+   * tests that do not wire a navigator). The YouTube branch does not use this
+   * prop (Rail uses a NOOP internally; youtube child notes navigate by seek).
+   *
+   * Why: `App.tsx` owns the resolver (api.links.resolve → setFocusedId or
+   * dangling-draft). Threading it down as a prop is the minimal, YAGNI path
+   * without introducing a context or global store for a single call-site.
+   *
+   * @see src/renderer/src/App.tsx (onWikilinkClick)
+   */
+  onWikilinkClick?: (slug: string) => void
 }
 
 /** @see ThreadViewProps */
-export function ThreadView({ noteId, onClose }: ThreadViewProps) {
+export function ThreadView({ noteId, onClose, onWikilinkClick }: ThreadViewProps) {
   // ── data fetches ──────────────────────────────────────────────────────────
 
   const { data: note } = useQuery({
@@ -94,6 +95,23 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     queryFn: () => api.notes.get(noteId),
     enabled: !!noteId,
   })
+
+  /**
+   * Derived note kind — drives the branch in the render section.
+   * Defaults to 'plain' while `note` is still loading (undefined) so the
+   * generic branch renders an empty placeholder; switches to 'youtube' once the
+   * note resolves, re-rendering into the player/Rail layout. Intermediate
+   * renders are invisible (thread has no data yet).
+   *
+   * Why not 'youtube' while loading: we'd briefly render the player host +
+   * youtube-specific state before the note confirms it's a video note, which
+   * could attach the player singleton for a non-video note. Defaulting to
+   * 'plain' is the safe, visually-silent choice.
+   *
+   * @see docs/plans/v0.6.4-notes-as-threads.md §Task 2.3
+   */
+  const kind =
+    note?.source_kind === 'youtube' ? 'youtube' : note?.source_kind === 'pdf' ? 'pdf' : 'plain'
 
   const videoId = note?.source_locator?.media === 'youtube' ? note.source_locator.video_id : ''
 
@@ -103,20 +121,58 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     enabled: !!videoId,
   })
 
-  const title = videoSource?.title ?? videoId
+  const title = kind === 'youtube' ? (videoSource?.title ?? videoId) : (note?.slug ?? '')
 
-  // ── player ────────────────────────────────────────────────────────────────
+  // ── playback state (read-only; mount lives in PlayerPane — B5) ──────────────
+  // usePlayerState subscribes to the singleton's state and polls currentTime/
+  // duration at ~5 Hz WITHOUT calling player.mount() or player.load(). The SOLE
+  // mount is in PlayerPane (right dock). Single-mount invariant: ADR 0016.
+  const { player, currentTime, duration } = usePlayerState(videoId)
 
-  const hostRef = useRef<HTMLDivElement>(null)
-  const { player, currentTime, state, duration } = usePlayer(videoId, hostRef)
+  // ── open the player pane when a youtube thread loads ──────────────────────
+  // Write 'player.videoId' so PlayerPane's useSetting can read it, then open
+  // the right-dock 'player' pane. Fire-and-forget the async DB write; the
+  // openPane call is synchronous (Zustand) so the dock opens immediately.
+  // Guard: videoId is '' for plain/pdf notes — skip in those cases.
+  // Why: mirrors how the PDF open flow writes 'pdf.openDocId' before the pane
+  // renders. @see src/renderer/src/pdf/usePdfOpenId.ts (useOpenPdf)
+  const setVideoId = useSetSetting('player.videoId')
+  useEffect(() => {
+    if (!videoId) return
+    void setVideoId.mutateAsync(videoId)
+    useDockStore.getState().openPane('player')
+  }, [videoId, setVideoId.mutateAsync])
+
+  // ── open the PDF pane when a PDF thread loads ─────────────────────────────
+  // Mirrors the YouTube openPane('player') effect above — when the thread's root
+  // note is a PDF source note, write 'pdf.openDocId' (so PdfReader shows the
+  // correct document) and open the right-dock 'pdf' pane synchronously.
+  // Guard: pdfId is '' for youtube/plain notes — no-op in those cases.
+  // Idempotent: openPane is a no-op when already active; the setting write is
+  // the same value, so no observable churn.
+  // Why: drilling into a PDF thread via the feed's "open notes" affordance goes
+  // through setThreadNoteId (NOT through onOpenPdf / the file-picker flow), so
+  // the pane was never opened by that path — this effect is the missing link.
+  // Re-open contract: ThreadView unmounts on back-navigation (threadNoteId→null)
+  // so every thread-open mounts a fresh instance; on remount this effect fires
+  // once, re-opening a pane the user had previously closed. (#166)
+  // @see src/renderer/src/pdf/usePdfOpenId.ts (useOpenPdf — sets the setting)
+  // @see src/renderer/src/App.tsx (handlePaneClose — clears the setting on close)
+  const setPdfOpenId = useSetSetting('pdf.openDocId')
+  const pdfId = note?.source_locator?.media === 'pdf' ? note.source_locator.pdf_id : ''
+  useEffect(() => {
+    if (!pdfId) return
+    void setPdfOpenId.mutateAsync(pdfId)
+    useDockStore.getState().openPane('pdf')
+  }, [pdfId, setPdfOpenId.mutateAsync])
 
   // ── duration write-back (I-4) ─────────────────────────────────────────────
   // Write the resolved duration back to video_sources exactly once per mount.
   // A ref flag prevents repeat writes under React StrictMode double-invoke.
   // Why: getDuration() is 0 until the video is cued, so we write only after
-  // usePlayer's re-poll yields a non-null value.
+  // usePlayerState's re-poll yields a non-null value.
   //
-  // @see src/renderer/src/yt/usePlayer.ts (I-4 comment in the rAF loop)
+  // @see src/renderer/src/yt/usePlayerState.ts (I-4 comment in the rAF loop)
   const durationWrittenRef = useRef(false)
   useEffect(() => {
     if (!videoId || duration == null || durationWrittenRef.current) return
@@ -131,95 +187,16 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
   // ── sort + thread notes ───────────────────────────────────────────────────
 
   const [sortMode, setSortMode] = useState<'video' | 'capture'>('video')
-  const { sorted, clusters, anchorless } = useThreadNotes(noteId, sortMode)
+  // plain/pdf use chronological order; youtube respects the user-toggled sortMode.
+  // The query key is always ['thread', noteId] — sortMode only affects local derivation.
+  const effectiveSortMode = kind === 'youtube' ? sortMode : 'capture'
+  const { sorted, clusters, anchorless } = useThreadNotes(noteId, effectiveSortMode)
 
   // ── follow state ──────────────────────────────────────────────────────────
-
-  const [followOn, setFollowOn] = useState(true)
-
-  // ── resizable player ────────────────────────────────────────────────────────
-  // Drag the handle below the player to scale the whole player unit (video +
-  // transport) between MIN_VIDEO_W and COL. The video keeps 16:9, so a narrower
-  // unit is also shorter — that frees vertical space the notes column (flex:1)
-  // immediately absorbs. Width-based (not height-based) keeps the image whole
-  // and the transport bar aligned to the video. Drag DOWN = grow, UP = shrink.
-  const [videoW, setVideoW] = useState<number | null>(null)
-  const videoWidth = videoW ?? COL
-  const onResizeStart = useCallback(
-    (e: ReactPointerEvent) => {
-      e.preventDefault()
-      // Make the <webview> click-through for the drag so it can't swallow the pointer
-      // stream (frozen drag + stuck pointerup). Restored in onUp. See setPlayerInteractive.
-      setPlayerInteractive(false)
-      const startY = e.clientY
-      const startW = videoW ?? COL
-      const onMove = (ev: PointerEvent) => {
-        const dy = ev.clientY - startY
-        setVideoW(Math.max(MIN_VIDEO_W, Math.min(COL, startW + dy * (16 / 9))))
-      }
-      const onUp = () => {
-        setPlayerInteractive(true)
-        window.removeEventListener('pointermove', onMove)
-        window.removeEventListener('pointerup', onUp)
-      }
-      window.addEventListener('pointermove', onMove)
-      window.addEventListener('pointerup', onUp)
-    },
-    [videoW],
-  )
-
-  // ── layout: stacked (video over notes) vs split (video beside notes) ─────────
-  // Split anticipates a future left sidebar — the player becomes a left pane the
-  // user can size with a vertical divider, leaving the notes pane to flex. The
-  // <webview> is pinned to <body> and NEVER re-parented (moving it destroys its
-  // guest — electron#9529); the toggle remounts the host placeholder, so we just
-  // re-point the position-sync at the new placeholder after each switch.
-  const [layout, setLayout] = useState<'stacked' | 'split'>('stacked')
-  const [splitW, setSplitW] = useState<number | null>(null)
-  const splitWidth = splitW ?? DEFAULT_SPLIT_W
-  const rowRef = useRef<HTMLDivElement>(null)
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: re-point sync on layout switch; hostRef is stable
-  useEffect(() => {
-    if (hostRef.current) player.mount(hostRef.current)
-  }, [layout])
-
-  const onSplitResizeStart = useCallback(
-    (e: ReactPointerEvent) => {
-      e.preventDefault()
-      // Same webview click-through guard as the stacked handle — this is the layout
-      // where the handle sits right beside the video, so the drag crosses it constantly.
-      setPlayerInteractive(false)
-      const startX = e.clientX
-      const startW = splitW ?? DEFAULT_SPLIT_W
-      const rowW = rowRef.current?.getBoundingClientRect().width ?? 1200
-      const max = Math.max(MIN_SPLIT_W, rowW - MIN_NOTES_W)
-      const onMove = (ev: PointerEvent) => {
-        setSplitW(Math.max(MIN_SPLIT_W, Math.min(max, startW + (ev.clientX - startX))))
-      }
-      const onUp = () => {
-        setPlayerInteractive(true)
-        window.removeEventListener('pointermove', onMove)
-        window.removeEventListener('pointerup', onUp)
-      }
-      window.addEventListener('pointermove', onMove)
-      window.addEventListener('pointerup', onUp)
-    },
-    [splitW],
-  )
-
-  // ── playback rate (F1) ──────────────────────────────────────────────────────
-  // Cycle through a fixed sequence on each speed-badge click and push the new
-  // rate to the player. Kept here (not in TransportBar) so the badge stays a
-  // pure presentational readout.
-  const [rate, setRate] = useState(1)
-  const cycleRate = useCallback(() => {
-    setRate((r) => {
-      const next = RATES[(RATES.indexOf(r) + 1) % RATES.length] ?? 1
-      void player.setPlaybackRate(next)
-      return next
-    })
-  }, [player])
+  // After B5 the follow-toggle lived in TransportBar (now in PlayerPane).
+  // ThreadView defaults follow to always-on; the toggle is surfaced in the
+  // player pane in a future task.
+  const followOn = true
 
   // ── follow auto-scroll · jump-pill · flash (spec §319–322) ──────────────────
   // The active cluster is the one the playhead currently sits in. `scrollRef`
@@ -261,12 +238,10 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     flashTimerRef.current = setTimeout(() => setFlashClusterIdx(-1), FLASH_MS)
   }, [])
 
-  // Follow auto-scroll: when follow is on and the active cluster changes, bring
-  // it into view + flash. Keyed on [activeIdx, followOn] so toggling follow ON
-  // re-syncs, and a playhead change with follow OFF does nothing.
+  // Follow auto-scroll: always on after B5 (toggle was in TransportBar).
   useEffect(() => {
-    if (followOn && activeIdx >= 0) scrollClusterIntoView(activeIdx)
-  }, [activeIdx, followOn, scrollClusterIntoView])
+    if (activeIdx >= 0) scrollClusterIntoView(activeIdx)
+  }, [activeIdx, scrollClusterIntoView])
 
   // Jump-pill visibility: measure the active cluster's top vs the scroll
   // container's rect (predicate is pure — jumpPillVisible). The row's viewport
@@ -291,7 +266,7 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
         viewBottom: view.bottom,
       }),
     )
-  }, [activeIdx, sortMode, followOn])
+  }, [activeIdx, sortMode])
 
   // Re-measure when the measurement inputs (active cluster / sort / follow) change.
   useEffect(() => {
@@ -500,66 +475,54 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
     onError: (err: Error) => setPostError(err.message),
   })
 
-  // ── derived transport values ──────────────────────────────────────────────
+  // ── generic thread: wikilink handler + plain/pdf post ────────────────────
 
-  // Memoized so the array identity is stable across playhead ticks (sorted is
-  // now memoized in useThreadNotes); otherwise TransportBar gets a fresh markers
-  // array every ~5Hz tick. See #51.
-  const markers = useMemo(
-    () => markerPositions(sorted, duration).map((m) => m.t),
-    [sorted, duration],
+  /**
+   * Stable wikilink handler forwarded to both `ThreadRoot` and `NoteBubble`
+   * children in the generic (plain/pdf) branch. Delegates to the app-level
+   * resolver prop; no-ops when the prop is absent (e.g. in tests without a
+   * navigator). Same pattern as the feed's `onWikilinkClick` delegation.
+   *
+   * Why useCallback with [onWikilinkClick]: the prop identity is stable
+   * across renders when App.tsx passes a stable function; useCallback avoids
+   * re-rendering every child bubble when unrelated ThreadView state changes.
+   *
+   * @see src/renderer/src/lib/markdown.tsx (onWikilinkClick signature)
+   */
+  const handleWikilink = useCallback(
+    (slug: string) => {
+      onWikilinkClick?.(slug)
+    },
+    [onWikilinkClick],
+  )
+
+  /**
+   * Post a plain comment-note as a child of this thread (plain/pdf branch).
+   * No media anchor — pure text, comment-on the root note's slug.
+   * Invalidates the same keys as the youtube post so the child list re-renders.
+   *
+   * Why useCallback (not useMutation): the plain branch needs no loading/error
+   * surface in the composer — SimpleComposer is intentionally minimal. A
+   * useCallback keeps the wiring thin; error handling can be layered in v0.7+.
+   *
+   * @see src/renderer/src/lib/api.ts (notes.create signature)
+   * @see src/renderer/src/thread/useThreadNotes.ts (queryKey: ['thread', noteId])
+   */
+  const postPlain = useCallback(
+    async (body: string) => {
+      if (!note?.slug) return
+      await api.notes.create(body, 'claim', { commentOn: note.slug })
+      void queryClient.invalidateQueries({ queryKey: ['thread', noteId] })
+      void queryClient.invalidateQueries({ queryKey: ['notes'] })
+      void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
+      void queryClient.invalidateQueries({ queryKey: ['note-recent'] })
+    },
+    [note, noteId, queryClient],
   )
 
   // ── render ────────────────────────────────────────────────────────────────
 
-  // Player (video + transport) — rendered once in whichever layout is active.
-  const playerContent = (
-    <>
-      <div
-        style={{
-          width: '100%',
-          aspectRatio: '16 / 9',
-          background: '#1c1c1e',
-          borderRadius: 'var(--r-4) var(--r-4) 0 0',
-          overflow: 'hidden',
-        }}
-      >
-        <div ref={hostRef} data-testid="player-host" style={{ width: '100%', height: '100%' }} />
-      </div>
-      <TransportBar
-        state={state}
-        currentTime={currentTime}
-        duration={duration}
-        rate={rate}
-        markers={markers}
-        followOn={followOn}
-        onPlayPause={() => {
-          if (state === 'playing') {
-            player.pause()
-          } else {
-            player.play()
-          }
-        }}
-        onSeek={(s) => {
-          void player.seekTo(s)
-        }}
-        onRate={cycleRate}
-        onToggleFollow={() => {
-          setFollowOn((v) => !v)
-        }}
-        onFullscreen={() => {
-          // Trigger YouTube's native fullscreen (the guest's own button) — see
-          // playerSingleton.toggleFullscreen. Fullscreening the host wrapper instead
-          // left the page chrome visible: the player's fixed-fill is trapped in an
-          // ancestor stacking context in-page, and native fullscreen escapes it.
-          player.toggleFullscreen()
-        }}
-      />
-    </>
-  )
-
-  // Sort row + scrollable notes + composer — the right side in split layout, the
-  // lower stack in stacked. Internals are identical in both layouts.
+  // Sort row + scrollable notes + composer (all layouts; player is in the dock).
   const notesPane = (
     <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
       <div
@@ -790,71 +753,58 @@ export function ThreadView({ noteId, onClose }: ThreadViewProps) {
             </div>
           </div>
           <div style={{ flex: 1 }} />
-          {/* Layout toggle: stacked (video over notes) ↔ split (side-by-side).
-              Icon shows the layout you'll switch TO. */}
-          <button
-            type="button"
-            aria-label="toggle layout"
-            title={layout === 'stacked' ? 'side-by-side view' : 'stacked view'}
-            onClick={() => setLayout((l) => (l === 'stacked' ? 'split' : 'stacked'))}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 28,
-              height: 28,
-              border: 0,
-              background: 'transparent',
-              cursor: 'pointer',
-              borderRadius: 'var(--r-2)',
-              color: 'var(--fg-2)',
-              padding: 0,
-              flexShrink: 0,
-              marginRight: -8,
-            }}
-          >
-            {layout === 'stacked' ? <Columns2 size={16} /> : <Rows2 size={16} />}
-          </button>
         </div>
       </header>
 
-      {layout === 'stacked' ? (
-        <>
-          {/* ── Player on top ─────────────────────────────────────────────── */}
-          <div style={{ flex: '0 0 auto', padding: '14px 24px 12px' }}>
-            <div style={{ maxWidth: videoWidth, margin: '0 auto' }}>{playerContent}</div>
-          </div>
-          {/* Horizontal resize handle — drag to scale the player; notes take the
-              freed vertical space. */}
-          <ResizeHandle
-            orientation="row"
-            onPointerDown={onResizeStart}
-            testId="player-resize"
-            title="drag to resize the player"
-          />
-          {notesPane}
-        </>
+      {kind === 'youtube' ? (
+        // ── YouTube: Rail + sort pill + ThreadComposer (B5: player is in the
+        // right-dock PlayerPane, opened by the effect above). The center stage
+        // shows notes only; the fixed-overlay webview stays alive in the dock
+        // even when the user switches to the feed or canvas view. ADR 0016.
+        notesPane
       ) : (
-        // ── Side-by-side: player pane | vertical divider | notes pane ────────
-        <div ref={rowRef} style={{ flex: 1, minHeight: 0, display: 'flex' }}>
-          <div
-            style={{
-              width: splitWidth,
-              flexShrink: 0,
-              minWidth: 0,
-              overflowY: 'auto',
-              padding: '14px 16px',
-            }}
-          >
-            {playerContent}
+        // ── Generic: ThreadRoot header + chronological NoteBubble list + SimpleComposer
+        // Used for plain notes and PDF notes.  PDF's docked reader is the
+        // media; the thread is chronological-only — same layout as plain.
+        // `handleWikilink` forwards to the app-level resolver so wikilinks in
+        // the root header and every child card navigate correctly (spec §"Wikilink
+        // navigation in thread cards"). @see docs/plans/v0.6.4-notes-as-threads.md §Task 2.3
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            padding: '12px 24px 20px',
+          }}
+        >
+          <div style={{ maxWidth: COL, margin: '0 auto' }}>
+            {note && <ThreadRoot note={note} onWikilinkClick={handleWikilink} />}
+            <div style={{ marginTop: 8 }}>
+              {sorted.map((item) => (
+                <NoteBubble
+                  key={item.id}
+                  note={item.note}
+                  focused={false}
+                  expanded={true}
+                  onToggleExpand={() => {}}
+                  onFocus={() => {}}
+                  onWikilinkClick={handleWikilink}
+                  onEdit={() => {}}
+                  onDelete={() => {}}
+                  onCopyLink={() => {}}
+                />
+              ))}
+            </div>
+            <div
+              style={{
+                marginTop: 16,
+                borderTop: '1px solid var(--border-0)',
+                paddingTop: 12,
+              }}
+            >
+              <SimpleComposer onSubmit={postPlain} />
+            </div>
           </div>
-          <ResizeHandle
-            orientation="col"
-            onPointerDown={onSplitResizeStart}
-            testId="player-resize-v"
-            title="drag to resize the video"
-          />
-          {notesPane}
         </div>
       )}
 
@@ -934,71 +884,6 @@ function SortPill({ sortMode, onToggle }: SortPillProps) {
         )}
         {sortMode === 'video' ? 'by video time' : 'by capture time'}
       </button>
-    </div>
-  )
-}
-
-// ── ResizeHandle ───────────────────────────────────────────────────────────────
-
-/**
- * The draggable divider between the player and the notes. The line IS the handle —
- * drag anywhere along it — and it thickens + tints on hover/drag with the same
- * spring-overshoot as the custom scrollbar thumb (ScrollArea). Used in both layouts
- * (`row` = horizontal divider in stacked, `col` = vertical divider in split).
- *
- * `dragging` keeps it thick for the whole drag even when the cursor leaves the strip
- * (the pointer roams over the webview/notes), cleared on the window-level pointerup.
- */
-function ResizeHandle({
-  orientation,
-  onPointerDown,
-  testId,
-  title,
-}: {
-  orientation: 'row' | 'col'
-  onPointerDown: (e: ReactPointerEvent) => void
-  testId: string
-  title: string
-}) {
-  const [hover, setHover] = useState(false)
-  const [dragging, setDragging] = useState(false)
-  const row = orientation === 'row'
-  const hot = hover || dragging
-  const thick = hot ? 6 : 2
-  const start = (e: ReactPointerEvent) => {
-    setDragging(true)
-    const up = () => {
-      setDragging(false)
-      window.removeEventListener('pointerup', up)
-    }
-    window.addEventListener('pointerup', up)
-    onPointerDown(e)
-  }
-  return (
-    <div
-      onPointerDown={start}
-      onPointerEnter={() => setHover(true)}
-      onPointerLeave={() => setHover(false)}
-      title={title}
-      aria-hidden
-      data-testid={testId}
-      style={{
-        flex: '0 0 auto',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        touchAction: 'none',
-        ...(row ? { height: 11, cursor: 'row-resize' } : { width: 11, cursor: 'col-resize' }),
-      }}
-    >
-      <span
-        style={{
-          borderRadius: 4,
-          background: hot ? 'var(--fg-3)' : 'var(--border-1)',
-          transition: `height 240ms ${SPRING_EASE}, width 240ms ${SPRING_EASE}, background 140ms ease`,
-          ...(row ? { width: '100%', height: thick } : { height: '100%', width: thick }),
-        }}
-      />
     </div>
   )
 }

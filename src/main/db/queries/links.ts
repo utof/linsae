@@ -86,7 +86,7 @@ export function backlinks(db: DB, toSlug: string): Note[] {
 }
 
 /**
- * Returns live (non-deleted) comment-notes whose `comment-on` edge targets `videoSlug`,
+ * Returns live (non-deleted) comment-notes whose `comment-on` edge targets `rootSlug`,
  * together with each note's latest live attachment (or `null` if none).
  *
  * The correlated attachment lookup uses `ORDER BY created_at DESC LIMIT 1` so a
@@ -102,15 +102,15 @@ export function backlinks(db: DB, toSlug: string): Note[] {
  * force a second `getNote` call for every row.
  *
  * @param db - Open better-sqlite3 Database.
- * @param videoSlug - Slug of the video-note that is the thread target.
+ * @param rootSlug - Slug of the root note that is the thread target (any note type, not just videos).
  * @returns Comment-notes (oldest first) with their latest live screenshot attachment.
  * @see https://github.com/utof/linsae/issues/36
  * @issue utof/linsae#36
  * @see adrs/0010-comment-on-edge.md
  */
-export function commentsForVideo(
+export function commentsForNote(
   db: DB,
-  videoSlug: string,
+  rootSlug: string,
 ): Array<{ note: Note; attachment: Attachment | null }> {
   const rows = db
     .prepare(
@@ -121,7 +121,7 @@ export function commentsForVideo(
        WHERE l.to_slug = ? AND l.edge_type = 'comment-on' AND n.deleted_at IS NULL
        ORDER BY n.created_at`,
     )
-    .all(videoSlug) as Array<Omit<Note, 'source_locator'> & { source_locator: string | null }>
+    .all(rootSlug) as Array<Omit<Note, 'source_locator'> & { source_locator: string | null }>
 
   const attachStmt = db.prepare(
     `SELECT id, note_id, kind, base_sha256, base_path, overlay_path, video_id,

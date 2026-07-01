@@ -14,11 +14,13 @@
          to its frame or scripts. The former frame-src and script-src YouTube tokens are
          therefore dead and have been removed. img-src keeps the ytimg.com thumbnail
          hosts because those images are fetched by the renderer itself (not the webview). -->
-    <!-- font-src includes data: because pdf.js (legacy build) embeds glyph fonts as
-         data:font/woff2 URIs; bare 'self' blocked them (added commit 01009e9).
-         ADR 0043 (amendment) tracks the relaxation; #152 tracks the Electron bump
-         that will let us switch to the modern pdf.js build and drop data: again;
-         #153 tracks the worker-realm data:font coverage gap. -->
+    <!-- font-src keeps data: because pdf.js loads embedded glyph fonts as
+         data:font/woff2 URIs at the ENGINE level — this is true on the MODERN
+         build too (now restored under Electron 42), not a legacy-build artifact;
+         bare 'self' blocked them (added commit 01009e9). Dropping data: would
+         re-break embedded-font PDFs, so it is retained permanently.
+         @see adrs/0044-electron-42-bump.md, adrs/0043 (amendment); #153 tracks the
+         worker-realm data:font end-to-end coverage gap. -->
     <meta http-equiv="Content-Security-Policy"
           content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: https://i.ytimg.com https://*.ytimg.com; script-src 'self'; worker-src 'self' blob:;" />
     <!-- Boot splash: a zero-JS skeleton painted on the FIRST frame so the window

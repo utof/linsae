@@ -114,6 +114,15 @@ interface Props {
    * jump to the SAME card re-fire (the id alone wouldn't change).
    */
   jumpTo?: { id: string; nonce: number } | null
+  /**
+   * Feed→canvas selection carry-over (B4 / ADR 0047): the id of the note focused
+   * in the feed, when it is placed on the canvas. CanvasStage selects that card
+   * ONCE on mount — it remounts on every feed→canvas view swap (App's
+   * AnimatePresence `mode="wait"`), so the mount read captures the note focused at
+   * switch time. One-directional: canvas selection never writes back to feed focus.
+   * App gates this on placement, so a non-placed id is never passed.
+   */
+  selectNoteId?: string | null
 }
 
 /**
@@ -317,6 +326,7 @@ export function CanvasStage({
   fitSignal,
   resetSignal,
   jumpTo,
+  selectNoteId = null,
 }: Props): React.JSX.Element {
   const viewportRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
@@ -1005,6 +1015,18 @@ export function CanvasStage({
     hitVisibleAt,
   })
 
+  // B4 — feed→canvas selection carry-over (ADR 0047). On mount (one per feed→canvas
+  // swap, since AnimatePresence mode="wait" remounts this stage), select the note
+  // that was focused in the feed at switch time. App only passes `selectNoteId`
+  // when the note is placed, so the selected id always has a card. Mount-only:
+  // `setSelection` is a stable useCallback (ADR 0006), so [setSelection] deps run
+  // the effect exactly once; the switch-time value is captured in the ref.
+  const { setSelection } = interactions
+  const carrySelectRef = useRef(selectNoteId)
+  useEffect(() => {
+    if (carrySelectRef.current) setSelection([carrySelectRef.current])
+  }, [setSelection])
+
   /**
    * Live edge-draw rubber-band (spec §3): a quiet accent line from the source card
    * center to the cursor, snapping to a hovered target card's center. Null when no
@@ -1218,22 +1240,16 @@ export function CanvasStage({
     setPickerAnchor(p)
   }, [viewportSize])
 
-  // ---- One-shot ghost (spec §6, receiving side). App sets the `placing` prop;
-  // we track the live cursor world point so the ghost follows it, and commit on
-  // a click. `ghostWorld` is updated by a pointermove listener while `placing`.
-  const [ghostWorld, setGhostWorld] = useState<Point | null>(null)
+  // ---- One-shot placement commit (spec §6, receiving side). App sets the
+  // `placing` prop; a primary click anywhere on the canvas viewport drops the
+  // note at the click's world point. The ghost that follows the cursor is now
+  // the window-level <PlacementGhost> overlay (B16) — App renders it so the note
+  // "in hand" stays visible over the dock / PDF too — so CanvasStage no longer
+  // draws its own world-space ghost (that would double up at the same screen
+  // point). The commit math (screen→world at the click) is unchanged.
   useEffect(() => {
     const viewport = viewportRef.current
-    if (!placing || !viewport) {
-      setGhostWorld(null)
-      return
-    }
-    const onMove = (e: PointerEvent) => {
-      const camera = cameraRef.current
-      if (!camera) return
-      const rect = viewport.getBoundingClientRect()
-      setGhostWorld(screenToWorld(camera, { x: e.clientX - rect.left, y: e.clientY - rect.top }))
-    }
+    if (!placing || !viewport) return
     const onClick = (e: MouseEvent) => {
       const camera = cameraRef.current
       // Only a primary (left) click commits — right/middle clicks during
@@ -1245,12 +1261,8 @@ export function CanvasStage({
       flashRing(placing.noteId)
       onPlacingDone?.()
     }
-    viewport.addEventListener('pointermove', onMove)
     viewport.addEventListener('click', onClick)
-    return () => {
-      viewport.removeEventListener('pointermove', onMove)
-      viewport.removeEventListener('click', onClick)
-    }
+    return () => viewport.removeEventListener('click', onClick)
   }, [placing, placeAt, flashRing, onPlacingDone])
 
   // ---- Create-on-canvas (spec §7). Double-click the empty surface opens a
@@ -1774,34 +1786,10 @@ export function CanvasStage({
                 }}
               />
             )}
-            {/* One-shot ghost (spec §6): real-size card preview following the cursor. */}
-            {placing && ghostWorld && (
-              <div
-                data-canvas-ghost
-                aria-hidden="true"
-                style={{
-                  position: 'absolute',
-                  transform: `translate(${ghostWorld.x}px, ${ghostWorld.y}px)`,
-                  width: CARD_WIDTH,
-                  minHeight: DEFAULT_CARD_HEIGHT,
-                  // Matches NoteCard's shell fill EXACTLY (NoteCard.tsx:156) so
-                  // the ghost reads as the card it previews. The white card fill
-                  // is a literal in this codebase (not a token): `--bg-0` is
-                  // semantically the CANVAS background, so reusing it here would
-                  // make the ghost blend into a themed canvas instead of standing
-                  // against it. @see src/renderer/src/canvas/NoteCard.tsx
-                  background: '#FFFFFF',
-                  border: '1px dashed var(--accent)',
-                  borderRadius: 'var(--r-3)',
-                  boxShadow: 'var(--shadow-2)',
-                  opacity: 0.7,
-                  padding: '12px 14px 10px',
-                  pointerEvents: 'none',
-                }}
-              >
-                {placing.title}
-              </div>
-            )}
+            {/* B16: the placement ghost is now the window-level <PlacementGhost>
+                overlay App mounts while `placing` is set (it follows the cursor
+                over the dock/PDF too). CanvasStage keeps only the viewport
+                click→`placeAt` commit path above; no world-space ghost here. */}
             {/* Create-on-canvas (spec §7): floating create-mode Composer at the
                 double-clicked world point. ↵ creates+places (single timestamp). */}
             {createAt && (

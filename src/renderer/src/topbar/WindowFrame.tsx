@@ -1,4 +1,4 @@
-import { Minus, PanelLeft, Settings, Square, X } from 'lucide-react'
+import { Minus, PanelLeft, PanelRight, Settings, Square, X } from 'lucide-react'
 import { api } from '../lib/api'
 
 interface Props {
@@ -12,6 +12,10 @@ interface Props {
   dockOpen: boolean
   /** Toggle the left dock open/closed (the §10 quiet outline toggle). */
   onToggleDock: () => void
+  /** Whether the backlinks dock pane is open — drives the backlinks toggle's pressed state (B2). */
+  backlinksOpen: boolean
+  /** Toggle the backlinks dock pane open/closed, independent of focusing a note (B2). */
+  onToggleBacklinks: () => void
 }
 
 /**
@@ -47,6 +51,8 @@ export function WindowFrame({
   onViewChange,
   dockOpen,
   onToggleDock,
+  backlinksOpen,
+  onToggleBacklinks,
 }: Props) {
   // Quiet segmented control — text-only (no icons, v21 restraint). Active pill
   // reads --fg-0 on --bg-2; inactive sits at --fg-3. Ships UNANIMATED (ADR 0019:
@@ -157,6 +163,31 @@ export function WindowFrame({
           }}
         >
           <PanelLeft size={14} />
+        </button>
+        {/* B2 backlinks toggle — mirrors the shelf toggle for the right dock. A
+            visible, always-reachable affordance to open/close backlinks
+            independent of focusing a note. aria-pressed reflects backlinksOpen. */}
+        <button
+          type="button"
+          aria-label="toggle backlinks"
+          title="toggle backlinks"
+          aria-pressed={backlinksOpen}
+          onClick={onToggleBacklinks}
+          style={{
+            ...iconBtn,
+            background: backlinksOpen ? 'var(--bg-2)' : 'transparent',
+            color: backlinksOpen ? 'var(--fg-0)' : 'var(--fg-2)',
+          }}
+          onMouseEnter={(e) => {
+            ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-2)'
+          }}
+          onMouseLeave={(e) => {
+            ;(e.currentTarget as HTMLButtonElement).style.background = backlinksOpen
+              ? 'var(--bg-2)'
+              : 'transparent'
+          }}
+        >
+          <PanelRight size={14} />
         </button>
         <button
           type="button"

@@ -45,6 +45,7 @@ import type {
   ChooseFileInputSchema,
   CommentsOfInputSchema,
   FetchOEmbedInputSchema,
+  FindSourceByPdfIdInputSchema,
   NoteIdSchema,
   NotesCreateInputSchema,
   NotesListInputSchema,
@@ -80,6 +81,8 @@ const api = {
       ipcRenderer.invoke('notes:recent', i),
     recordAccess: (i: z.input<typeof NotesRecordAccessInputSchema>): Promise<{ ok: true }> =>
       ipcRenderer.invoke('notes:recordAccess', i),
+    findSourceByPdfId: (i: z.input<typeof FindSourceByPdfIdInputSchema>): Promise<Note | null> =>
+      ipcRenderer.invoke('notes:findSourceByPdfId', i),
   },
   pdf: {
     import: (

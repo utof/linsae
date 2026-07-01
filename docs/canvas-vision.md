@@ -71,9 +71,19 @@ a separate minimap widget is permanently ruled out).
 
 ## Now
 
-Current milestone: **v0.4 canvas-mvp** — `docs/specs/v0.4-canvas-mvp.md`. Ships the curated manual
-canvas (shelf, `/` picker, one-shot placement, double-click capture, arranging + spatial undo,
-read-only edges, LOD seam + dev-flag dot renderer, status-bar chrome, embryo dock shell).
+**Latest shipped: v0.6.4 notes-as-threads** (`docs/specs/v0.6.4-notes-as-threads.md`, branch
+`v0.6.4/notes-as-threads`; pending PR + merge). Headlines: **PDF-as-source-note** — a PDF open
+creates a `type='source'`/`source_kind='pdf'` feed note (`PdfFeedNote` + thumbnail); excerpts are
+`comment-on` children of the document note (ADR 0050). **Generic chronological thread** — any note
+exposes "open thread"; `ThreadView` branches on `source_kind` (youtube keeps its rail; plain/pdf
+get `ThreadRoot` + chronological list + `SimpleComposer`; ADR 0051). **Thread as feed sub-view**
+— `ThreadView` lives inside `<main>`'s `AnimatePresence`, docks stay mounted (ADR 0048, upholding
+principle 8). **Detachable media dock panes** — YouTube player lifts into `PlayerPane` (right-dock
+content pane, single-mount invariant); PDF reader and player coexist as peer dock tabs (ADR 0049).
+**Feed hides comment-on children** — product model revision: `['notes','feed']` uses an anti-join;
+canvas pickers/search stay unfiltered (ADR 0052). Prior milestones shipped: v0.6.1 (Electron 42
+bump, ADR 0044); v0.6.2 (dock-shell grammar, ADRs 0045–0046); v0.6.3 (Model A layout + feed-panel
+fixes, ADR 0047).
 
 ## Future backlog (unordered)
 
@@ -81,20 +91,26 @@ Each item is self-contained so the list can be reshuffled without rewriting it. 
 commitments to a date or an order; all of them are commitments to a *direction* — a v0.x spec that
 forecloses one of these must amend this doc first.
 
-### Dock shell (full constrained tiling)
-The embryo (`Pane` registry, left dock, shelf) grows into the full grammar: right dock; tab strips
-render only at ≥2 panes; every pane has a home dock and opens there by default (note-list things →
-left; contextual utilities → right; content panes → right, wide); tab dragging between docks as
-pure rearrangement, never a flow step; two quiet outline dock-toggles at top-right, and no other
-window chrome — resist the feature-button row. Two pane classes, one mechanism: **content panes**
-(PDF, video — want width, peers of the canvas, probably max one visible per dock) vs **utility
-panes** (shelf, backlinks, AI chat — narrow, cheap). Forcing functions for this milestone are
-backlinks + AI chat panes, deliberately *not* PDF. Escape hatch if dogfooding shows shelf and feed
-must be visible simultaneously: allow one dock to split horizontally — note this presupposes
-feed-as-a-pane, which otherwise only arrives with channels, so taking the hatch means pulling
-feed-as-pane forward deliberately, not as a side effect. Do not build until proven. All layout
-state is per-window view-state; no saved workspaces/presets until layouts demonstrably hurt to
-reconstruct.
+### Dock shell (full constrained tiling) — embryo v0.4/v0.6; **grammar ✅ shipped v0.6.2** (`docs/specs/v0.6.2-dock-shell.md`); cross-dock drag + toggle chrome deferred
+The embryo — the `Pane` registry + left dock (shelf) from v0.4, plus (since **v0.6**) a **right dock +
+content-pane class** (`Pane.kind: 'utility' | 'content'`, `Dock.side`) holding one PDF beside the
+canvas — grew into the full grammar in **v0.6.2 dock-shell**: a dock = ordered pane ids + active id in
+an in-memory zustand `dockStore`; **tab strips that render only at ≥2 panes** (`DockTabs`); every pane
+has a home dock and opens there by default (note-list things → left; contextual utilities → right;
+content panes → right, wide) — **backlinks is the first right-dock utility pane**, with a dual surface
+(kept overlay + deliberate dock pane). Still **deferred**: tab dragging between docks as pure
+rearrangement, never a flow step; two quiet outline dock-toggles at top-right, and no other window
+chrome — resist the feature-button row. Two
+pane classes, one mechanism: **content panes** (PDF, video — want width, peers of the canvas, probably
+max one visible per dock) vs **utility panes** (shelf, backlinks, AI chat — narrow, cheap). The v0.6
+PDF pane is the **first content pane and first right-dock pane**, so this milestone *generalizes* an
+existing pattern rather than inventing it; the remaining forcing functions are **backlinks + AI-chat
+utility panes** and **≥2 panes coexisting in one dock** — the moment tab strips, multi-pane, and the
+home-dock defaults all become real. Escape hatch if dogfooding shows shelf and feed must be visible
+simultaneously: allow one dock to split horizontally — note this presupposes feed-as-a-pane, which
+otherwise only arrives with channels, so taking the hatch means pulling feed-as-pane forward
+deliberately, not as a side effect. Do not build the rest until proven. All layout state is per-window
+view-state; no saved workspaces/presets until layouts demonstrably hurt to reconstruct.
 
 ### Semantic zoom, shipped for real
 User-facing title tier and dot tier on the underlay: zoom-threshold UX, card⇄title⇄dot transitions
@@ -113,7 +129,7 @@ seed-scatter for a shelf batch — all local, on-demand, undoable mutations of t
 arrangement. Relayout animates as one staged eased tween (freeze input → snapshot → compute →
 interpolate positions, edges following → settle); never unmount/remount mid-tween.
 
-### Edge work (creation + interaction)
+### Edge work (creation + interaction) — ✅ shipped v0.4.1 (`docs/specs/v0.4.1-canvas-edges.md`)
 v0.4 ships read-only edge *display*. This milestone adds: drag card→card to create a typed link,
 type picker, edge selection/deletion, possibly labels; line hit-testing on the underlay. Edge
 creation writes real `links` rows — it is a data operation with canvas affordances, same
@@ -136,14 +152,20 @@ stroke fidelity; `desynchronized:true` engages on this stack and delivers full-r
 not a perceptible latency win with a mouse — keep it as a free flag, don't rely on it. Watch the
 known "hot elbows" artifact on fast strokes. Pen/stylus is untested to date.
 
-### Threads + nested canvases
-Any note can become a thread (its `comment-on` children — same mechanism as YouTube annotations).
-A note with sub-notes gains a per-note toggle between two renderings: **node-with-children**
-(children as satellite cards/dots around the parent on the current canvas) and **nested canvas**
-(open the note *as* a canvas; `canvas_id` = that note's id activates principle 3, and every canvas
-mechanism — shelf, camera, zero state, undo — is inherited). Open design questions to settle in
-that spec: does a thread canvas get its own shelf; how does breadcrumb/zoom-out-to-parent
-navigation work; how the toggle composes with the dot tier.
+### Threads + nested canvases — chronological thread ✅ shipped v0.6.4 (`docs/specs/v0.6.4-notes-as-threads.md`); nested-canvas rendering deferred
+**Shipped (v0.6.4):** any note is a thread. Opening a thread renders a **chronological list** of
+`comment-on` children + `SimpleComposer` (`ThreadRoot` header for plain/pdf notes; YouTube keeps
+its video-order rail). `ThreadView` is a feed sub-view (inside `<main>` — ADR 0048, upholds
+principle 8). The "open thread" affordance appears on every feed bubble and canvas card. PDF
+excerpts land as `comment-on` children of the document note; the feed hides thread children
+(ADR 0052).
+
+**Deferred:** A note with sub-notes gaining a per-note toggle between two renderings remains
+future work — **node-with-children** (children as satellite cards/dots around the parent on the
+current canvas) and **nested canvas** (open the note *as* a canvas; `canvas_id` = that note's id
+activates principle 3, and every canvas mechanism — shelf, camera, zero state, undo — is
+inherited). Open design questions to settle in that spec: does a thread canvas get its own shelf;
+how does breadcrumb/zoom-out-to-parent navigation work; how the toggle composes with the dot tier.
 
 ### Multiple canvases (top-level UI)
 Create/name/switch/delete for additional root-level canvases. Positions are already keyed by
@@ -158,12 +180,16 @@ Telegram-style channels: several feeds, a feed picker as a left-dock pane, each 
 choose its working feed from inside the canvas view (no round-trip through the feed view). This is
 the moment the feed stops being singular app chrome and becomes a pane like everything else.
 
-### PDFs (and the excerpt-drag move)
+### PDFs (and the excerpt-drag move) — slim slice ✅ shipped v0.6; PDF-as-source-note ✅ shipped v0.6.4
 PDF as a content pane in the right dock: read, annotate, and — the entire point — **drag an excerpt
 onto the canvas** as a note carrying its source locator (the MarginNote move; same `source_locator`
-philosophy as YouTube annotations). Ginormous milestone; explicitly sequenced *after* the
-node/edge/tab/pane workflow feels right (user-stated constraint). Dock-shell design must protect
-the excerpt-drag path from day one even though PDFs ship later.
+philosophy as YouTube annotations). **Read + excerpt-drag shipped in v0.6** (no annotation); it grew
+the right-dock content-pane embryo (see §Dock shell). **v0.6.4 addition:** a PDF is now a
+`type='source'` feed note with a `PdfFeedNote` card (thumbnail, title, thread affordance); excerpts
+are `comment-on` children of the document note (ADR 0050); the PDF reader and YouTube player are
+peer detachable right-dock content panes (ADR 0049). What remains is the full milestone — **PDF
+annotation (Stage 2)**, re-open-at-source navigation, image-region excerpts, multi-document tabs —
+sequenced *after* the dock shell + canvas-ink Stage 3.
 
 ### Canvas layers
 Z-layers within one canvas (show/hide/lock groups of content, ink on its own layer, etc.).
@@ -199,4 +225,18 @@ Resequencing = edit this section, nothing else.
 > right-dock + content-pane slice (`Pane.kind`, `Dock.side`) — NOT tabs, NOT multi-pane, NOT edge
 > work. This honors "dock-shell design must protect the excerpt-drag path from day one." The full
 > PDF milestone (annotation, Stage 2) remains sequenced after the dock shell + canvas-ink Stage 3.
+
+> **Amendment (2026-06-29, v0.6.2):** the **dock-shell grammar** (multi-pane docks, tab strips at ≥2,
+> the `dockStore` ordered-list model, backlinks as a dockable dual-surface pane) shipped as
+> `v0.6.2/dock-shell` — the first item on the sequence is now largely done. What remains of §Dock shell
+> is the deferred set (cross-dock tab dragging, dock-toggle chrome, left multi-pane, AI-chat pane,
+> persistence). Next up the queue: **semantic zoom**.
 > Layers remain after PDFs (full milestone).
+
+> **Amendment (2026-07-01, v0.6.4):** **notes-as-threads** (chronological thread rendering for any
+> note; PDF-as-source-note; YouTube player + PDF reader as detachable dock panes; feed hides
+> comment-on children) shipped on branch `v0.6.4/notes-as-threads`. This is the first concrete cut
+> of §Threads — the chronological rendering is done; the nested-canvas and satellite-dot renderings
+> remain deferred in §Threads. The feed-hides-children decision (ADR 0052) revises the v0.1
+> "everything in the feed" model — recorded here so it is not silently undone. Next up:
+> **semantic zoom**.
