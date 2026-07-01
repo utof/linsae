@@ -94,18 +94,39 @@ export function getNote(db: DB, id: string): Note | null {
  * Cursor-based pagination: supply `before` to fetch the most-recent notes created
  * strictly before that Unix-ms timestamp (the previous page when scrolling up).
  *
+ * `excludeThreadChildren`: when `true`, notes that are the `from_note_id` of a
+ * `comment-on` edge are excluded — they belong only in their thread, not the
+ * rolling feed. Thread ROOT notes (the `to_slug` target) are unaffected because
+ * they never appear as `from_note_id` of a comment-on edge. ONLY the FEED passes
+ * this flag (App.tsx ['notes','feed'] query); canvas pickers leave it unset so
+ * comment-on children (e.g. PDF excerpts already placed on the canvas) remain
+ * reachable. @issue utof/linsae#165
+ *
  * @param db - Open better-sqlite3 Database.
  * @param opts.limit - Maximum rows to return (the newest this many).
  * @param opts.before - Optional cursor: only return notes with `created_at < before`.
+ * @param opts.excludeThreadChildren - When true, hide comment-on children from the result.
  * @returns Array of Notes, oldest first.
  * @see docs/specs/v0.1-rolling-feed-and-search.md §User-facing surfaces
+ * @issue utof/linsae#165
  */
-export function listNotes(db: DB, opts: { limit: number; before?: number }): Note[] {
+export function listNotes(
+  db: DB,
+  opts: { limit: number; before?: number; excludeThreadChildren?: boolean },
+): Note[] {
+  // When excludeThreadChildren is set, append a NOT IN subquery that removes every
+  // note whose id appears as from_note_id of a comment-on edge. The subquery is a
+  // full-table scan over `links` (small table), but it is filtered to a single
+  // edge_type value and SQLite can use the composite PK index on (from_note_id,
+  // to_slug, edge_type) — acceptable at personal-vault scale.
+  const excludeClause = opts.excludeThreadChildren
+    ? " AND id NOT IN (SELECT from_note_id FROM links WHERE edge_type='comment-on')"
+    : ''
   // Use `!== undefined` so `before: 0` (valid epoch cursor) doesn't get treated as "no cursor".
   const where =
     opts.before !== undefined
-      ? 'WHERE deleted_at IS NULL AND created_at < ?'
-      : 'WHERE deleted_at IS NULL'
+      ? `WHERE deleted_at IS NULL AND created_at < ?${excludeClause}`
+      : `WHERE deleted_at IS NULL${excludeClause}`
   const params = opts.before !== undefined ? [opts.before, opts.limit] : [opts.limit]
   const rows = db
     .prepare(

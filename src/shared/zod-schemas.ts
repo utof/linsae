@@ -76,8 +76,12 @@ export const SourceLocatorSchema = z.discriminatedUnion('media', [
  *
  * Why: `limit` caps the page size so the renderer cannot request an unbounded
  * result set. `before` is an optional cursor (Unix ms timestamp) for
- * infinite-scroll pagination.
+ * infinite-scroll pagination. `excludeThreadChildren` filters comment-on
+ * children from the result — used by the FEED only (#165); canvas pickers
+ * leave it unset (false/undefined) so they can reach every note including
+ * PDF excerpts that are comment-on children but live on the canvas.
  * @see docs/plans/v0.1-rolling-feed-and-search.md §Task 6
+ * @issue utof/linsae#165
  */
 export const NotesListInputSchema = z.object({
   // Default to the max page size: `listNotes` returns the NEWEST `limit` notes, so
@@ -85,6 +89,7 @@ export const NotesListInputSchema = z.object({
   // covers most personal vaults in one page until scroll-back pagination (#20).
   limit: z.number().int().positive().max(500).default(500),
   before: z.number().int().nonnegative().optional(),
+  excludeThreadChildren: z.boolean().optional(),
 })
 
 /**

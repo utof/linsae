@@ -44,12 +44,20 @@ export const api = {
     /**
      * Paginated feed of non-deleted notes, newest-first.
      * Why optional `input`: lets components call `api.notes.list()` without
-     * payload; defaults (e.g. `limit: 100`) are applied by the main-process
+     * payload; defaults (e.g. `limit: 500`) are applied by the main-process
      * Zod parse on `NotesListInputSchema`.
+     *
+     * `excludeThreadChildren`: pass `true` from the FEED query only (#165);
+     * canvas pickers (EdgeTargetPicker, Picker, DevBootMeter) omit it so they
+     * can reach every note including comment-on children placed on the canvas.
      * @see src/main/ipc/notes.ts
+     * @issue utof/linsae#165
      */
-    list: (input?: { limit?: number; before?: number }): Promise<Note[]> =>
-      window.api.notes.list(input ?? {}),
+    list: (input?: {
+      limit?: number
+      before?: number
+      excludeThreadChildren?: boolean
+    }): Promise<Note[]> => window.api.notes.list(input ?? {}),
     /**
      * Fetch a single note by id (returns `null` if not found / soft-deleted).
      * @see src/main/ipc/notes.ts

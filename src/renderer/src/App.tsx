@@ -90,13 +90,21 @@ type ActivePalette = 'none' | 'command' | 'title' | 'content'
  */
 export function App() {
   const queryClient = useQueryClient()
+  // Feed query: distinct key ['notes','feed'] so it lives in a separate cache
+  // entry from the pickers' ['notes'] key. invalidateQueries({ queryKey: ['notes'] })
+  // (prefix match, no exact:true anywhere in the codebase) still invalidates this
+  // query on every create/update/delete/excerpt (verified via context7 TanStack Query
+  // v5 docs — prefix matching is the default). Canvas pickers keep queryKey:['notes']
+  // + api.notes.list() (no flag) → unfiltered, so comment-on children (PDF excerpts
+  // placed on the canvas) remain reachable. @issue utof/linsae#165
   const { data: notes = [], isPending: notesPending } = useQuery({
-    queryKey: ['notes'],
+    queryKey: ['notes', 'feed'],
     // limit defaults to 500 (the Zod max) — the NEWEST 500 notes, oldest-first
     // (listNotes). A new note is always in this page; older notes beyond 500 wait
     // on scroll-back pagination (issue #20). The plan literal said 5000 but the
-    // schema caps at 500.
-    queryFn: () => api.notes.list(),
+    // schema caps at 500. excludeThreadChildren hides comment-on children (#165)
+    // from the feed — they belong only in their thread (PDF thread, YouTube thread).
+    queryFn: () => api.notes.list({ excludeThreadChildren: true }),
   })
   const [focusedId, setFocusedId] = useState<string | null>(null)
   const [activePalette, setActivePalette] = useState<ActivePalette>('none')

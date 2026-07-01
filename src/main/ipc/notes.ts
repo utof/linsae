@@ -60,12 +60,18 @@ type DB = Database.Database
 export function registerNotesIpc(db: DB, nd: NotesDir): void {
   ipcMain.handle('notes:list', (_e, input) => {
     const i = NotesListInputSchema.parse(input)
-    // Conditional spread keeps `before` absent (not `undefined`) so the call
-    // satisfies `exactOptionalPropertyTypes` against listNotes' parameter type.
-    return listNotes(
-      db,
-      i.before !== undefined ? { limit: i.limit, before: i.before } : { limit: i.limit },
-    )
+    // Conditional spread keeps `before` / `excludeThreadChildren` absent (not
+    // `undefined`) so the call satisfies `exactOptionalPropertyTypes` against
+    // listNotes' parameter type. The flag defaults to false/absent here so that
+    // canvas pickers (EdgeTargetPicker, Picker, DevBootMeter) receive all notes
+    // including comment-on children (PDF excerpts placed on canvas). Only the feed
+    // passes `{ excludeThreadChildren: true }` — see App.tsx ('notes','feed') query.
+    // @issue utof/linsae#165
+    return listNotes(db, {
+      limit: i.limit,
+      ...(i.before !== undefined ? { before: i.before } : {}),
+      ...(i.excludeThreadChildren ? { excludeThreadChildren: true } : {}),
+    })
   })
   ipcMain.handle('notes:get', (_e, input) => {
     const i = NoteIdSchema.parse(input)

@@ -147,4 +147,27 @@ describe('notes queries', () => {
     expect(n?.source_locator).toEqual({ media: 'youtube', video_id: 'dQw4w9WgXcQ', t: 83 })
     expect(typeof n?.source_locator).toBe('object') // guards against the string-not-parsed regression
   })
+
+  it('listNotes({ excludeThreadChildren: true }) hides comment-on children but keeps roots and standalones (#165)', () => {
+    // (a) standalone plain note
+    createNote(db, { id: 'standalone', slug: 'standalone', body: 'standalone', type: 'claim' })
+    // (b) source/root note — thread ROOT, not a child; must stay in feed
+    createNote(db, { id: 'root', slug: 'root', body: 'root', type: 'source' })
+    // (c) comment-on child — its from_note_id is in links WHERE edge_type='comment-on'; must be hidden
+    createNote(db, { id: 'child', slug: 'child', body: 'child', type: 'claim' })
+    db.prepare(
+      `INSERT INTO links (from_note_id, to_slug, edge_type) VALUES ('child', 'root', 'comment-on')`,
+    ).run()
+
+    // Without the flag: all three visible (backward compat — other consumers still see children)
+    expect(listNotes(db, { limit: 10 }).map((n) => n.id)).toEqual(['standalone', 'root', 'child'])
+
+    // With the flag: only standalone and root survive; child is excluded.
+    // Root is the comment-on TARGET (to_slug), NOT the from_note_id, so the subquery
+    // `SELECT from_note_id FROM links WHERE edge_type='comment-on'` does NOT contain root.
+    const feedIds = listNotes(db, { limit: 10, excludeThreadChildren: true }).map((n) => n.id)
+    expect(feedIds).toContain('standalone')
+    expect(feedIds).toContain('root')
+    expect(feedIds).not.toContain('child')
+  })
 })

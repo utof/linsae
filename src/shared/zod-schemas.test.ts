@@ -6,6 +6,7 @@ import {
   CaptureInputSchema,
   FetchOEmbedInputSchema,
   NotesCreateInputSchema,
+  NotesListInputSchema,
   NotesUpdateInputSchema,
   SaveOverlayInputSchema,
   SourceLocatorSchema,
@@ -193,6 +194,29 @@ describe('NotesUpdateInputSchema — empty-body rule', () => {
   it('accepts a non-empty body without source_kind', () => {
     const result = NotesUpdateInputSchema.parse({ id: 'n1', body: 'x', type: 'claim' })
     expect(result.body).toBe('x')
+  })
+})
+
+describe('NotesListInputSchema — excludeThreadChildren scope (#165)', () => {
+  it('defaults excludeThreadChildren to undefined (absent) so the IPC handler is unfiltered by default (canvas pickers stay unfiltered)', () => {
+    // The IPC handler uses `...(i.excludeThreadChildren ? { excludeThreadChildren: true } : {})`,
+    // so `undefined` → the flag is never passed to listNotes → no child filtering.
+    // This locks the "pickers unfiltered" invariant: as long as the schema produces
+    // `undefined` when the field is absent, adding excludeThreadChildren: false to a
+    // picker call would have identical effect to omitting it entirely.
+    const parsed = NotesListInputSchema.parse({})
+    expect(parsed.excludeThreadChildren).toBeUndefined()
+    expect(parsed.limit).toBe(500) // default limit unchanged
+  })
+
+  it('passes excludeThreadChildren: true through when set (feed query path)', () => {
+    const parsed = NotesListInputSchema.parse({ excludeThreadChildren: true })
+    expect(parsed.excludeThreadChildren).toBe(true)
+  })
+
+  it('passes excludeThreadChildren: false through when explicitly set', () => {
+    const parsed = NotesListInputSchema.parse({ excludeThreadChildren: false })
+    expect(parsed.excludeThreadChildren).toBe(false)
   })
 })
 
