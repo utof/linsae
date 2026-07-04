@@ -30,7 +30,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.100.14",
-    "@tanstack/react-virtual": "^3.14.1",
+    "@tanstack/react-virtual": "^3.14.5",
     "better-sqlite3": "^12.11.1",
     "cmdk": "^1.1.1",
     "js-yaml": "^4.1.1",
