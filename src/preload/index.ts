@@ -228,6 +228,8 @@ const api = {
   settings: {
     get: (i: z.input<typeof SettingsGetInputSchema>): Promise<{ value: unknown }> =>
       ipcRenderer.invoke('settings:get', i),
+    getMany: (keys: string[]): Promise<{ values: Record<string, unknown> }> =>
+      ipcRenderer.invoke('settings:getMany', { keys }),
     set: (i: z.input<typeof SettingsSetInputSchema>): Promise<{ ok: true }> =>
       ipcRenderer.invoke('settings:set', i),
   },

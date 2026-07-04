@@ -407,6 +407,12 @@ export const SettingsSetInputSchema = z.object({
   // value is any JSON-serialisable thing; the query layer JSON-encodes it.
   value: z.unknown(),
 })
+/** `settings:getMany` input — batched read of the persistence key-set on boot.
+ * `.max(64)` caps the round-trip; each key mirrors SettingsGetInputSchema's bound.
+ * @see docs/specs/v0.7-session-persistence.md */
+export const SettingsGetManyInputSchema = z.object({
+  keys: z.array(z.string().min(1).max(120)).max(64),
+})
 
 /**
  * Input schema for `notes:recent` — recent/frecent note feed for ⌘O/⌘P empty-state.

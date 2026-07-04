@@ -26,3 +26,13 @@ export function setSetting(db: DB, key: string, value: unknown): void {
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
   ).run(key, JSON.stringify(value))
 }
+
+/** Batch read: `{ key: decodedValue | null }` for each requested key — a thin loop
+ *  of single-key `getSetting` reads. Collapses boot session-restore into one IPC
+ *  round-trip (not one SQL query; N single-key SQL reads server-side).
+ *  @see docs/specs/v0.7-session-persistence.md */
+export function getManySettings(db: DB, keys: string[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const k of keys) out[k] = getSetting(db, k)
+  return out
+}

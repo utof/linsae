@@ -98,8 +98,12 @@ export interface MockApi {
     upsert: ReturnType<typeof vi.fn>
     get: ReturnType<typeof vi.fn>
   }
-  /** Settings IPC mocks — added in v0.5. @see src/preload/index.ts */
-  settings: { get: ReturnType<typeof vi.fn>; set: ReturnType<typeof vi.fn> }
+  /** Settings IPC mocks — added in v0.5; getMany added in v0.7. @see src/preload/index.ts */
+  settings: {
+    get: ReturnType<typeof vi.fn>
+    getMany: ReturnType<typeof vi.fn>
+    set: ReturnType<typeof vi.fn>
+  }
   /** Canvas IPC mocks — added in v0.4. @see src/preload/index.ts */
   canvas: {
     listLayouts: ReturnType<typeof vi.fn>
@@ -191,6 +195,7 @@ export function installMockApi(overrides: Partial<MockApi> = {}): MockApi {
     },
     settings: {
       get: vi.fn(async () => ({ value: null })),
+      getMany: vi.fn(async () => ({ values: {} })),
       set: vi.fn(async () => ({ ok: true as const })),
     },
     canvas: {
