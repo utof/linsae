@@ -32,6 +32,7 @@ import {
 import { ShelfContext } from './panes/ShelfPane'
 import { useExcerptStore } from './pdf/excerptState'
 import { useOpenPdf, usePdfOpenId } from './pdf/usePdfOpenId'
+import type { SessionSnapshot } from './persistence/keys'
 import { usePersistedWrite } from './persistence/usePersistedWrite'
 import { useSessionSnapshot } from './persistence/useSessionSnapshot'
 import { SettingsPanel } from './settings/SettingsPanel'
@@ -202,6 +203,12 @@ export function App() {
   // persisted to `thread.scroll.v1`. @see docs/specs/v0.7-session-persistence.md §Task 2.2
   const [threadScrollMap, setThreadScrollMap] = useState<Record<string, number>>({})
   const threadScrollSeeded = useRef(false)
+  // v0.7 Task 3.2: latest feed-scroll capture from <Feed>'s throttled onCapture. Boot
+  // RESTORE flows the OTHER way (snap.data.feedScroll → Feed's `restore` prop, seeded at
+  // its first render); this state only holds post-boot captures for the debounced writer,
+  // so it starts null and `usePersistedWrite` skips it until the first real capture.
+  // @see docs/specs/v0.7-session-persistence.md §Feed scroll
+  const [feedScroll, setFeedScroll] = useState<SessionSnapshot['feedScroll']>(null)
   // submitError surfaces a user-facing message from the last failed
   // create/update mutation (e.g. duplicate-slug). The Composer renders it
   // inline; the next keystroke clears it via onClearError. See issue #23.
@@ -868,6 +875,12 @@ export function App() {
   // matching the dock + ui.session writers); `usePersistedWrite` skips the seeded value.
   usePersistedWrite('thread.scroll.v1', threadScrollMap, { debounceMs: 250, enabled: snapSettled })
 
+  // Persist the latest feed-scroll capture, debounced. `enabled: snapSettled` (fail-open,
+  // matching the other writers — NOT `snap.isSuccess`, which would disable feed-scroll
+  // persistence for the whole session on a transient snapshot-read failure). Starts null →
+  // `usePersistedWrite` skips it until <Feed> reports the first real capture.
+  usePersistedWrite('feed.scroll.v1', feedScroll, { debounceMs: 250, enabled: snapSettled })
+
   const onWikilinkClick = async (slug: string) => {
     const match = await api.links.resolve(slug)
     if (match) {
@@ -1232,7 +1245,13 @@ export function App() {
                     >
                       {/* v0.7: gate Feed's FIRST mount on `snapSettled` so its initial
                           render can receive `restore` from the session snapshot (Batch 3);
-                          the splash covers this pre-settle gap, so `null` is never seen. */}
+                          the splash covers this pre-settle gap, so `null` is never seen.
+                          LOAD-BEARING for feed-scroll restore: Feed must FIRST-mount with notes
+                          PRESENT (the notes.length===0 placeholder branch defers the mount until
+                          they arrive), because the virtualizer consumes `initialOffset` /
+                          `initialMeasurementsCache` ONLY at its first render. If Feed ever
+                          first-mounts on an empty feed, `scrollOffset` locks to 0 and the restore
+                          silently lands at the top — do NOT relax this notes-present gate. */}
                       {!snapSettled ? null : notes.length === 0 ? (
                         <div
                           style={{
@@ -1253,6 +1272,10 @@ export function App() {
                           scrollerRef={feedScrollerRef}
                           sendInFlight={sendInFlight}
                           band={feedBand}
+                          // v0.7 Task 3.2: boot restore (seeded at Feed's first render —
+                          // App gates this mount on `snapSettled`) + throttled capture up.
+                          restore={snap.data?.feedScroll ?? undefined}
+                          onCapture={setFeedScroll}
                           focusedId={focusedId}
                           // Toggle behaviour: clicking an unfocused bubble focuses it (opens
                           // BacklinksPane); clicking the already-focused bubble unfocuses it
