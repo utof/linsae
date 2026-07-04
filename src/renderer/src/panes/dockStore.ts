@@ -20,7 +20,8 @@ interface DockStore {
    * Remembered width PER DOCK SIDE (B15): one width per `left`/`right`, NOT per
    * pane — so switching the active tab (pdf ↔ backlinks) never changes the dock's
    * width. Seeded on the first open of a side to that pane's kind default, updated
-   * on resize (clamped to the resized pane's kind band), preserved verbatim across
+   * on resize (clamped to the dock's kind band — the widest resident pane, so a
+   * content pane keeps the wide band under a utility tab), preserved verbatim across
    * active-tab changes. @see adrs/0047-feed-default-width-docks-fill-gutters.md
    */
   widths: Partial<Record<DockSide, number>>

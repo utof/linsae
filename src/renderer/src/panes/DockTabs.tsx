@@ -56,9 +56,10 @@ export function DockTabs({
               padding: '0 var(--space-4)',
               cursor: 'pointer',
               fontSize: 'var(--t-13)',
-              // Weight + color follow the v21 tab (right-pane.jsx `PaneTab`): active =
-              // semibold on --fg-0, inactive = medium on --fg-2 — a clear, "obey-er"
-              // hierarchy instead of the old flat 400/--fg-1. @see v21-design-system
+              // Active tab follows the v21 `PaneTab` (right-pane.jsx): semibold on
+              // --fg-0. Inactive is medium (500) on --fg-2 — a deliberately stronger
+              // hierarchy than v21's flat 400, replacing the old flat 400/--fg-1.
+              // @see v21-design-system
               fontWeight: active ? 600 : 500,
               color: active ? 'var(--fg-0)' : 'var(--fg-2)',
               borderBottom: active ? '1px solid var(--accent)' : '1px solid transparent',
