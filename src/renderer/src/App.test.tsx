@@ -1211,3 +1211,74 @@ describe('App — boot session gate + dock hydrate/persist (Task 1.6)', () => {
     expect(await screen.findByText(/nothing yet\. start anywhere\./i)).toBeInTheDocument()
   })
 })
+
+describe('App — session restore: focusedId / threadNoteId (Task 2.1)', () => {
+  afterEach(() => useCommandStore.getState().reset())
+
+  /**
+   * Backlinks-suppression (the TRAP): the [focusedId] auto-open-backlinks effect calls
+   * dock.openPane('backlinks') whenever focusedId becomes non-null, and openPane clears
+   * the collapse flag for that side (dockStore.ts openPane → `collapsed[side]: false`). So
+   * re-seeding a persisted focusedId at boot would clobber the just-hydrated dock — here it
+   * would un-collapse the right side the user had collapsed. The restoredFocusRef guard makes
+   * the effect skip exactly its first restore-sourced run, preserving collapsed.right === true.
+   */
+  it('restoring focusedId does not clear the hydrated collapse (backlinks-suppression)', async () => {
+    const mock = installMockApi()
+    mock.notes.get.mockResolvedValue({ id: 'n1' } as never)
+    mock.settings.getMany.mockResolvedValue({
+      values: {
+        'dock.layout.v1': {
+          left: { openPaneIds: [], activeId: null },
+          right: { openPaneIds: ['backlinks'], activeId: 'backlinks' },
+          widths: {},
+          collapsed: { right: true },
+        },
+        'ui.session.v1': { focusedNoteId: 'n1', threadNoteId: null },
+      },
+    })
+    renderWithProviders(<App />)
+    await waitFor(() => expect(useDockStore.getState().hydrated).toBe(true))
+    // Deterministically wait until the restored focus has propagated through BOTH [focusedId]
+    // effects: the command-registration effect (registers 'backlinks.open') runs immediately
+    // before the auto-open-backlinks effect in the SAME commit, so once 'backlinks.open' is
+    // present the suppression effect has also run and collapsed.right is in its final state.
+    await waitFor(() =>
+      expect(
+        useCommandStore
+          .getState()
+          .commands()
+          .some((c) => c.id === 'backlinks.open'),
+      ).toBe(true),
+    )
+    // backlinks is the ONLY right-side utility pane, so activeId cannot be "stolen" from
+    // another pane — that assertion would be a tautology. The load-bearing guard is that
+    // openPane('backlinks') must NOT clear the restored collapse; without restoredFocusRef the
+    // [focusedId] effect flips collapsed.right false.
+    expect(useDockStore.getState().collapsed.right).toBe(true)
+  })
+
+  /**
+   * Thread precedence: when both a thread and a focus are persisted, the thread wins — the
+   * restore opens the thread and IGNORES the focus (openThread itself clears focusedId). The
+   * mocked ThreadView renders a back affordance, so its presence proves we're in a thread.
+   */
+  it('thread wins: both persisted → thread opens, focus ignored', async () => {
+    const mock = installMockApi()
+    mock.notes.get.mockResolvedValue({ id: 't1' } as never)
+    mock.settings.getMany.mockResolvedValue({
+      values: { 'ui.session.v1': { focusedNoteId: 'n1', threadNoteId: 't1' } },
+    })
+    renderWithProviders(<App />)
+    // Anchored /^back$/i, not /back/i: the WindowFrame's always-present "toggle backlinks"
+    // button also contains "back", so a loose regex would either false-match with no thread
+    // open OR throw "multiple elements" once a thread IS open. The mocked ThreadView's leave-
+    // thread control has the exact accessible name "back" (aria-label="back").
+    await waitFor(() => expect(screen.getByRole('button', { name: /^back$/i })).toBeInTheDocument()) // in a thread
+    // Precedence lock: the `return` after openThread means the focus-id get is never reached.
+    // mock.notes.get is the raw window.api boundary, so the positional api.notes.get(id) wrapper
+    // (lib/api.ts:65) records the IPC shape `{ id }`, not the bare string.
+    expect(mock.notes.get).toHaveBeenCalledWith({ id: 't1' })
+    expect(mock.notes.get).not.toHaveBeenCalledWith({ id: 'n1' })
+  })
+})

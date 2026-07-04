@@ -32,6 +32,7 @@ import {
 import { ShelfContext } from './panes/ShelfPane'
 import { useExcerptStore } from './pdf/excerptState'
 import { useOpenPdf, usePdfOpenId } from './pdf/usePdfOpenId'
+import { usePersistedWrite } from './persistence/usePersistedWrite'
 import { useSessionSnapshot } from './persistence/useSessionSnapshot'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { ThreadView } from './thread/ThreadView'
@@ -123,6 +124,16 @@ export function App() {
   const snap = useSessionSnapshot()
   const snapSettled = snap.isSuccess || snap.isError
   const [focusedId, setFocusedId] = useState<string | null>(null)
+  // v0.7 session-restore refs (Task 2.1). `restoredFocusRef` holds the SPECIFIC id the one-shot
+  // boot restore is about to re-seed into `focusedId` (not a bare boolean), set immediately before
+  // that `setFocusedId`, then value-matched+cleared by the [focusedId] auto-open-backlinks effect
+  // on its next run so the restore does NOT openPane('backlinks') — which would clobber the
+  // just-hydrated dock (openPane clears `collapsed[side]` and steals `activeId`). Holding the id
+  // (vs a boolean) means the guard suppresses ONLY that exact value's one run, so a lingering ref
+  // can never swallow a later genuine focus to a *different* note. `didRestoreSession` makes the
+  // restore one-shot. @see docs/specs/v0.7-session-persistence.md §Restore
+  const restoredFocusRef = useRef<string | null>(null)
+  const didRestoreSession = useRef(false)
   const [activePalette, setActivePalette] = useState<ActivePalette>('none')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null)
@@ -477,6 +488,15 @@ export function App() {
   // Idempotent with I1's close→clear-focus (handlePaneClose): after a tab/header
   // close the pane is already gone, so the null-focus branch is a no-op — no loop.
   useEffect(() => {
+    // Task 2.1 backlinks-suppression: skip exactly the restore-sourced first run. The boot
+    // restore re-seeds `focusedId` from persistence; opening backlinks here would clobber the
+    // just-hydrated dock (openPane clears `collapsed[side]` + repoints `activeId`). Value-match
+    // the restored id (not a bare boolean) so ONLY that exact value's one run is skipped — a
+    // focus to a *different* note (even one racing the restore) can never be swallowed.
+    if (focusedId != null && focusedId === restoredFocusRef.current) {
+      restoredFocusRef.current = null
+      return
+    }
     const dock = useDockStore.getState()
     if (focusedId != null) dock.openPane('backlinks')
     else if (dock.right.openPaneIds.includes('backlinks')) dock.closePane('backlinks')
@@ -778,6 +798,41 @@ export function App() {
     setEditingNoteId(null)
     setThreadNoteId(id)
   }
+
+  // Boot session-restore (Task 2.1): once the snapshot first resolves, restore the persisted
+  // selection — THREAD WINS. If a persisted thread's note still exists, open it and IGNORE the
+  // persisted focus (the `return`; openThread itself clears focusedId). Otherwise re-seed the
+  // persisted focus if ITS note still exists. Stale-drop: `api.notes.get` returns null (not a
+  // throw) for a missing/soft-deleted id, so the `&&` silently drops a deleted target — a stale
+  // id can't crash boot. `didRestoreSession` (set synchronously) makes this one-shot: it need
+  // only react to `snap.data` first resolving. @see docs/specs/v0.7-session-persistence.md
+  // biome-ignore lint/correctness/useExhaustiveDependencies: one-shot (didRestoreSession guards re-runs); the effect fires when snap.data first resolves and captures openThread's closure over stable setters — listing openThread (recreated each render) would churn without changing behavior
+  useEffect(() => {
+    if (!snap.data || didRestoreSession.current) return
+    didRestoreSession.current = true
+    const s = snap.data.uiSession
+    if (!s) return
+    void (async () => {
+      if (s.threadNoteId && (await api.notes.get(s.threadNoteId))) {
+        openThread(s.threadNoteId)
+        return
+      }
+      if (s.focusedNoteId && (await api.notes.get(s.focusedNoteId))) {
+        restoredFocusRef.current = s.focusedNoteId // suppress the auto-open-backlinks run for THIS id
+        setFocusedId(s.focusedNoteId)
+      }
+    })()
+  }, [snap.data])
+
+  // Persist the selection to `ui.session.v1`, debounced. `enabled: snapSettled`
+  // (isSuccess || isError), NOT `snap.isSuccess` alone — a transient snapshot-read failure must
+  // not disable session persistence for the whole session (fail-open, matching the dock writer's
+  // boot arming). `usePersistedWrite` skips the initial (restored) value. @see spec §Write-through
+  usePersistedWrite(
+    'ui.session.v1',
+    useMemo(() => ({ focusedNoteId: focusedId, threadNoteId }), [focusedId, threadNoteId]),
+    { debounceMs: 400, enabled: snapSettled },
+  )
 
   const onWikilinkClick = async (slug: string) => {
     const match = await api.links.resolve(slug)
