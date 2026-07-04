@@ -242,10 +242,9 @@ export function Composer({
               border: 0,
               outline: 'none',
               // resize:none disables the user-drag handle (we drive height
-              // programmatically via the useLayoutEffect above);
-              // overflowY:auto puts the scrollbar INSIDE the textarea once
-              // content exceeds TEXTAREA_MAX_HEIGHT_PX, so the composer
-              // container stops pushing the feed up.
+              // programmatically via useAutoGrowTextarea); overflowY:auto puts
+              // the scrollbar INSIDE the textarea once content exceeds the hook's
+              // height cap, so the composer container stops pushing the feed up.
               resize: 'none',
               overflowY: 'auto',
               // Reserve the bottom-right corner for the floating send button so a
