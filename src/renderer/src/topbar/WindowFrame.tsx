@@ -90,13 +90,45 @@ export function WindowFrame({
         height: 32,
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'flex-end',
+        // space-between holds the left cluster (shelf toggle) at the left edge and
+        // the right cluster at the right; the feed|canvas control is absolute-centered.
+        justifyContent: 'space-between',
         padding: '0 6px 0 12px',
         background: 'transparent',
         fontFamily: 'var(--font-sans)',
         position: 'relative',
       }}
     >
+      {/* Left cluster — the left-dock (shelf) toggle, pulled to the top-LEFT of the
+          frame (it used to sit in the right cluster). app-region-no-drag so the click
+          lands over the surrounding drag region; main uses frame:false so no OS
+          traffic-lights occupy this corner, and the 12px inset clears the edge. */}
+      <div className="app-region-no-drag" style={{ display: 'flex', alignItems: 'center' }}>
+        {/* §10 dock toggle — one quiet outline button, no rail. aria-pressed
+            reflects dockOpen so the quiet state is assertable. */}
+        <button
+          type="button"
+          aria-label="toggle shelf"
+          title="toggle shelf"
+          aria-pressed={dockOpen}
+          onClick={onToggleDock}
+          style={{
+            ...iconBtn,
+            background: dockOpen ? 'var(--bg-2)' : 'transparent',
+            color: dockOpen ? 'var(--fg-0)' : 'var(--fg-2)',
+          }}
+          onMouseEnter={(e) => {
+            ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-2)'
+          }}
+          onMouseLeave={(e) => {
+            ;(e.currentTarget as HTMLButtonElement).style.background = dockOpen
+              ? 'var(--bg-2)'
+              : 'transparent'
+          }}
+        >
+          <PanelLeft size={14} />
+        </button>
+      </div>
       {/* Centered feed|canvas toggle — absolute so it stays centered regardless
           of the right cluster's width. app-region-no-drag so clicks register. */}
       <div
@@ -140,30 +172,6 @@ export function WindowFrame({
           color: 'var(--fg-3)',
         }}
       >
-        {/* §10 dock toggle — one quiet outline button, no rail. aria-pressed
-            reflects dockOpen so the quiet state is assertable. */}
-        <button
-          type="button"
-          aria-label="toggle shelf"
-          title="toggle shelf"
-          aria-pressed={dockOpen}
-          onClick={onToggleDock}
-          style={{
-            ...iconBtn,
-            background: dockOpen ? 'var(--bg-2)' : 'transparent',
-            color: dockOpen ? 'var(--fg-0)' : 'var(--fg-2)',
-          }}
-          onMouseEnter={(e) => {
-            ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-2)'
-          }}
-          onMouseLeave={(e) => {
-            ;(e.currentTarget as HTMLButtonElement).style.background = dockOpen
-              ? 'var(--bg-2)'
-              : 'transparent'
-          }}
-        >
-          <PanelLeft size={14} />
-        </button>
         {/* B2 backlinks toggle — mirrors the shelf toggle for the right dock. A
             visible, always-reachable affordance to open/close backlinks
             independent of focusing a note. aria-pressed reflects backlinksOpen. */}
