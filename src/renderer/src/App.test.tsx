@@ -1325,3 +1325,67 @@ describe('App — thread scroll persist (Task 2.2)', () => {
     )
   })
 })
+
+describe('App — feed composer draft persist/restore (Task 4.1)', () => {
+  afterEach(() => useCommandStore.getState().reset())
+
+  /**
+   * Boot restore: a persisted `composer.draft.feed.v1` seeds the create composer with BOTH the
+   * body and the mode. App seeds `draftFeed` render-phase the instant the snapshot settles, and
+   * the create composer is gated on `snapSettled` so it first-mounts with that seed present.
+   */
+  it('restores the feed draft (body + mode) from composer.draft.feed.v1 on boot', async () => {
+    const mock = installMockApi()
+    mock.notes.list.mockResolvedValue([])
+    mock.system.getReconcileSkipped.mockResolvedValue(0)
+    mock.settings.getMany.mockResolvedValue({
+      values: { 'composer.draft.feed.v1': { body: 'a restored draft', mode: 'question' } },
+    })
+
+    renderWithProviders(<App />)
+
+    const ta = (await screen.findByRole('textbox')) as HTMLTextAreaElement
+    expect(ta.value).toBe('a restored draft')
+    // question mode restored → the "QUESTION — ESC TO CLEAR" pill renders.
+    expect(screen.getByText(/question/i)).toBeInTheDocument()
+  })
+
+  /**
+   * Clear-and-cancel on send (the load-bearing bit): typing schedules a debounced draft write;
+   * a send BEFORE that debounce elapses must CANCEL it and write null instead, so a late timer
+   * can't resurrect the just-sent text. `usePersistedWrite` cancels a pending write whenever its
+   * value changes, and createMut.onSuccess sets `draftFeed` to null → the pending {body:'sent…'}
+   * write is dropped and a null clear is written. OBJECT-FORM `settings.set({ key, value })`.
+   */
+  it('cancels the pending draft write and persists null when a typed draft is sent', async () => {
+    const mock = installMockApi()
+    mock.notes.list.mockResolvedValue([])
+    mock.system.getReconcileSkipped.mockResolvedValue(0)
+    mock.settings.getMany.mockResolvedValue({ values: {} })
+    mock.notes.create.mockResolvedValue({ ...FEED_NOTE, id: 'created-1' })
+
+    renderWithProviders(<App />)
+
+    const ta = await screen.findByRole('textbox')
+    // Type → schedules a debounced write of { body: 'sent draft', mode: 'claim' } (400ms).
+    fireEvent.change(ta, { target: { value: 'sent draft' } })
+    // Send before the debounce fires → onSuccess sets draftFeed null → cancels the pending
+    // draft write + schedules a null clear.
+    await act(async () => {
+      fireEvent.keyDown(ta, { key: 'Enter' })
+    })
+
+    // The null clear is written to the key…
+    await waitFor(() =>
+      expect(mock.settings.set).toHaveBeenCalledWith({
+        key: 'composer.draft.feed.v1',
+        value: null,
+      }),
+    )
+    // …and the just-sent draft was NEVER persisted (its pending write was cancelled).
+    expect(mock.settings.set).not.toHaveBeenCalledWith({
+      key: 'composer.draft.feed.v1',
+      value: { body: 'sent draft', mode: 'claim' },
+    })
+  })
+})

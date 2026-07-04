@@ -144,6 +144,33 @@ export function App() {
   const waveOn = useDevOverlay('wave')
   const revealOpen = useDevOverlay('reveal')
   const [draftBody, setDraftBody] = useState<string | null>(null)
+  // v0.7 Task 4.1: the persisted feed composer draft `{ body, mode }` (or null = no draft).
+  // Fed by the create Composer's `onDraftChange` and written-through to
+  // `composer.draft.feed.v1`; cleared to null on successful send (see createMut.onSuccess).
+  // Distinct from `draftBody` (the transient wikilink/New-note PREFILL seed that drives the
+  // remount key): `draftFeed` is the durable draft + the ONLY carrier of the restored `mode`.
+  const [draftFeed, setDraftFeed] = useState<SessionSnapshot['draftFeed']>(null)
+  // Boot restore (render-phase, one-shot): seed `draftFeed` from the snapshot the instant it
+  // settles. Done DURING render — not in an effect — so the value is already present when the
+  // `snapSettled`-gated create Composer FIRST mounts (below). An effect would land one render
+  // later, after the composer had already mounted with `initialBody=''`, and (its key
+  // unchanged) it would never pick the restored draft up. React blesses conditional
+  // setState-in-render for exactly this "derive state as a prop settles" case; the
+  // `draftFeedSeeded` guard makes it fire once, so there is no render loop.
+  // @see https://react.dev/reference/react/useState#storing-information-from-previous-renders
+  const [draftFeedSeeded, setDraftFeedSeeded] = useState(false)
+  if (snapSettled && !draftFeedSeeded) {
+    setDraftFeedSeeded(true)
+    setDraftFeed(snap.data?.draftFeed ?? null)
+  }
+  // Narrows the Composer's `NoteType` mode to the draft schema's `'claim' | 'question'` (the
+  // create composer never emits 'source'); memoised so it doesn't re-arm the composer's
+  // report effect on every App render.
+  const handleDraftChange = useCallback(
+    (draft: { body: string; mode: NoteType }) =>
+      setDraftFeed({ body: draft.body, mode: draft.mode === 'question' ? 'question' : 'claim' }),
+    [],
+  )
   // viewMode toggles the non-thread <main> between the rolling feed+composer and
   // the canvas stage. The feed↔canvas swap animates via the §6 stage slide
   // (AnimatePresence below) — only the two outer stage containers' x-transform
@@ -642,6 +669,11 @@ export function App() {
     onSuccess: () => {
       invalidate()
       setDraftBody(null)
+      // v0.7: clear the persisted draft on send. Setting it null CANCELS any pending draft
+      // write (usePersistedWrite's value-change cleanup) and schedules a null write, so a
+      // late debounce can't re-persist the just-sent text. Runs before the successCount tick
+      // remounts the composer (whose empty remount, skip-first, won't re-report a draft).
+      setDraftFeed(null)
       setSubmitError(null)
       setSuccessCount((c) => c + 1)
     },
@@ -880,6 +912,14 @@ export function App() {
   // persistence for the whole session on a transient snapshot-read failure). Starts null →
   // `usePersistedWrite` skips it until <Feed> reports the first real capture.
   usePersistedWrite('feed.scroll.v1', feedScroll, { debounceMs: 250, enabled: snapSettled })
+
+  // Persist the feed composer draft, debounced. `enabled: snapSettled` (fail-open, matching the
+  // other writers); `usePersistedWrite` skips the seeded value so the restored draft isn't
+  // echoed on boot. On successful send, createMut.onSuccess sets `draftFeed` to null — which
+  // CANCELS any pending draft write (value-change cleanup) and schedules a null write, clearing
+  // the key so a late debounce can't resurrect the just-sent draft.
+  // @see docs/specs/v0.7-session-persistence.md §Composer draft
+  usePersistedWrite('composer.draft.feed.v1', draftFeed, { debounceMs: 400, enabled: snapSettled })
 
   const onWikilinkClick = async (slug: string) => {
     const match = await api.links.resolve(slug)
@@ -1316,18 +1356,27 @@ export function App() {
                           }
                           onCancel={() => setEditingNoteId(null)}
                         />
-                      ) : (
+                      ) : snapSettled ? (
+                        // v0.7: gated on `snapSettled` so the create composer FIRST-mounts with
+                        // the render-phase-seeded `draftFeed` already present — that is what makes
+                        // the boot draft restore land in the textarea (the splash covers the
+                        // pre-settle gap, mirroring the Feed gate above).
                         // Composite key: `draftBody ?? 'fresh'` handles the dangling-wikilink
-                        // prefill remount; `successCount` ticks on successful create to
-                        // force a remount → fresh empty textarea. Failed creates leave the
-                        // key unchanged so the user's text + cursor survive.
+                        // prefill remount; `successCount` ticks on successful create to force a
+                        // remount → fresh empty textarea. Failed creates leave the key unchanged
+                        // so the user's text + cursor survive.
                         <Composer
                           key={`${draftBody ?? 'fresh'}-${successCount}`}
                           band={feedBand}
-                          initialBody={draftBody ?? ''}
-                          initialMode="claim"
+                          // A live prefill (`draftBody`) wins over the restored/live draft; else
+                          // the persisted `draftFeed` seeds body + mode. Prefills are always claim
+                          // (a titled new note), so mode comes from `draftFeed` ONLY when there's
+                          // no active prefill — preserving the old hard-coded 'claim' for prefills.
+                          initialBody={draftBody ?? draftFeed?.body ?? ''}
+                          initialMode={draftBody != null ? 'claim' : (draftFeed?.mode ?? 'claim')}
                           error={submitError}
                           onClearError={() => setSubmitError(null)}
+                          onDraftChange={handleDraftChange}
                           // Flag the send so the Feed suppresses its auto-scroll while the new
                           // note glides in (see `beginSend`), THEN create it.
                           onSubmit={({ body, type }) => {
@@ -1337,7 +1386,7 @@ export function App() {
                           onCancel={() => setDraftBody(null)}
                           onPasteText={handlePasteText}
                         />
-                      )}
+                      ) : null}
                     </motion.div>
                   )}
                 </AnimatePresence>

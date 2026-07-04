@@ -1,4 +1,11 @@
-import { type ClipboardEvent, type KeyboardEvent, type Ref, useEffect, useState } from 'react'
+import {
+  type ClipboardEvent,
+  type KeyboardEvent,
+  type Ref,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 import type { NoteType } from '../../../shared/types'
 import { FEED_BAND, type FeedBand } from '../feed/feedBand'
 import { SendButton } from './SendButton'
@@ -38,6 +45,18 @@ interface Props {
    * @see src/renderer/src/App.tsx §paste handler
    */
   onPasteText?: (text: string) => boolean
+  /**
+   * Optional draft reporter (v0.7 session persistence). Called with the live
+   * `{ body, mode }` whenever either changes — App keeps this as `draftFeed` state
+   * and write-throughs it to `composer.draft.feed.v1` (debounced). NOT called on the
+   * initial mount (skip-first): the mount value is either a boot-restored draft (must
+   * not echo back to disk) or the fresh empty composer after a send (must not resurrect
+   * the just-cleared draft — App writes `null` on successful send). Only the create-mode
+   * composer wires this; edit-mode never persists a draft.
+   * @see src/renderer/src/App.tsx §draftFeed
+   * @see docs/specs/v0.7-session-persistence.md §Composer draft
+   */
+  onDraftChange?: (draft: { body: string; mode: NoteType }) => void
   /**
    * Optional ref to the composer card-root element. Currently unused at the call
    * site (the send ghost that needed it was removed — ADR 0020); kept as the natural
@@ -96,6 +115,7 @@ export function Composer({
   error = null,
   onClearError,
   onPasteText,
+  onDraftChange,
   cardRef,
   band = null,
 }: Props) {
@@ -109,6 +129,19 @@ export function Composer({
   useEffect(() => {
     ref.current?.focus()
   }, [ref])
+
+  // Report the live draft up (v0.7 persistence). Skip-first is expressed as
+  // "differs from the seed" rather than a boolean flag so it survives StrictMode's
+  // dev double-invoke of mount effects (both invokes see body/mode === the seed →
+  // no report). The compare-to-last-reported guard also makes an unstable
+  // `onDraftChange` harmless: a re-run with unchanged body/mode returns early, so
+  // there is no render loop even without a memoised callback.
+  const lastReported = useRef({ body: initialBody, mode: initialMode })
+  useEffect(() => {
+    if (lastReported.current.body === body && lastReported.current.mode === mode) return
+    lastReported.current = { body, mode }
+    onDraftChange?.({ body, mode })
+  }, [body, mode, onDraftChange])
 
   const submit = () => {
     if (!body.trim()) return
