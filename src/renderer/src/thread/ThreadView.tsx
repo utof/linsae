@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, Clock, Film } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import type { Attachment } from '../../../shared/types'
 import { AnnotateEditor } from '../annotate/AnnotateEditor'
@@ -23,6 +23,16 @@ import { useThreadNotes } from './useThreadNotes'
 
 /** ms the accent flash ring stays on a cluster after follow-scroll / click-to-seek. */
 const FLASH_MS = 600
+
+/**
+ * Trailing-throttle window (ms) for reporting the generic (plain/pdf) thread's
+ * scrollTop up to App for persistence (`thread.scroll.v1`, v0.7 Task 2.2). One
+ * report per window while the user scrolls; the trailing edge reads the FINAL
+ * position off the live element, so a settle always persists the last offset.
+ *
+ * @see docs/plans/v0.7-session-persistence.md §Task 2.2
+ */
+const SCROLL_PERSIST_THROTTLE_MS = 200
 
 /**
  * Centered content column width — matches ThreadView.jsx in the design-system
@@ -84,10 +94,38 @@ export interface ThreadViewProps {
    * @see src/renderer/src/App.tsx (onWikilinkClick)
    */
   onWikilinkClick?: (slug: string) => void
+  /**
+   * Restored scrollTop for THIS thread's root, applied ONCE to the generic
+   * (plain/pdf) scroller after its children establish scrollHeight (v0.7 Task 2.2).
+   * App sources it from `snap.data.threadScroll[rootId]`. Undefined = no restore.
+   *
+   * YouTube threads deliberately IGNORE this: their always-on playhead-follow
+   * auto-scroll re-scrolls every tick, so a restored offset would be clobbered
+   * instantly. The youtube layout (`notesPane`) never reads this prop — the
+   * exclusion is structural (App can't reliably know the root's kind, so
+   * ThreadView, which fetches the note, owns the gate).
+   *
+   * @see docs/plans/v0.7-session-persistence.md §Task 2.2
+   */
+  // `| undefined` (not just `?`) so App can forward `threadScrollMap[id]` (a
+  // possibly-absent lookup) directly under `exactOptionalPropertyTypes`.
+  initialScrollTop?: number | undefined
+  /**
+   * Trailing-throttled report of the generic (plain/pdf) scroller's scrollTop, for
+   * App-owned persistence to `thread.scroll.v1`. NOT attached for youtube threads
+   * (the playhead-follow owns scroll there). @see initialScrollTop
+   */
+  onScroll?: (scrollTop: number) => void
 }
 
 /** @see ThreadViewProps */
-export function ThreadView({ noteId, onClose, onWikilinkClick }: ThreadViewProps) {
+export function ThreadView({
+  noteId,
+  onClose,
+  onWikilinkClick,
+  initialScrollTop,
+  onScroll,
+}: ThreadViewProps) {
   // ── data fetches ──────────────────────────────────────────────────────────
 
   const { data: note } = useQuery({
@@ -520,6 +558,54 @@ export function ThreadView({ noteId, onClose, onWikilinkClick }: ThreadViewProps
     [note, noteId, queryClient],
   )
 
+  // ── generic (plain/pdf) thread scroll restore/persist (v0.7 · Task 2.2) ──────
+  // ONLY the generic branch wires these. YouTube's `notesPane` owns scroll via the
+  // always-on playhead-follow, so restoring/persisting there fights the follow — it
+  // is excluded structurally: `genericScrollerRef` is never bound in the youtube
+  // layout, so both the restore effect and the persist listener no-op for youtube.
+  const genericScrollerRef = useRef<HTMLDivElement | null>(null)
+  const scrollRestoredRef = useRef(false)
+  // Snapshot the restore target ONCE at mount. ThreadView is keyed on threadNoteId, so
+  // this instance is per-thread; the boot path seeds threadScrollMap BEFORE openThread
+  // fires, making the mount-time `initialScrollTop` authoritative. Deliberately NOT
+  // reactive to later prop changes: `initialScrollTop` flows back from the user's OWN
+  // scroll (onScroll → App threadScrollMap → back down as this prop), so reacting to it
+  // would yank an in-progress scroll to a stale offset on the first sustained scroll of a
+  // no-saved-offset thread ("echo stomp"). Do NOT add `initialScrollTop` to the deps.
+  const restoreTargetRef = useRef(initialScrollTop)
+  // Apply the restored scrollTop ONCE, in a layout effect keyed on the child count so
+  // it fires AFTER the children mount and establish scrollHeight — setting it before
+  // content exists clamps the browser to 0. `scrollRestoredRef` makes it a one-shot so
+  // later renders never stomp the user's live scroll position.
+  useLayoutEffect(() => {
+    if (scrollRestoredRef.current) return
+    const target = restoreTargetRef.current
+    if (target == null) {
+      scrollRestoredRef.current = true
+      return
+    }
+    const el = genericScrollerRef.current
+    if (!el) return
+    // Wait for children to establish scrollHeight before restoring a non-zero offset.
+    if (target > 0 && sorted.length === 0) return
+    el.scrollTop = target
+    scrollRestoredRef.current = true
+  }, [sorted.length])
+
+  // Trailing-throttled scrollTop report → App persists the whole per-root map. One
+  // timer per window; the trailing read pulls the LATEST scrollTop off the element.
+  const scrollPersistTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const onGenericScroll = useCallback(() => {
+    if (!onScroll || scrollPersistTimer.current) return
+    scrollPersistTimer.current = setTimeout(() => {
+      scrollPersistTimer.current = undefined
+      const el = genericScrollerRef.current
+      if (el) onScroll(el.scrollTop)
+    }, SCROLL_PERSIST_THROTTLE_MS)
+  }, [onScroll])
+  // Clear a pending throttle timer on unmount (thread close / navigation).
+  useEffect(() => () => clearTimeout(scrollPersistTimer.current), [])
+
   // ── render ────────────────────────────────────────────────────────────────
 
   // Whether this thread has any comment-on children. Drives the generic
@@ -786,6 +872,9 @@ export function ThreadView({ noteId, onClose, onWikilinkClick }: ThreadViewProps
         // the ThreadRoot header rule and the composer's top rule (Task 3).
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           <div
+            ref={genericScrollerRef}
+            data-testid="thread-generic-scroll"
+            onScroll={onGenericScroll}
             style={{
               flex: 1,
               minHeight: 0,

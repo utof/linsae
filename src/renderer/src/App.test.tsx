@@ -32,10 +32,22 @@ import { useExcerptStore } from './pdf/excerptState'
 // ── Mock ThreadView to a lightweight sentinel ──────────────────────────────
 // This avoids loading usePlayer / playerSingleton / iframe machinery in jsdom.
 vi.mock('./thread/ThreadView', () => ({
-  ThreadView: ({ noteId, onClose }: { noteId: string; onClose: () => void }) => (
+  ThreadView: ({
+    noteId,
+    onClose,
+    onScroll,
+  }: {
+    noteId: string
+    onClose: () => void
+    onScroll?: (scrollTop: number) => void
+  }) => (
     <div data-testid="thread-view-sentinel" data-note-id={noteId}>
       <button type="button" aria-label="back" onClick={onClose}>
         back
+      </button>
+      {/* Task 2.2: drive App's onScroll wiring so the thread.scroll.v1 persist can be asserted. */}
+      <button type="button" data-testid="thread-view-scroll" onClick={() => onScroll?.(240)}>
+        scroll
       </button>
     </div>
   ),
@@ -1280,5 +1292,36 @@ describe('App — session restore: focusedId / threadNoteId (Task 2.1)', () => {
     // (lib/api.ts:65) records the IPC shape `{ id }`, not the bare string.
     expect(mock.notes.get).toHaveBeenCalledWith({ id: 't1' })
     expect(mock.notes.get).not.toHaveBeenCalledWith({ id: 'n1' })
+  })
+})
+
+describe('App — thread scroll persist (Task 2.2)', () => {
+  afterEach(() => useCommandStore.getState().reset())
+
+  /**
+   * App owns the per-root thread-scroll map and persists it to `thread.scroll.v1`. When a
+   * (plain/pdf) ThreadView reports a scroll via onScroll, App keys it under threadNoteId and
+   * the debounced writer persists the WHOLE map — OBJECT-FORM `settings.set({ key, value })`
+   * (the renderer api wrapper reshapes the positional call). @see usePersistedWrite
+   */
+  it('persists thread.scroll.v1 (object-form) when the ThreadView reports a scroll', async () => {
+    const mock = installMockApi()
+    mock.notes.list.mockResolvedValue([FEED_NOTE])
+    mock.system.getReconcileSkipped.mockResolvedValue(0)
+    mock.settings.getMany.mockResolvedValue({ values: {} })
+
+    renderWithProviders(<App />)
+
+    // Open FEED_NOTE's thread via the mocked Feed → the ThreadView sentinel mounts.
+    fireEvent.click(await screen.findByTestId('open-thread-btn-feed-note-1'))
+    // Drive the sentinel's onScroll(240) report; App maps it under threadNoteId.
+    fireEvent.click(await screen.findByTestId('thread-view-scroll'))
+
+    await waitFor(() =>
+      expect(mock.settings.set).toHaveBeenCalledWith({
+        key: 'thread.scroll.v1',
+        value: { 'feed-note-1': 240 },
+      }),
+    )
   })
 })

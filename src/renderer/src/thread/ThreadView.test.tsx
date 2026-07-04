@@ -829,6 +829,97 @@ describe('ThreadView media-pane reopen on thread-open (#166)', () => {
 // FIX 2: guard against empty commentOn when note hasn't loaded
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Scroll restore/persist for the generic (plain/pdf) thread — Task 2.2 (v0.7).
+// YouTube is EXCLUDED: its always-on playhead-follow (ThreadView follow effect)
+// would clobber a restored offset every tick, so youtube uses the notesPane
+// scroller which never reads initialScrollTop / attaches the persist listener.
+// ---------------------------------------------------------------------------
+
+describe('ThreadView scroll restore/persist (Task 2.2)', () => {
+  it('restores initialScrollTop onto the generic (plain) scroller after children mount', async () => {
+    mockApi.notes.get.mockResolvedValue(PLAIN_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([
+      { note: CHILD_ONE, attachment: null },
+      { note: CHILD_TWO, attachment: null },
+    ])
+
+    renderWithProviders(<ThreadView noteId="n1" onClose={() => {}} initialScrollTop={250} />)
+
+    // Restore is applied in a layout effect keyed on the child count (so it fires
+    // AFTER children establish scrollHeight); wait for children then assert the set.
+    const scroller = await screen.findByTestId('thread-generic-scroll')
+    await waitFor(() => expect(scroller.scrollTop).toBe(250))
+  })
+
+  it('reports scrollTop via onScroll (trailing-throttled) when the generic scroller scrolls', async () => {
+    mockApi.notes.get.mockResolvedValue(PLAIN_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([
+      { note: CHILD_ONE, attachment: null },
+      { note: CHILD_TWO, attachment: null },
+    ])
+    const onScroll = vi.fn()
+
+    renderWithProviders(<ThreadView noteId="n1" onClose={() => {}} onScroll={onScroll} />)
+
+    const scroller = await screen.findByTestId('thread-generic-scroll')
+    // happy-dom does no layout, but scrollTop is a settable property — set it, then
+    // fire the scroll event; the trailing throttle reads it back off the element.
+    Object.defineProperty(scroller, 'scrollTop', { value: 180, writable: true, configurable: true })
+    fireEvent.scroll(scroller)
+
+    await waitFor(() => expect(onScroll).toHaveBeenCalledWith(180))
+  })
+
+  it('a later initialScrollTop prop change does NOT re-apply scroll (echo-stomp regression)', async () => {
+    // Mount-time snapshot, not reactive: on a thread with NO saved offset the user's own
+    // scroll flows back down as initialScrollTop (onScroll → App map → prop). Reacting to
+    // that prop change would yank the in-progress scroll to the stale offset. The restore
+    // target is captured once at mount, so a later prop change must NOT move scrollTop.
+    mockApi.notes.get.mockResolvedValue(PLAIN_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([
+      { note: CHILD_ONE, attachment: null },
+      { note: CHILD_TWO, attachment: null },
+    ])
+
+    // Stable QueryClient so `rerender` updates the SAME ThreadView instance in place
+    // (a fresh client would remount the tree and defeat the per-instance-snapshot premise).
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const ui = (scrollTop?: number) => (
+      <QueryClientProvider client={qc}>
+        <ThreadView noteId="n1" onClose={() => {}} initialScrollTop={scrollTop} />
+      </QueryClientProvider>
+    )
+    // Mount with NO saved offset (undefined) — the no-saved-offset thread case.
+    const { rerender } = render(ui(undefined))
+    const scroller = await screen.findByTestId('thread-generic-scroll')
+    await screen.findByText(/child one/)
+
+    // Simulate the user's in-progress scroll.
+    scroller.scrollTop = 260
+
+    // The echo: App feeds the user's own scroll back down as initialScrollTop.
+    rerender(ui(240))
+
+    // A later prop change must NOT move scrollTop (mount-snapshot, not reactive).
+    await new Promise((r) => setTimeout(r, 30))
+    expect(scroller.scrollTop).toBe(260)
+  })
+
+  it('youtube thread IGNORES initialScrollTop (playhead-follow owns scroll)', async () => {
+    // beforeEach default note is a youtube source → the notesPane scroller renders,
+    // NOT the generic one. The youtube scroller must stay at 0 (never restored) and
+    // there must be no generic scroller in a youtube thread.
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} initialScrollTop={321} />)
+
+    const scroller = await screen.findByTestId('thread-scroll')
+    // Give any (incorrect) restore effect a tick to run before asserting untouched.
+    await new Promise((r) => setTimeout(r, 30))
+    expect(scroller.scrollTop).toBe(0)
+    expect(screen.queryByTestId('thread-generic-scroll')).toBeNull()
+  })
+})
+
 describe('ThreadView FIX 2 — post guard when note not loaded', () => {
   it('does not call notes.create when note is null (postPlain guard returns early)', async () => {
     // Override notes.get to return null so `note` never populates.

@@ -195,6 +195,13 @@ export function App() {
   // linger behind ThreadView; the key={threadNoteId} on ThreadView forces a remount on
   // each navigation so the player singleton and duration write-back state reset per video.
   const [threadNoteId, setThreadNoteId] = useState<string | null>(null)
+  // v0.7 Task 2.2: per-root thread scroll offsets (rootNoteId → scrollTop). Only the
+  // generic (plain/pdf) ThreadView writes here — youtube threads own scroll via the
+  // playhead-follow and ThreadView never reports scroll for them, so their ids never
+  // land in this map. Seeded ONCE from the boot snapshot (below), then owned locally +
+  // persisted to `thread.scroll.v1`. @see docs/specs/v0.7-session-persistence.md §Task 2.2
+  const [threadScrollMap, setThreadScrollMap] = useState<Record<string, number>>({})
+  const threadScrollSeeded = useRef(false)
   // submitError surfaces a user-facing message from the last failed
   // create/update mutation (e.g. duplicate-slug). The Composer renders it
   // inline; the next keystroke clears it via onClearError. See issue #23.
@@ -834,6 +841,33 @@ export function App() {
     { debounceMs: 400, enabled: snapSettled },
   )
 
+  // Seed the thread-scroll map ONCE from the boot snapshot (Task 2.2). Must run in an
+  // effect (the snapshot resolves async), gated on `snapSettled`. Seeding the FULL map
+  // is load-bearing: persisting a map that started empty would wipe other threads'
+  // saved offsets on the first scroll. Skip the seed when there's no saved history so
+  // the map ref stays `{}` and `usePersistedWrite` writes nothing on a fresh boot.
+  useEffect(() => {
+    if (threadScrollSeeded.current || !snapSettled) return
+    threadScrollSeeded.current = true
+    const saved = snap.data?.threadScroll
+    if (saved && Object.keys(saved).length > 0) setThreadScrollMap(saved)
+  }, [snapSettled, snap.data])
+
+  // Generic-thread scroll report (Task 2.2): ThreadView reports (trailing-throttled)
+  // only for plain/pdf roots, so `threadNoteId` is the correct key. Youtube never
+  // reports, so no youtube id is ever stored here.
+  const onThreadScroll = useCallback(
+    (scrollTop: number) => {
+      if (!threadNoteId) return
+      setThreadScrollMap((m) => ({ ...m, [threadNoteId]: scrollTop }))
+    },
+    [threadNoteId],
+  )
+
+  // Persist the whole per-root scroll map, debounced. `enabled: snapSettled` (fail-open,
+  // matching the dock + ui.session writers); `usePersistedWrite` skips the seeded value.
+  usePersistedWrite('thread.scroll.v1', threadScrollMap, { debounceMs: 250, enabled: snapSettled })
+
   const onWikilinkClick = async (slug: string) => {
     const match = await api.links.resolve(slug)
     if (match) {
@@ -1174,6 +1208,11 @@ export function App() {
                         noteId={threadNoteId}
                         onClose={() => setThreadNoteId(null)}
                         onWikilinkClick={onWikilinkClick}
+                        // v0.7 Task 2.2: keyed on threadNoteId (= root id). ThreadView
+                        // applies/attaches these ONLY for plain/pdf roots — youtube's
+                        // playhead-follow owns scroll, so it ignores them.
+                        initialScrollTop={threadScrollMap[threadNoteId]}
+                        onScroll={onThreadScroll}
                       />
                     </motion.div>
                   ) : (
