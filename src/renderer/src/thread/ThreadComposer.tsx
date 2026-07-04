@@ -25,22 +25,13 @@
  */
 
 import { Camera } from 'lucide-react'
-import {
-  type CSSProperties,
-  type KeyboardEvent,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from 'react'
+import { type CSSProperties, type KeyboardEvent, useEffect, useState } from 'react'
 import type { Attachment } from '../../../shared/types'
 import { AnnotatedFrame } from '../annotate/AnnotatedFrame'
 import { SendButton } from '../composer/SendButton'
+import { useAutoGrowTextarea } from '../composer/useAutoGrowTextarea'
 import { clampSeconds, formatClock, parseTimeDigits } from '../lib/time'
 import { chipTime, nextFrozenAt } from './composer-chip'
-
-/** Cap on auto-grown textarea height — mirrors the main Composer's ceiling. */
-const TEXTAREA_MAX_HEIGHT_PX = 220
 
 export interface ThreadComposerProps {
   /** Current playback time in seconds, live from usePlayer.currentTime. */
@@ -111,7 +102,9 @@ export function ThreadComposer({
   const [chipEditing, setChipEditing] = useState(false)
   const [chipInputValue, setChipInputValue] = useState('')
 
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // Auto-grow textarea via the shared hook (also used by Composer +
+  // SimpleComposer). Mirrors the prior inline useLayoutEffect.
+  const textareaRef = useAutoGrowTextarea(draft)
 
   // ── derived ────────────────────────────────────────────────────────────────
   const hasDraft = draft.trim().length > 0
@@ -144,17 +137,6 @@ export function ThreadComposer({
     if (manuallyFrozen) return
     setFrozenAt((prev) => nextFrozenAt(prev, { focused, hasDraft, livePlayhead }))
   }, [focused, hasDraft, manuallyFrozen]) // livePlayhead deliberately excluded
-
-  // ── auto-grow textarea ─────────────────────────────────────────────────────
-  // Mirrors the pattern in src/renderer/src/composer/Composer.tsx.
-  // useLayoutEffect runs before paint so the resize is never visible.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional — see Composer.tsx
-  useLayoutEffect(() => {
-    const el = textareaRef.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, TEXTAREA_MAX_HEIGHT_PX)}px`
-  }, [draft])
 
   // ── submit ────────────────────────────────────────────────────────────────
   const submit = () => {

@@ -1,6 +1,7 @@
 // src/renderer/src/panes/dockStore.test.ts
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { dockWidthFor, isSideShown, useDockStore } from './dockStore'
+import { maxDockWidth } from './dock-widths'
+import { dockKindFor, dockWidthFor, isSideShown, useDockStore } from './dockStore'
 import type { Pane } from './Pane'
 import * as PaneModule from './Pane'
 
@@ -87,12 +88,45 @@ describe('dockStore', () => {
     expect(s().widths.right).toBeUndefined()
   })
 
-  it('setWidth writes per side, clamped to the RESIZED pane kind band; no-op if not open', () => {
+  it('setWidth writes per side, clamped to the DOCK kind band (widest resident pane); no-op if not open', () => {
     s().openPane('pdf') // right content
-    s().setWidth('pdf', 9999) // content max 900
+    s().setWidth('pdf', 9999) // dock kind content → max 900
     expect(s().widths.right).toBe(900)
     s().setWidth('shelf', 100) // shelf not open → sideHolding null → no-op
     expect(s().widths.left).toBeUndefined()
+  })
+
+  // The dock keeps ONE width across tab switches (B15), so its width band must derive
+  // from the WIDEST resident pane — not the active tab. Regression guard for the
+  // "dock shrinks when a utility tab (backlinks) is activated over a PDF" bug.
+  // @see adrs/0047-feed-default-width-docks-fill-gutters.md
+  describe('dockKindFor — width band from the widest resident pane, not the active tab', () => {
+    it('is content when the side holds ANY content pane, regardless of the active tab', () => {
+      s().openPane('pdf') // content
+      s().openPane('backlinks') // utility → becomes active
+      s().setActive('right', 'backlinks')
+      expect(dockKindFor(s(), 'right')).toBe('content')
+    })
+    it('is utility for a utility-only side, and utility when the side is empty', () => {
+      expect(dockKindFor(s(), 'right')).toBe('utility') // empty
+      s().openPane('backlinks')
+      expect(dockKindFor(s(), 'right')).toBe('utility')
+    })
+    it('composed with maxDockWidth: [pdf, backlinks] with backlinks active keeps the CONTENT max (900), not utility 400', () => {
+      s().openPane('pdf')
+      s().openPane('backlinks')
+      s().setActive('right', 'backlinks')
+      // Repro of the reported shrink: on a wide window the cap is the dock kind's max.
+      // Active pane is utility (400) but the dock holds a PDF → content (900).
+      expect(maxDockWidth(dockKindFor(s(), 'right'), 0, 2000)).toBe(900)
+    })
+    it('setWidth uses the dock kind: resizing while backlinks is active does NOT clamp to the utility band', () => {
+      s().openPane('pdf') // seed 600
+      s().openPane('backlinks')
+      s().setActive('right', 'backlinks')
+      s().setWidth('backlinks', 900) // active pane utility (max 400) but dock is content
+      expect(s().widths.right).toBe(900) // kept in the content band, not clamped to 400
+    })
   })
 
   it('dockWidthFor falls back to the utility default before any pane opens', () => {

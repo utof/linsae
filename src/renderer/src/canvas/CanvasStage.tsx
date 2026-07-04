@@ -2193,6 +2193,16 @@ function CentroidArrow({
         type="button"
         data-canvas-centroid-arrow
         onClick={onFit}
+        // Why: the pill sits INSIDE the viewport, so a bare pointerdown bubbles to
+        // the viewport's onWorldPointerDown → onSurfacePointerDown, which calls
+        // viewport.setPointerCapture (useCanvasInteractions.ts) to start a marquee.
+        // Once the viewport captures the pointer, Chromium dispatches the resulting
+        // `click` to the CAPTURING element (the viewport), NOT this button — so
+        // onClick/onFit never fired and "back to your notes" did nothing (bug #8b).
+        // stopPropagation keeps the pointerdown off the surface router — same guard
+        // the connect-handle uses (useCanvasInteractions.ts onConnectHandleDown).
+        // @see https://github.com/w3c/pointerevents/issues/356 (click after capture)
+        onPointerDown={(e) => e.stopPropagation()}
         title="zoom to fit all cards"
         style={{
           display: 'inline-flex',

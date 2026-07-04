@@ -1,4 +1,5 @@
 // src/renderer/src/panes/DockTabs.tsx
+import { X } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
 import { getPane } from './Pane'
 
@@ -55,7 +56,12 @@ export function DockTabs({
               padding: '0 var(--space-4)',
               cursor: 'pointer',
               fontSize: 'var(--t-13)',
-              color: active ? 'var(--fg-1)' : 'var(--fg-2)',
+              // Active tab follows the v21 `PaneTab` (right-pane.jsx): semibold on
+              // --fg-0. Inactive is medium (500) on --fg-2 — a deliberately stronger
+              // hierarchy than v21's flat 400, replacing the old flat 400/--fg-1.
+              // @see v21-design-system
+              fontWeight: active ? 600 : 500,
+              color: active ? 'var(--fg-0)' : 'var(--fg-2)',
               borderBottom: active ? '1px solid var(--accent)' : '1px solid transparent',
             }}
           >
@@ -68,16 +74,19 @@ export function DockTabs({
                 onClose(id)
               }}
               style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
                 border: 'none',
                 background: 'transparent',
                 color: 'var(--fg-2)',
                 cursor: 'pointer',
-                fontSize: 'var(--t-13)',
-                lineHeight: 1,
                 padding: 0,
               }}
             >
-              ×
+              {/* Lucide X (design's close glyph — see PaneTab `IconBtn name="x"`),
+                  not the thin literal `×`. */}
+              <X size={14} aria-hidden />
             </button>
           </div>
         )

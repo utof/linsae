@@ -1,3 +1,4 @@
+import { X } from 'lucide-react'
 import { useCallback, useEffect, useRef } from 'react'
 import { DockTabs } from './DockTabs'
 import type { DockSide } from './dockStore'
@@ -120,16 +121,18 @@ export function Dock({
             aria-label={`close ${active?.title ?? activeId}`}
             onClick={() => onClose(activeId)}
             style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
               border: 'none',
               background: 'transparent',
               color: 'var(--fg-2)',
               cursor: 'pointer',
-              fontSize: 'var(--t-16)',
-              lineHeight: 1,
               padding: 'var(--space-1)',
             }}
           >
-            ×
+            {/* Lucide X, matching DockTabs' close glyph (design's close icon). */}
+            <X size={14} aria-hidden />
           </button>
         </header>
       )}

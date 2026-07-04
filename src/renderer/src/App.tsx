@@ -21,8 +21,8 @@ import { ContentSearch } from './palette/ContentSearch'
 import { type Command, useCommandStore } from './palette/command-store'
 import { QuickSwitcher } from './palette/QuickSwitcher'
 import { DockHost } from './panes/DockHost'
-import { maxDockWidth } from './panes/dock-widths'
-import { dockWidthFor, isSideShown, paneKind, useDockStore } from './panes/dockStore'
+import { maxDockWidth, type PaneKind } from './panes/dock-widths'
+import { dockKindFor, dockWidthFor, isSideShown, useDockStore } from './panes/dockStore'
 import { ShelfContext } from './panes/ShelfPane'
 import { useExcerptStore } from './pdf/excerptState'
 import { useOpenPdf, usePdfOpenId } from './pdf/usePdfOpenId'
@@ -141,6 +141,11 @@ export function App() {
   const rightActiveId = useDockStore((s) => (isSideShown(s, 'right') ? s.right.activeId : null))
   const leftStoredW = useDockStore((s) => (isSideShown(s, 'left') ? dockWidthFor(s, 'left') : 0))
   const rightStoredW = useDockStore((s) => (isSideShown(s, 'right') ? dockWidthFor(s, 'right') : 0))
+  // Width band per side comes from the WIDEST resident pane, NOT the active tab (B15):
+  // switching to a narrow utility tab (backlinks) over a content pane (PDF) must not
+  // shrink the dock the user sized. @see dockKindFor / adrs/0047.
+  const leftDockKind = useDockStore((s) => dockKindFor(s, 'left'))
+  const rightDockKind = useDockStore((s) => dockKindFor(s, 'right'))
   const bodyRowRef = useRef<HTMLDivElement | null>(null)
   const [bodyWidth, setBodyWidth] = useState(0)
   // Recent-popover open state lives in App so the status-bar trigger and (Task
@@ -857,17 +862,32 @@ export function App() {
   // no flash. The SAME eff widths feed both the dock render and the feed band, so
   // the dock can never overlap the feed at any width.
   const dockGeom = useMemo(() => {
-    const resolve = (activeId: string | null, stored: number, otherStored: number) => {
+    const resolve = (
+      activeId: string | null,
+      kind: PaneKind,
+      stored: number,
+      otherStored: number,
+    ) => {
       if (!activeId) return { eff: 0, max: 0 }
       if (bodyWidth <= 0) return { eff: stored, max: stored }
-      const max = maxDockWidth(paneKind(activeId), otherStored, bodyWidth)
+      // `kind` is the DOCK's band (widest resident pane), not the active pane's — so
+      // activating a utility tab over a content pane never re-caps the width down.
+      const max = maxDockWidth(kind, otherStored, bodyWidth)
       return { eff: Math.min(stored, max), max }
     }
     return {
-      left: resolve(leftActiveId, leftStoredW, rightStoredW),
-      right: resolve(rightActiveId, rightStoredW, leftStoredW),
+      left: resolve(leftActiveId, leftDockKind, leftStoredW, rightStoredW),
+      right: resolve(rightActiveId, rightDockKind, rightStoredW, leftStoredW),
     }
-  }, [leftActiveId, rightActiveId, leftStoredW, rightStoredW, bodyWidth])
+  }, [
+    leftActiveId,
+    rightActiveId,
+    leftDockKind,
+    rightDockKind,
+    leftStoredW,
+    rightStoredW,
+    bodyWidth,
+  ])
 
   // "Model A" feed band (ADR 0047): null while no dock is open (feed uses its
   // default centered band) or before the body width is measured. Fed the EFFECTIVE

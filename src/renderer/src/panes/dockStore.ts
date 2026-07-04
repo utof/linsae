@@ -20,7 +20,8 @@ interface DockStore {
    * Remembered width PER DOCK SIDE (B15): one width per `left`/`right`, NOT per
    * pane — so switching the active tab (pdf ↔ backlinks) never changes the dock's
    * width. Seeded on the first open of a side to that pane's kind default, updated
-   * on resize (clamped to the resized pane's kind band), preserved verbatim across
+   * on resize (clamped to the dock's kind band — the widest resident pane, so a
+   * content pane keeps the wide band under a utility tab), preserved verbatim across
    * active-tab changes. @see adrs/0047-feed-default-width-docks-fill-gutters.md
    */
   widths: Partial<Record<DockSide, number>>
@@ -57,9 +58,10 @@ const EMPTY = (): Pick<DockStore, 'left' | 'right' | 'widths' | 'collapsed'> => 
  *  (B19): right defaults to backlinks (matching the prior B2 toggle), left to shelf. */
 const DEFAULT_PANE: Record<DockSide, string> = { left: 'shelf', right: 'backlinks' }
 
-/** The width band a pane belongs to (content panes get the wider band). Exported
- *  so callers computing the window-aware resize cap can size it to the active pane. */
-export const paneKind = (paneId: string): PaneKind =>
+/** The width band a single pane belongs to (content panes get the wider band).
+ *  Module-local: dock-level sizing goes through `dockKindFor` (widest resident pane),
+ *  which callers use to size the window-aware resize cap. */
+const paneKind = (paneId: string): PaneKind =>
   getPane(paneId)?.kind === 'content' ? 'content' : 'utility'
 
 const withSlice = (side: DockSide, slice: DockSlice): Partial<DockStore> =>
@@ -126,8 +128,11 @@ export const useDockStore = create<DockStore>()((set, get) => ({
     set((s) => {
       const side = sideHolding(s, paneId)
       if (!side) return {}
-      // Per-side width (B15), clamped to the RESIZED pane's kind band.
-      return { widths: { ...s.widths, [side]: clampWidth(paneKind(paneId), width) } }
+      // Per-side width (B15), clamped to the DOCK's kind band (the widest resident
+      // pane), NOT the resized/active pane's kind — so resizing while a narrow utility
+      // tab (backlinks, max 400) is active over a content pane (PDF, max 900) can't
+      // shrink the dock below the content band. Mirror of the tab-switch fix.
+      return { widths: { ...s.widths, [side]: clampWidth(dockKindFor(s, side), width) } }
     }),
   collapseSide: (side) => set((s) => ({ collapsed: { ...s.collapsed, [side]: true } })),
   expandSide: (side) => {
@@ -165,4 +170,21 @@ export function isSideShown(state: DockStore, side: DockSide): boolean {
  */
 export function dockWidthFor(state: DockStore, side: DockSide): number {
   return state.widths[side] ?? defaultWidthFor('utility')
+}
+
+/**
+ * The width band a dock SIDE renders at: the kind of its WIDEST resident pane —
+ * `content` if the side holds ANY content pane (a PDF/player), else `utility`
+ * (empty sides read as `utility`).
+ *
+ * Why widest-not-active: a dock keeps ONE width across tab switches (B15). If the
+ * render bounds followed the ACTIVE pane's kind, activating a narrow-band utility
+ * tab (backlinks, max 400) over a content pane (PDF, max 900) would clamp the
+ * user's chosen width down — the dock would visibly shrink on a mere tab switch.
+ * Deriving the band from the widest resident pane keeps the width stable; only the
+ * user's drag (via `setWidth`, clamped to this same kind) changes it.
+ * @see adrs/0047-feed-default-width-docks-fill-gutters.md
+ */
+export function dockKindFor(state: DockStore, side: DockSide): PaneKind {
+  return state[side].openPaneIds.some((id) => paneKind(id) === 'content') ? 'content' : 'utility'
 }

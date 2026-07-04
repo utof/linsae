@@ -39,7 +39,7 @@ export function defaultWidthFor(kind: PaneKind): number {
  * `leftEff + rightEff ≤ windowWidth − feedMin` (each `eff ≤ otherSideRoom`), so
  * the result is invariant to how many panes/docks are open.
  *
- * @param kind        the active pane's kind (its band bounds the cap)
+ * @param kind        the dock's kind (its widest resident pane's band bounds the cap)
  * @param otherWidth  the other dock's current width (0 if that side is closed)
  * @param windowWidth measured body-row (≈ window) width in px
  * @see adrs/0047-feed-default-width-docks-fill-gutters.md
