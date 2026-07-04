@@ -8,9 +8,22 @@ import { getPane } from './Pane'
  * @see docs/specs/v0.6.2-dock-shell.md §1
  */
 export type DockSide = 'left' | 'right'
-interface DockSlice {
+export interface DockSlice {
   openPaneIds: string[]
   activeId: string | null
+}
+
+/**
+ * The four persisted dock fields — structurally matches `z.infer<typeof DockLayoutV1Schema>`
+ * (`src/shared/zod-schemas.ts`): two slices plus partial per-side width/collapse maps. The
+ * debounced persist subscriber emits this shape; `hydrate` consumes it at boot.
+ * @see docs/specs/v0.7-session-persistence.md
+ */
+export interface SerializedDock {
+  left: DockSlice
+  right: DockSlice
+  widths: Partial<Record<DockSide, number>>
+  collapsed: Partial<Record<DockSide, boolean>>
 }
 
 interface DockStore {
@@ -44,6 +57,19 @@ interface DockStore {
   expandSide: (side: DockSide) => void
   /** Top side-panel toggle (B19): shown → collapse; collapsed/empty → expand/restore. */
   toggleSide: (side: DockSide) => void
+  /**
+   * True once a persisted layout (or the no-saved-layout default in Task 1.6) has been
+   * applied at boot. The persist subscriber ignores all pre-hydrate churn AND the hydrate
+   * transition itself, writing only genuine post-boot changes. @see subscribeDockPersist
+   */
+  hydrated: boolean
+  /**
+   * Apply a persisted layout at boot: DROP content-kind panes (a pdf/player re-opens from
+   * its media context, never from a restored id list, so restore must never yield an empty
+   * content pane), re-point each side's active to a surviving pane, and clamp restored
+   * widths to the utility band. Sets `hydrated`. @see docs/specs/v0.7-session-persistence.md
+   */
+  hydrate: (snap: SerializedDock) => void
   reset: () => void
 }
 
@@ -82,6 +108,7 @@ const sideHolding = (s: DockStore, paneId: string): DockSide | null =>
  */
 export const useDockStore = create<DockStore>()((set, get) => ({
   ...EMPTY(),
+  hydrated: false,
   openPane: (paneId) => {
     const pane = getPane(paneId)
     if (!pane) return
@@ -149,7 +176,31 @@ export const useDockStore = create<DockStore>()((set, get) => ({
     if (isSideShown(get(), side)) get().collapseSide(side)
     else get().expandSide(side)
   },
-  reset: () => set(EMPTY()),
+  hydrate: (snap) =>
+    set(() => {
+      const filterSide = (sl: DockSlice) => {
+        const ids = sl.openPaneIds.filter((id) => getPane(id) != null && paneKind(id) === 'utility')
+        const activeId = ids.includes(sl.activeId ?? '') ? sl.activeId : (ids[0] ?? null)
+        return { openPaneIds: ids, activeId }
+      }
+      const widths: Partial<Record<DockSide, number>> = {}
+      for (const side of ['left', 'right'] as const) {
+        const w = snap.widths[side]
+        // content panes are filtered out above, so a restored dock is always utility-kind
+        // here — clamp to the utility band directly (no dockKindFor needed).
+        if (w != null) widths[side] = clampWidth('utility', w)
+      }
+      return {
+        left: filterSide(snap.left),
+        right: filterSide(snap.right),
+        widths,
+        collapsed: snap.collapsed,
+        hydrated: true,
+      }
+    }),
+  // Test-only: also clears `hydrated` so a suite that hydrated in a prior test starts
+  // this one pre-hydrate (the persist subscriber's transition guard depends on it).
+  reset: () => set({ ...EMPTY(), hydrated: false }),
 }))
 
 /**
@@ -187,4 +238,34 @@ export function dockWidthFor(state: DockStore, side: DockSide): number {
  */
 export function dockKindFor(state: DockStore, side: DockSide): PaneKind {
   return state[side].openPaneIds.some((id) => paneKind(id) === 'content') ? 'content' : 'utility'
+}
+
+/**
+ * Subscribe a debounced persister to dock changes; SKIPS the hydrate transition
+ * (prev.hydrated=false → s.hydrated=true) so the just-restored layout is never echoed, then
+ * writes every later change. NOTE: zustand v5 `subscribe` passes (state, prevState) with a
+ * FRESH state object each `set`, so `s === prev` is never true — we latch on the `hydrated`
+ * transition, not on reference equality. Returns an unsubscribe fn.
+ * @see docs/specs/v0.7-session-persistence.md
+ */
+export function subscribeDockPersist(write: (snap: SerializedDock) => void, debounceMs = 400) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const unsub = useDockStore.subscribe((s, prev) => {
+    if (!s.hydrated) return // pre-hydrate changes ignored
+    if (!prev.hydrated) return // THIS call is the hydrate transition itself — don't echo it
+    const snap: SerializedDock = {
+      left: s.left,
+      right: s.right,
+      widths: s.widths,
+      collapsed: s.collapsed,
+    }
+    clearTimeout(timer)
+    timer = setTimeout(() => write(snap), debounceMs)
+  })
+  // Clear any scheduled debounce on teardown so a pending write() never fires after
+  // unsub (redundant write / cross-test timer bleed).
+  return () => {
+    clearTimeout(timer)
+    unsub()
+  }
 }

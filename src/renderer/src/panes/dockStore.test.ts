@@ -1,7 +1,13 @@
 // src/renderer/src/panes/dockStore.test.ts
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { maxDockWidth } from './dock-widths'
-import { dockKindFor, dockWidthFor, isSideShown, useDockStore } from './dockStore'
+import {
+  dockKindFor,
+  dockWidthFor,
+  isSideShown,
+  subscribeDockPersist,
+  useDockStore,
+} from './dockStore'
 import type { Pane } from './Pane'
 import * as PaneModule from './Pane'
 
@@ -131,6 +137,48 @@ describe('dockStore', () => {
 
   it('dockWidthFor falls back to the utility default before any pane opens', () => {
     expect(dockWidthFor(s(), 'right')).toBe(280)
+  })
+
+  it('hydrate restores utility panes only, clamps widths', () => {
+    useDockStore.getState().hydrate({
+      left: { openPaneIds: ['shelf'], activeId: 'shelf' },
+      right: { openPaneIds: ['pdf', 'backlinks'], activeId: 'pdf' }, // pdf is content-kind → dropped
+      widths: { right: 99999 },
+      collapsed: { left: true },
+    })
+    const st = useDockStore.getState()
+    expect(st.right.openPaneIds).toEqual(['backlinks']) // pdf dropped
+    expect(st.right.activeId).toBe('backlinks') // active re-pointed off the dropped pane
+    expect(st.widths.right).toBeLessThanOrEqual(400) // clamped to utility max
+  })
+  it('hydrate drops unknown (unregistered) pane ids', () => {
+    useDockStore.getState().hydrate({
+      left: { openPaneIds: [], activeId: null },
+      right: { openPaneIds: ['pdf', 'backlinks', 'ghost'], activeId: 'ghost' }, // pdf=content, ghost=unregistered
+      widths: {},
+      collapsed: {},
+    })
+    const st = useDockStore.getState()
+    expect(st.right.openPaneIds).toEqual(['backlinks']) // pdf dropped (content), ghost dropped (unknown)
+    expect(st.right.activeId).toBe('backlinks') // active re-pointed off the dropped ghost
+  })
+  it('persist subscriber does NOT echo the hydrate, but writes a later real change', () => {
+    vi.useFakeTimers()
+    const writes: unknown[] = []
+    const unsub = subscribeDockPersist((snap) => writes.push(snap), 400)
+    useDockStore.getState().hydrate({
+      left: { openPaneIds: [], activeId: null },
+      right: { openPaneIds: [], activeId: null },
+      widths: {},
+      collapsed: {},
+    })
+    vi.advanceTimersByTime(400)
+    expect(writes).toHaveLength(0) // hydrate transition is not echoed (advance PAST debounce)
+    useDockStore.getState().openPane('shelf') // a real post-hydrate change
+    vi.advanceTimersByTime(400)
+    expect(writes).toHaveLength(1)
+    unsub()
+    vi.useRealTimers()
   })
 
   // B19: the top toggle collapses/restores a WHOLE side; a per-tab close is separate.
