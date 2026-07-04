@@ -18,6 +18,18 @@ interface Props {
    * @see src/renderer/src/lib/markdown.tsx (onWikilinkClick signature)
    */
   onWikilinkClick?: (slug: string) => void
+  /**
+   * When `false`, suppress the header's bottom divider (hairline rule).
+   *
+   * Why: an EMPTY thread (root note with no `comment-on` children) should read
+   * clean — a lone header + composer, with no stray horizontal rules stacking
+   * above the composer. `ThreadView` passes `divider={hasChildren}` so the rule
+   * appears only when there are children to separate from. Defaults to `true`
+   * to preserve the existing header-with-rule behavior for all other callers.
+   *
+   * @see src/renderer/src/thread/ThreadView.tsx (generic branch, empty-thread case)
+   */
+  divider?: boolean
 }
 
 /**
@@ -38,12 +50,13 @@ interface Props {
  * @see docs/plans/v0.6.4-notes-as-threads.md §Task 2.2
  * @see docs/plans/v0.6.4-notes-as-threads.md §Task 2.3 (carry-forward: real wikilink handler)
  */
-export function ThreadRoot({ note, onWikilinkClick }: Props) {
+export function ThreadRoot({ note, onWikilinkClick, divider = true }: Props) {
   return (
     <div
+      data-testid="thread-root"
       style={{
         padding: '12px 16px',
-        borderBottom: '1px solid var(--border-0)',
+        ...(divider ? { borderBottom: '1px solid var(--border-0)' } : {}),
         fontSize: 16,
         color: 'var(--fg-0)',
         fontFamily: 'var(--font-sans)',

@@ -522,6 +522,11 @@ export function ThreadView({ noteId, onClose, onWikilinkClick }: ThreadViewProps
 
   // ── render ────────────────────────────────────────────────────────────────
 
+  // Whether this thread has any comment-on children. Drives the generic
+  // (plain/pdf) branch's dividers: an empty thread suppresses the ThreadRoot
+  // header rule + the composer's top rule so it reads clean (Task 3).
+  const hasChildren = sorted.length > 0
+
   // Sort row + scrollable notes + composer (all layouts; player is in the dock).
   const notesPane = (
     <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
@@ -701,7 +706,11 @@ export function ThreadView({ noteId, onClose, onWikilinkClick }: ThreadViewProps
       <header
         style={{
           flex: '0 0 auto',
-          height: 46,
+          // Match the dock pane header height token so the thread header's bottom
+          // border lands on the SAME y as the right-dock pane header's border
+          // (Task 6 — both were misaligned at 46px vs --topbar-h 44px).
+          // @see src/renderer/src/panes/Dock.tsx (pane header: height var(--topbar-h))
+          height: 'var(--topbar-h)',
           padding: '0 24px',
           borderBottom: '1px solid var(--border-0)',
         }}
@@ -769,39 +778,66 @@ export function ThreadView({ noteId, onClose, onWikilinkClick }: ThreadViewProps
         // `handleWikilink` forwards to the app-level resolver so wikilinks in
         // the root header and every child card navigate correctly (spec §"Wikilink
         // navigation in thread cards"). @see docs/plans/v0.6.4-notes-as-threads.md §Task 2.3
-        <div
-          style={{
-            flex: 1,
-            minHeight: 0,
-            overflowY: 'auto',
-            padding: '12px 24px 20px',
-          }}
-        >
-          <div style={{ maxWidth: COL, margin: '0 auto' }}>
-            {note && <ThreadRoot note={note} onWikilinkClick={handleWikilink} />}
-            <div style={{ marginTop: 8 }}>
-              {sorted.map((item) => (
-                <NoteBubble
-                  key={item.id}
-                  note={item.note}
-                  focused={false}
-                  expanded={true}
-                  onToggleExpand={() => {}}
-                  onFocus={() => {}}
-                  onWikilinkClick={handleWikilink}
-                  onEdit={() => {}}
-                  onDelete={() => {}}
-                  onCopyLink={() => {}}
-                />
-              ))}
+        //
+        // Layout: a flex column so the scrollable content region (root + children)
+        // takes the free space and the composer stays PINNED to the bottom of the
+        // pane instead of flowing under short content (Task 4 — was top-aligned
+        // with dead space below). An EMPTY thread (no children) suppresses both
+        // the ThreadRoot header rule and the composer's top rule (Task 3).
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: 'auto',
+              padding: '12px 24px 20px',
+            }}
+          >
+            <div style={{ maxWidth: COL, margin: '0 auto' }}>
+              {note && (
+                <ThreadRoot note={note} divider={hasChildren} onWikilinkClick={handleWikilink} />
+              )}
+              {/* flex column + gap gives consistent vertical spacing between child
+                  bubbles (Task 2 — they were flush: NoteBubble carries no outer
+                  margin, so borders touched). 12px matches the feed's 6+6 row
+                  rhythm. `marginTop` only when there are children to separate from
+                  the root. */}
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 'var(--space-4)',
+                  marginTop: hasChildren ? 8 : 0,
+                }}
+              >
+                {sorted.map((item) => (
+                  <NoteBubble
+                    key={item.id}
+                    note={item.note}
+                    focused={false}
+                    expanded={true}
+                    onToggleExpand={() => {}}
+                    onFocus={() => {}}
+                    onWikilinkClick={handleWikilink}
+                    onEdit={() => {}}
+                    onDelete={() => {}}
+                    onCopyLink={() => {}}
+                  />
+                ))}
+              </div>
             </div>
-            <div
-              style={{
-                marginTop: 16,
-                borderTop: '1px solid var(--border-0)',
-                paddingTop: 12,
-              }}
-            >
+          </div>
+          <div
+            data-testid="thread-composer-region"
+            style={{
+              flex: '0 0 auto',
+              // Divider only when there are children — an empty thread reads clean.
+              ...(hasChildren ? { borderTop: '1px solid var(--border-0)' } : {}),
+              padding: '10px 24px 12px',
+              background: 'var(--bg-0)',
+            }}
+          >
+            <div style={{ maxWidth: COL, margin: '0 auto' }}>
               <SimpleComposer onSubmit={postPlain} />
             </div>
           </div>

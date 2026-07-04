@@ -14,6 +14,26 @@ it('calls onSubmit with the typed body on Enter and clears', () => {
   expect((ta as HTMLTextAreaElement).value).toBe('')
 })
 
+it('renders a send button that submits the trimmed draft and clears (Task 4)', () => {
+  const onSubmit = vi.fn()
+  renderWithProviders(<SimpleComposer onSubmit={onSubmit} />)
+  const ta = screen.getByRole('textbox')
+  const send = screen.getByRole('button', { name: /add note/i })
+  expect(send).toBeInTheDocument()
+  fireEvent.change(ta, { target: { value: '  via button  ' } })
+  fireEvent.click(send)
+  expect(onSubmit).toHaveBeenCalledWith('via button')
+  expect((ta as HTMLTextAreaElement).value).toBe('')
+})
+
+it('the send button does not submit a whitespace-only draft (trim-empty guard)', () => {
+  const onSubmit = vi.fn()
+  renderWithProviders(<SimpleComposer onSubmit={onSubmit} />)
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: '   ' } })
+  fireEvent.click(screen.getByRole('button', { name: /add note/i }))
+  expect(onSubmit).not.toHaveBeenCalled()
+})
+
 it('Shift+Enter inserts a newline and does not submit', () => {
   const onSubmit = vi.fn()
   renderWithProviders(<SimpleComposer onSubmit={onSubmit} />)

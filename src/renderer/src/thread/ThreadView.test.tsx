@@ -714,6 +714,49 @@ describe('ThreadView generic thread (plain/pdf)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Empty-thread dividers (Task 3): a thread with NO children must render no
+// stray horizontal rules — neither the ThreadRoot header rule nor the
+// composer's top rule. Both return when there ARE children.
+//
+// happy-dom does no layout, so we assert the inline-style contract directly.
+// A set border serializes to a non-empty `borderXStyle`; an unset border reads
+// as ''. (happy-dom mis-parses the `var()` shorthand into the *-style longhand,
+// but present-vs-absent is unambiguous, which is all this contract needs.)
+// ---------------------------------------------------------------------------
+
+describe('ThreadView empty-thread dividers (Task 3)', () => {
+  it('an empty plain thread renders NO header divider and NO composer divider', async () => {
+    mockApi.notes.get.mockResolvedValue(PLAIN_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([])
+
+    renderWithProviders(<ThreadView noteId="n1" onClose={() => {}} />)
+
+    // The root header renders once the note loads.
+    const root = await screen.findByTestId('thread-root')
+    const composer = screen.getByTestId('thread-composer-region')
+
+    expect(root.style.borderBottomStyle).toBe('')
+    expect(composer.style.borderTopStyle).toBe('')
+  })
+
+  it('a plain thread WITH children keeps both dividers', async () => {
+    mockApi.notes.get.mockResolvedValue(PLAIN_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([
+      { note: CHILD_ONE, attachment: null },
+      { note: CHILD_TWO, attachment: null },
+    ])
+
+    renderWithProviders(<ThreadView noteId="n1" onClose={() => {}} />)
+
+    // Wait for children to load so hasChildren flips true.
+    await screen.findByText(/child one/)
+
+    expect(screen.getByTestId('thread-root').style.borderBottomStyle).not.toBe('')
+    expect(screen.getByTestId('thread-composer-region').style.borderTopStyle).not.toBe('')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Media-pane (re)open on thread-open — issue #166
 // Opening a media note's thread MUST (re)open the corresponding dock pane,
 // even if the user had explicitly closed it before.
