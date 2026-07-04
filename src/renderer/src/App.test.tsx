@@ -1165,3 +1165,49 @@ describe('App — backlinks dock pane (spec §3,§4)', () => {
     expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
   })
 })
+
+describe('App — boot session gate + dock hydrate/persist (Task 1.6)', () => {
+  /**
+   * Boot hydrate: the persisted dock layout must reopen its UTILITY panes but never a
+   * content pane empty — `hydrate` drops content-kind ids (a pdf/player re-opens from
+   * its media context, not a restored id list). So a stored right side of ['pdf',
+   * 'backlinks'] restores to just ['backlinks'].
+   * @see src/renderer/src/panes/dockStore.ts hydrate
+   * @see docs/specs/v0.7-session-persistence.md
+   */
+  it('boot restores dock layout (utility panes), not empty content panes', async () => {
+    const mock = installMockApi()
+    mock.settings.getMany.mockResolvedValue({
+      values: {
+        'dock.layout.v1': {
+          left: { openPaneIds: ['shelf'], activeId: 'shelf' },
+          right: { openPaneIds: ['pdf', 'backlinks'], activeId: 'pdf' },
+          widths: {},
+          collapsed: {},
+        },
+      },
+    })
+    renderWithProviders(<App />)
+    await waitFor(() => expect(screen.getByTestId('dock-left')).toBeInTheDocument())
+    expect(useDockStore.getState().left.openPaneIds).toContain('shelf')
+    // 'pdf' is content-kind → dropped; only the utility 'backlinks' survives, re-pointed
+    // as the right side's active pane (it was 'pdf', now filtered out).
+    expect(useDockStore.getState().right.openPaneIds).toEqual(['backlinks'])
+  })
+
+  /**
+   * FAIL-OPEN boot gate (carry-forward A): the boot gate keys on
+   * `snap.isSuccess || snap.isError`, NOT `isSuccess` alone. When `settings.getMany`
+   * rejects, the snapshot query never reaches `isSuccess`; gating on it alone would
+   * hold the boot splash forever (permanent white screen). Asserting the snapshot-gated
+   * feed placeholder appears proves boot still COMPLETES on the error path.
+   */
+  it('fail-open: a rejected getMany still completes boot (feed placeholder reveals, no hang)', async () => {
+    const mock = installMockApi()
+    mock.settings.getMany.mockRejectedValue(new Error('boom'))
+    renderWithProviders(<App />)
+    // The placeholder is gated on `snapSettled` (= isError here). If the gate were
+    // isSuccess-only this findBy would time out — the test hanging IS the regression.
+    expect(await screen.findByText(/nothing yet\. start anywhere\./i)).toBeInTheDocument()
+  })
+})

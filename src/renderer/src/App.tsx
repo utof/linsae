@@ -22,10 +22,17 @@ import { type Command, useCommandStore } from './palette/command-store'
 import { QuickSwitcher } from './palette/QuickSwitcher'
 import { DockHost } from './panes/DockHost'
 import { maxDockWidth, type PaneKind } from './panes/dock-widths'
-import { dockKindFor, dockWidthFor, isSideShown, useDockStore } from './panes/dockStore'
+import {
+  dockKindFor,
+  dockWidthFor,
+  isSideShown,
+  subscribeDockPersist,
+  useDockStore,
+} from './panes/dockStore'
 import { ShelfContext } from './panes/ShelfPane'
 import { useExcerptStore } from './pdf/excerptState'
 import { useOpenPdf, usePdfOpenId } from './pdf/usePdfOpenId'
+import { useSessionSnapshot } from './persistence/useSessionSnapshot'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { ThreadView } from './thread/ThreadView'
 import { WindowFrame } from './topbar/WindowFrame'
@@ -106,6 +113,15 @@ export function App() {
     // from the feed — they belong only in their thread (PDF thread, YouTube thread).
     queryFn: () => api.notes.list({ excludeThreadChildren: true }),
   })
+  // Boot session snapshot (v0.7): one batched read of every persisted session key,
+  // consumed only as boot-INITIAL values (never live truth — writers own updates).
+  // `snapSettled` is the FAIL-OPEN boot gate (carry-forward A): true once the read has
+  // RESOLVED OR ERRORED — gating on `isSuccess` alone would hang the splash forever if
+  // `settings.getMany` rejects. Downstream reads `snap.data ?? defaults`; on error
+  // `snap.data` is undefined, so `snap.data?.dockLayout` falls to the no-restore path.
+  // @see docs/specs/v0.7-session-persistence.md §Architecture
+  const snap = useSessionSnapshot()
+  const snapSettled = snap.isSuccess || snap.isError
   const [focusedId, setFocusedId] = useState<string | null>(null)
   const [activePalette, setActivePalette] = useState<ActivePalette>('none')
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -487,14 +503,38 @@ export function App() {
   // "nothing yet" flash. The splash lives outside React's #root (createRoot
   // never touches it), so we remove it imperatively. This effect runs after the
   // commit that rendered the feed has painted, so we reveal a painted feed.
+  //
+  // v0.7 FAIL-OPEN boot gate (carry-forward A): also hold the splash until the session
+  // snapshot has SETTLED (`snapSettled` = isSuccess||isError), so Feed's first render can
+  // receive the restored layout/scroll. Gating on `isSuccess` ALONE would white-splash-hang
+  // forever if `settings.getMany` rejects — so we fail open on the error too and reveal a
+  // no-restore feed. @see docs/specs/v0.7-session-persistence.md §Architecture
   useEffect(() => {
-    if (notesPending) return
+    if (notesPending || !snapSettled) return
     const splash = document.getElementById('boot-splash')
     if (!splash) return
     splash.classList.add('boot-splash--hide')
     const t = window.setTimeout(() => splash.remove(), 360)
     return () => window.clearTimeout(t)
-  }, [notesPending])
+  }, [notesPending, snapSettled])
+
+  // Boot: hydrate the dock from the persisted layout EXACTLY ONCE, then arm the persist
+  // writer. Double-hydrate guard (carry-forward B): a StrictMode double-invoke of this
+  // effect must not call `hydrate` twice — the 2nd would be a `hydrated=true→true`
+  // transition that `subscribeDockPersist` would echo as a redundant boot write. Always
+  // mark hydrated once the snapshot settles (no saved layout, or error → `snap.data`
+  // undefined) so the writer can arm on the first genuine post-boot change.
+  // @see src/renderer/src/panes/dockStore.ts — hydrate / subscribeDockPersist
+  useEffect(() => {
+    if (useDockStore.getState().hydrated) return
+    if (snap.data?.dockLayout) useDockStore.getState().hydrate(snap.data.dockLayout)
+    else if (snapSettled) useDockStore.setState({ hydrated: true })
+  }, [snap.data, snapSettled])
+
+  // Persist writer (v0.7): subscribe once at mount. `subscribeDockPersist` debounces and
+  // SKIPS the hydrate transition itself, writing only genuine post-boot dock changes to
+  // `dock.layout.v1`; its returned unsub clears the pending timer on unmount.
+  useEffect(() => subscribeDockPersist((s) => void api.settings.set('dock.layout.v1', s)), [])
 
   // Synchronous slug-only resolver for the Markdown component's dangling
   // class pass. The full alias-aware resolver runs only on click (below).
@@ -1096,7 +1136,10 @@ export function App() {
                         overflow: 'hidden',
                       }}
                     >
-                      {notes.length === 0 ? (
+                      {/* v0.7: gate Feed's FIRST mount on `snapSettled` so its initial
+                          render can receive `restore` from the session snapshot (Batch 3);
+                          the splash covers this pre-settle gap, so `null` is never seen. */}
+                      {!snapSettled ? null : notes.length === 0 ? (
                         <div
                           style={{
                             flex: 1,
