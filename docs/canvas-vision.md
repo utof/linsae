@@ -240,3 +240,14 @@ Resequencing = edit this section, nothing else.
 > remain deferred in §Threads. The feed-hides-children decision (ADR 0052) revises the v0.1
 > "everything in the feed" model — recorded here so it is not silently undone. Next up:
 > **semantic zoom**.
+
+> **Amendment (2026-07-05, v0.7):** **single-window session persistence** shipped on branch
+> `v0.7/session-persistence` — dock layout, selection + open thread, feed + thread scroll, composer
+> drafts, and PDF zoom now survive a restart (persisted in the `app_settings` KV; ADR 0053, with
+> flash-free feed-scroll restore in ADR 0055). This MEETS the §Dock shell bar at line 113 ("no saved
+> workspaces/presets until layouts demonstrably hurt to reconstruct") for **per-window session state**:
+> dogfooding made the reconstruct cost concrete — re-opening the thread you were reading, re-finding
+> your feed scroll position, and re-typing a half-written draft on every launch. **Scope is deliberately
+> narrow:** this is single-window session *restore* only. Named/multiple workspaces and switchable
+> presets remain DEFERRED under the same bar — they are not yet demonstrably painful to reconstruct.
+> Next up: **semantic zoom**.
