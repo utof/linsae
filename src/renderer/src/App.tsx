@@ -260,14 +260,23 @@ export function App() {
   // (pane onClose, via handlePaneClose) clears it.
   const pdfOpenId = usePdfOpenId()
   const openPdf = useOpenPdf()
-  // Boot/restore: when the persisted open-pdf id resolves, open its dock pane.
-  // The store starts empty (in-memory), so the v0.6 "restore on boot" behavior
-  // must be reasserted explicitly here. Intentionally one-way (open only) — the
-  // close path flows solely through handlePaneClose, which clears the persisted
-  // id so this effect won't reopen it. @see docs/specs/v0.6.2-dock-shell.md §4 (C2)
+  // Reactive subscription to the dock's hydrate latch (NOT getState()) so the
+  // pdf-open effect below re-fires AFTER hydrate. `hydrate` full-replaces both
+  // side slices, DROPPING content-kind panes (pdf/player); if this effect ran
+  // pre-hydrate it would open pdf, hydrate would then clobber it, and — since
+  // `pdfOpenId` never changes — the effect would never re-open it (the v0.7
+  // boot-ordering regression). Gating on `dockHydrated` makes the two boot
+  // effects order-independent. @see docs/specs/v0.7-session-persistence.md §Key flows
+  const dockHydrated = useDockStore((s) => s.hydrated)
+  // Boot/restore: when the persisted open-pdf id resolves AND the dock has
+  // hydrated, open its dock pane. The store starts empty (in-memory), so the
+  // v0.6 "restore on boot" behavior must be reasserted explicitly here.
+  // Intentionally one-way (open only) — the close path flows solely through
+  // handlePaneClose, which clears the persisted id so this effect won't reopen
+  // it. @see docs/specs/v0.6.2-dock-shell.md §4 (C2)
   useEffect(() => {
-    if (pdfOpenId != null) useDockStore.getState().openPane('pdf')
-  }, [pdfOpenId])
+    if (pdfOpenId != null && dockHydrated) useDockStore.getState().openPane('pdf')
+  }, [pdfOpenId, dockHydrated])
   // closePane + side effects App owns: closing 'pdf' clears the persisted id
   // (else the restore effect reopens it); 'backlinks' clears focus (I1, Task 6).
   const handlePaneClose = useCallback(
@@ -866,13 +875,20 @@ export function App() {
     const s = snap.data.uiSession
     if (!s) return
     void (async () => {
-      if (s.threadNoteId && (await api.notes.get(s.threadNoteId))) {
-        openThread(s.threadNoteId)
-        return
-      }
-      if (s.focusedNoteId && (await api.notes.get(s.focusedNoteId))) {
-        restoredFocusRef.current = s.focusedNoteId // suppress the auto-open-backlinks run for THIS id
-        setFocusedId(s.focusedNoteId)
+      // Boot fails open: `api.notes.get` RESOLVES null for a missing/soft-deleted id
+      // (the stale-drop path), but an IPC-level REJECTION would otherwise escape as an
+      // unhandled promise rejection. Log + continue — nothing restores, boot proceeds.
+      try {
+        if (s.threadNoteId && (await api.notes.get(s.threadNoteId))) {
+          openThread(s.threadNoteId)
+          return
+        }
+        if (s.focusedNoteId && (await api.notes.get(s.focusedNoteId))) {
+          restoredFocusRef.current = s.focusedNoteId // suppress the auto-open-backlinks run for THIS id
+          setFocusedId(s.focusedNoteId)
+        }
+      } catch (err) {
+        console.error('[boot-restore] session restore failed', err)
       }
     })()
   }, [snap.data])

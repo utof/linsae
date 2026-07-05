@@ -181,6 +181,39 @@ describe('dockStore', () => {
     vi.useRealTimers()
   })
 
+  /**
+   * Spec §Write-through: `visibilitychange`→hidden is the authoritative last-chance flush
+   * (mirrors usePersistedWrite). A dock change then Cmd-Q within the debounce window must
+   * NOT be lost — the pending write flushes immediately on hidden, before the timer elapses.
+   */
+  it('flushes the pending debounced write on visibilitychange when hidden', () => {
+    vi.useFakeTimers()
+    const writes: unknown[] = []
+    const unsub = subscribeDockPersist((snap) => writes.push(snap), 400)
+    useDockStore.getState().hydrate({
+      left: { openPaneIds: [], activeId: null },
+      right: { openPaneIds: [], activeId: null },
+      widths: {},
+      collapsed: {},
+    })
+    useDockStore.getState().openPane('shelf') // schedules a debounced write (not yet fired)
+    expect(writes).toHaveLength(0) // debounce still pending
+    Object.defineProperty(document, 'hidden', { value: true, configurable: true })
+    try {
+      document.dispatchEvent(new Event('visibilitychange'))
+      // Flushed IMMEDIATELY, before the 400ms debounce would have elapsed…
+      expect(writes).toHaveLength(1)
+      expect(writes[0]).toMatchObject({ left: { openPaneIds: ['shelf'] } })
+      // …and the now-cleared timer must NOT double-write when it would have fired.
+      vi.advanceTimersByTime(400)
+      expect(writes).toHaveLength(1)
+    } finally {
+      Object.defineProperty(document, 'hidden', { value: false, configurable: true })
+      unsub()
+      vi.useRealTimers()
+    }
+  })
+
   // B19: the top toggle collapses/restores a WHOLE side; a per-tab close is separate.
   describe('side collapse / restore (B19)', () => {
     it('toggleSide collapses a shown side, KEEPING its panes/active/width for restore', () => {

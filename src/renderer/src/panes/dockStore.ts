@@ -250,6 +250,17 @@ export function dockKindFor(state: DockStore, side: DockSide): PaneKind {
  */
 export function subscribeDockPersist(write: (snap: SerializedDock) => void, debounceMs = 400) {
   let timer: ReturnType<typeof setTimeout> | undefined
+  // The latest debounced-but-unwritten snapshot, so `visibilitychange`→hidden can
+  // flush it immediately (spec §Write-through: hidden is authoritative). Nulled on
+  // either write path so the flush and the timer never double-write.
+  let pending: SerializedDock | null = null
+  const flush = () => {
+    if (!document.hidden || pending == null) return
+    clearTimeout(timer)
+    const snap = pending
+    pending = null
+    write(snap)
+  }
   const unsub = useDockStore.subscribe((s, prev) => {
     if (!s.hydrated) return // pre-hydrate changes ignored
     if (!prev.hydrated) return // THIS call is the hydrate transition itself — don't echo it
@@ -259,13 +270,21 @@ export function subscribeDockPersist(write: (snap: SerializedDock) => void, debo
       widths: s.widths,
       collapsed: s.collapsed,
     }
+    pending = snap
     clearTimeout(timer)
-    timer = setTimeout(() => write(snap), debounceMs)
+    timer = setTimeout(() => {
+      pending = null
+      write(snap)
+    }, debounceMs)
   })
-  // Clear any scheduled debounce on teardown so a pending write() never fires after
-  // unsub (redundant write / cross-test timer bleed).
+  // Mirror usePersistedWrite's last-chance flush (usePersistedWrite.ts): the debounce
+  // can otherwise silently lose a resize/toggle made just before Cmd-Q.
+  document.addEventListener('visibilitychange', flush)
+  // Clear any scheduled debounce AND remove the flush listener on teardown so a pending
+  // write() never fires after unsub (redundant write / cross-test timer bleed).
   return () => {
     clearTimeout(timer)
+    document.removeEventListener('visibilitychange', flush)
     unsub()
   }
 }

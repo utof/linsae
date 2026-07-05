@@ -943,6 +943,41 @@ describe('App — PDF boot-restore (C2)', () => {
     })
     expect(openPdfSpy).toHaveBeenCalledWith(null)
   })
+
+  /**
+   * Boot-ordering race (v0.7 regression): `usePdfOpenId` resolves the open-pdf id on
+   * its OWN timeline (a single-key setting read) while `dock.layout.v1` hydrates via the
+   * 7-key snapshot. `hydrate` FULL-REPLACES both side slices, dropping every content pane
+   * (pdf is content-kind) — so a pre-hydrate `openPane('pdf')` would be clobbered and,
+   * because `pdfOpenId` never changes, never re-opened. Here the mock resolves the id
+   * synchronously (pre-hydrate) yet the dock still carries `pdf` after hydrate settles —
+   * proving the effect re-fires on the `dockHydrated` latch. Without that gate this fails
+   * (pdf dropped by hydrate). @see docs/specs/v0.7-session-persistence.md §Key flows
+   */
+  it('keeps the restored pdf pane through dock hydrate (boot-ordering race)', async () => {
+    const mock = installMockApi()
+    // A saved layout WITH a utility pane forces the hydrate full-replace to run (the
+    // path that drops content panes); the pdf must survive it via the re-fire.
+    mock.settings.getMany.mockResolvedValue({
+      values: {
+        'dock.layout.v1': {
+          left: { openPaneIds: [], activeId: null },
+          right: { openPaneIds: ['backlinks'], activeId: 'backlinks' },
+          widths: {},
+          collapsed: {},
+        },
+      },
+    })
+    vi.mocked(usePdfOpenId).mockReturnValue('pdf-abc')
+    vi.mocked(useOpenPdf).mockReturnValue(vi.fn())
+
+    renderWithProviders(<App />)
+
+    await waitFor(() => expect(useDockStore.getState().hydrated).toBe(true))
+    await waitFor(() => {
+      expect(useDockStore.getState().right.openPaneIds).toContain('pdf')
+    })
+  })
 })
 
 describe('App — onOpenPdf → source note create-or-resolve (B3)', () => {

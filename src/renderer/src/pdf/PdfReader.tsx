@@ -61,6 +61,12 @@ export function PdfReader(): React.JSX.Element {
   // the session snapshot, but kept LIVE below via setQueryData so an in-session
   // A→B→A swap restores the current zoom, not the stale boot value.
   const view = useSessionSnapshot().data?.pdfView
+  // v0.7: the latest debounced-but-unwritten `pdf.view.v1` payload. The debounced
+  // persist writer only commits after ZOOM_PERSIST_DEBOUNCE_MS; a doc-swap or a quit
+  // (visibilitychange→hidden) within that window would otherwise drop the write. The
+  // two flush effects below persist this ref immediately; the persist timer + both
+  // flush sites all null it so nothing double-writes. @see spec §Write-through
+  const pendingPdfWriteRef = useRef<SessionSnapshot['pdfView'] | null>(null)
   const pending = useExcerptStore((s) => s.pending)
   const arm = useExcerptStore((s) => s.arm)
 
@@ -103,11 +109,46 @@ export function PdfReader(): React.JSX.Element {
     qc.setQueryData<SessionSnapshot>(['session-snapshot'], (old) =>
       old ? { ...old, pdfView: nextView } : old,
     )
+    // Hold the pending write so a flush (swap/quit) can commit it; the timer reads
+    // the ref so a prior flush that nulled it turns the timer into a no-op (no double
+    // write). Only ONE timer is live at a time (this effect's cleanup clears the prior).
+    pendingPdfWriteRef.current = nextView
     const id = setTimeout(() => {
-      void api.settings.set('pdf.view.v1', nextView)
+      const flushView = pendingPdfWriteRef.current
+      if (flushView == null) return
+      pendingPdfWriteRef.current = null
+      void api.settings.set('pdf.view.v1', flushView)
     }, ZOOM_PERSIST_DEBOUNCE_MS)
     return () => clearTimeout(id)
   }, [zoom, pdfId])
+
+  // v0.7 quit flush: a still-pending debounced zoom must survive Cmd-Q. Mirrors the
+  // spec's visibilitychange→hidden last-chance (usePersistedWrite / subscribeDockPersist);
+  // the persist timer above may not have fired yet. Mount-once; reads the ref (always live).
+  useEffect(() => {
+    const flush = () => {
+      const flushView = pendingPdfWriteRef.current
+      if (!document.hidden || flushView == null) return
+      pendingPdfWriteRef.current = null
+      void api.settings.set('pdf.view.v1', flushView)
+    }
+    document.addEventListener('visibilitychange', flush)
+    return () => document.removeEventListener('visibilitychange', flush)
+  }, [])
+
+  // v0.7 swap flush: on a document swap (or unmount) the persist effect's [zoom,pdfId]
+  // cleanup clears the still-pending debounce timer — flush the pending write here first
+  // (keyed on pdfId, so this cleanup fires per swap) so a zoom made just before the swap
+  // persists instead of dropping.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pdfId is the swap trigger; the ref/api are stable and read at cleanup time
+  useEffect(() => {
+    return () => {
+      const flushView = pendingPdfWriteRef.current
+      if (flushView == null) return
+      pendingPdfWriteRef.current = null
+      void api.settings.set('pdf.view.v1', flushView)
+    }
+  }, [pdfId])
 
   // B18: ctrl/cmd + wheel zooms; plain wheel scrolls as normal. A NATIVE,
   // non-passive listener is required — React registers `onWheel` as a passive

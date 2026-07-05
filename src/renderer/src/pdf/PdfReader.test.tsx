@@ -92,6 +92,8 @@ let mockApi: MockApi
 beforeEach(() => {
   currentPdfId = 'A'
   mockApi = installMockApi()
+  // Each test starts foreground; the quit-flush test flips this and resets it.
+  Object.defineProperty(document, 'hidden', { value: false, configurable: true })
 })
 
 describe('PdfReader zoom persistence (pdf.view.v1)', () => {
@@ -167,5 +169,65 @@ describe('PdfReader zoom persistence (pdf.view.v1)', () => {
     // 1.98 × 1.1 ≈ 2.178 (fix). A stale static-cache read would restore 1.8 and
     // write 1.98 here — this assertion is what makes the trap falsifiable.
     expect(lastSet(mockApi).value.A?.zoom).toBeCloseTo(2.178, 2)
+  })
+
+  /**
+   * Quit flush (spec §Write-through): a zoom made within the 200ms debounce window then a
+   * Cmd-Q must not be lost. `visibilitychange`→hidden flushes the pending write immediately.
+   * Without the flush the debounced timer never fires (the window quit first) → write dropped.
+   */
+  it('flushes a pending zoom on visibilitychange→hidden (before the debounce elapses)', async () => {
+    const qc = seededClient({ A: { zoom: 1.8 } })
+    const { container } = render(
+      <QueryClientProvider client={qc}>
+        <PdfReader />
+      </QueryClientProvider>,
+    )
+    // Zoom A but do NOT wait for the 200ms debounce — the disk write is still pending.
+    await act(async () => {
+      pageEl(container).dispatchEvent(ctrlWheelIn())
+    })
+    expect(mockApi.settings.set).not.toHaveBeenCalled() // still debounced, nothing written yet
+
+    // Simulate quit: document hidden + visibilitychange → flush immediately.
+    await act(async () => {
+      Object.defineProperty(document, 'hidden', { value: true, configurable: true })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    const set = lastSet(mockApi)
+    expect(set.key).toBe('pdf.view.v1')
+    expect(set.value.A?.zoom).toBeCloseTo(1.98, 2)
+  })
+
+  /**
+   * Swap flush: a zoom on doc A, then a swap to B BEFORE the debounce fires. The persist
+   * effect's [zoom,pdfId] cleanup clears the pending timer; the [pdfId] swap-flush must
+   * commit A's zoom first so it isn't dropped by the swap (carry-forward from finding #3).
+   */
+  it('persists a pending zoom on doc-swap before the debounce (not dropped)', async () => {
+    const qc = seededClient({ A: { zoom: 1.8 } })
+    const { container, rerender } = render(
+      <QueryClientProvider client={qc}>
+        <PdfReader />
+      </QueryClientProvider>,
+    )
+    // Zoom A but do NOT wait for the debounce — the write is pending.
+    await act(async () => {
+      pageEl(container).dispatchEvent(ctrlWheelIn())
+    })
+    expect(mockApi.settings.set).not.toHaveBeenCalled()
+
+    // Swap to B before the 200ms debounce elapses.
+    currentPdfId = 'B'
+    await act(async () => {
+      rerender(
+        <QueryClientProvider client={qc}>
+          <PdfReader />
+        </QueryClientProvider>,
+      )
+    })
+    const set = lastSet(mockApi)
+    expect(set.key).toBe('pdf.view.v1')
+    expect(set.value.A?.zoom).toBeCloseTo(1.98, 2) // A's pending zoom flushed on the swap
   })
 })
