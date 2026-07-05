@@ -502,7 +502,7 @@ export function ThreadView({
   // pass the empty-body Zod gate (NotesCreateInputSchema superRefine, A3). After
   // create, the pending attachment is linked to the new note.
   const post = useMutation({
-    mutationFn: async ({ body, t }: { body: string; t: number }) => {
+    mutationFn: async ({ body, t }: { body: string; t: number | null }) => {
       // FIX 2: guard against posting before the video note has loaded — an
       // empty commentOn would create an orphan note with no thread parent.
       // Why: note resolves async; the composer is mounted before it settles.
@@ -512,10 +512,18 @@ export function ThreadView({
       // the re-assigned React state would make the SECOND capture's attachmentId
       // land on this (first) note — wrong. Using a local constant prevents that.
       const frame = pendingFrame
-      const tAnchor = frame ? frame.t : t
+      const tAnchor = frame ? frame.t : t // number | null (null = anchorless)
       const created = await api.notes.create(body, 'claim', {
         source_kind: 'youtube',
-        source_locator: { media: 'youtube', video_id: videoId, t: tAnchor },
+        // Omit `t` entirely when anchorless (null) — under
+        // exactOptionalPropertyTypes the key must be ABSENT, never `t: undefined`.
+        // The schema's `t` is optional ("omitted for anchorless comment-notes").
+        // @see src/shared/zod-schemas.ts
+        source_locator: {
+          media: 'youtube',
+          video_id: videoId,
+          ...(tAnchor != null ? { t: tAnchor } : {}),
+        },
         commentOn: note.slug,
       })
       if (frame) await api.attachments.attachToNote(frame.attachment.id, created.id)

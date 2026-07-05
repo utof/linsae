@@ -336,6 +336,29 @@ describe('ThreadView capture flow', () => {
     await waitFor(() => expect(screen.queryByRole('img', { name: /captured frame/i })).toBeNull())
   })
 
+  // FIX B: a RESTORED draft (seeded initialDraft, no frame, no manual time) posts
+  // ANCHORLESS — the youtube locator must OMIT `t` entirely (not `t: null/undefined`).
+  it('posts a restored draft ANCHORLESS — notes.create omits `t` in source_locator', async () => {
+    mockApi.notes.create.mockResolvedValue({ ...SOURCE_NOTE, id: 'n2', type: 'claim' })
+
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} initialDraft="restored note" />)
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    const textarea = screen.getByRole('textbox')
+    // The draft is already seeded; press Enter to submit without adding a time.
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+
+    await waitFor(() => expect(mockApi.notes.create).toHaveBeenCalledOnce())
+    expect(mockApi.notes.create).toHaveBeenCalledWith({
+      body: 'restored note',
+      type: 'claim',
+      source_kind: 'youtube',
+      // No `t` key — anchorless. (deep-equal: an absent key must be truly absent.)
+      source_locator: { media: 'youtube', video_id: 'abc' },
+      commentOn: 'vid',
+    })
+  })
+
   it('⌘⇧C hotkey fires capture (and opens the editor) when no form tag is focused', async () => {
     mockApi.youtube.capture.mockResolvedValue({
       id: 'att2',

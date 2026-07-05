@@ -359,6 +359,72 @@ describe('ThreadComposer', () => {
     expect(onDraftClear).not.toHaveBeenCalled()
   })
 
+  // ── FIX B: a RESTORED draft is an untimestamped (anchorless) note ──────────
+  // Seeding a non-empty initialDraft freezes the anchor at the mount-time
+  // livePlayhead (~0:00 on a fresh restart), so it must NOT post a bogus number.
+  // Product decision: post anchorless (t: null); the user can add a time by
+  // clicking the chip.
+
+  it('(fixB) a restored (seeded) draft posts ANCHORLESS — onPost t is null', () => {
+    const onPost = vi.fn()
+    // livePlayhead 30 would be the (wrong) frozen anchor; we must get null instead.
+    render(
+      <ThreadComposer {...makeProps({ livePlayhead: 30, initialDraft: 'restored', onPost })} />,
+    )
+    const textarea = screen.getByRole('textbox')
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+    expect(onPost).toHaveBeenCalledOnce()
+    expect(onPost).toHaveBeenCalledWith({ body: 'restored', t: null })
+  })
+
+  it('(fixB) a freshly-typed draft still posts a NUMERIC t (regression guard)', () => {
+    const onPost = vi.fn()
+    render(<ThreadComposer {...makeProps({ livePlayhead: 50, onPost })} />)
+    const textarea = screen.getByRole('textbox')
+    fireEvent.focus(textarea)
+    fireEvent.change(textarea, { target: { value: 'fresh note' } })
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+    expect(onPost).toHaveBeenCalledWith({ body: 'fresh note', t: 50 })
+  })
+
+  it('(fixB) anchorless restored draft renders an "add time" chip affordance', () => {
+    render(<ThreadComposer {...makeProps({ livePlayhead: 30, initialDraft: 'restored' })} />)
+    // The clock chip is replaced by an add-time affordance while anchorless.
+    expect(screen.getByRole('button', { name: /add anchor time/i })).toBeInTheDocument()
+    // It must NOT show a bogus clock time.
+    expect(screen.queryByTestId('composer-chip')).toHaveTextContent(/time/i)
+  })
+
+  it('(fixB) committing a manual time on an anchorless draft posts that NUMERIC t', () => {
+    const onPost = vi.fn()
+    render(
+      <ThreadComposer {...makeProps({ livePlayhead: 30, initialDraft: 'restored', onPost })} />,
+    )
+    // Click the add-time affordance → chip input opens.
+    fireEvent.click(screen.getByRole('button', { name: /add anchor time/i }))
+    const input = screen.getByTestId('chip-time-input')
+    fireEvent.change(input, { target: { value: '1:15' } }) // 75 s
+    fireEvent.keyDown(input, { key: 'Enter' })
+    // Now anchored: the chip shows the committed time and submit posts 75.
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:15')
+    const textarea = screen.getByRole('textbox')
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+    expect(onPost).toHaveBeenCalledWith({ body: 'restored', t: 75 })
+  })
+
+  it('(fixB) pendingFrame wins over anchorless — submit posts pendingFrame.t', () => {
+    const onPost = vi.fn()
+    renderWithProviders(
+      <ThreadComposer
+        {...makeProps({ livePlayhead: 30, initialDraft: 'restored', onPost })}
+        pendingFrame={{ attachment: PENDING_ATTACHMENT, t: 42 }}
+      />,
+    )
+    const textarea = screen.getByRole('textbox')
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+    expect(onPost).toHaveBeenCalledWith({ body: 'restored', t: 42 })
+  })
+
   it('(f) manual chip value resets to live tracking on blur-while-empty', () => {
     const { rerender } = render(<ThreadComposer {...makeProps({ livePlayhead: 30 })} />)
 

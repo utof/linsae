@@ -36,10 +36,14 @@ vi.mock('./thread/ThreadView', () => ({
     noteId,
     onClose,
     onScroll,
+    onDraftChange,
+    onDraftClear,
   }: {
     noteId: string
     onClose: () => void
     onScroll?: (scrollTop: number) => void
+    onDraftChange?: (text: string) => void
+    onDraftClear?: () => void
   }) => (
     <div data-testid="thread-view-sentinel" data-note-id={noteId}>
       <button type="button" aria-label="back" onClick={onClose}>
@@ -48,6 +52,25 @@ vi.mock('./thread/ThreadView', () => ({
       {/* Task 2.2: drive App's onScroll wiring so the thread.scroll.v1 persist can be asserted. */}
       <button type="button" data-testid="thread-view-scroll" onClick={() => onScroll?.(240)}>
         scroll
+      </button>
+      {/* Task 4.2: drive App's per-root draft wiring so the composer.draft.thread.v1
+          persist (and the empty-delete normalization) can be asserted. */}
+      <button
+        type="button"
+        data-testid="thread-view-draft-x"
+        onClick={() => onDraftChange?.('draft x')}
+      >
+        draft-x
+      </button>
+      <button
+        type="button"
+        data-testid="thread-view-draft-empty"
+        onClick={() => onDraftChange?.('')}
+      >
+        draft-empty
+      </button>
+      <button type="button" data-testid="thread-view-draft-clear" onClick={() => onDraftClear?.()}>
+        draft-clear
       </button>
     </div>
   ),
@@ -1323,6 +1346,48 @@ describe('App — thread scroll persist (Task 2.2)', () => {
         value: { 'feed-note-1': 240 },
       }),
     )
+  })
+})
+
+describe('App — thread draft empty-delete normalization (FIX A)', () => {
+  afterEach(() => useCommandStore.getState().reset())
+
+  /**
+   * Regression: on send the composer clears (onDraftClear deletes the root's entry), but the
+   * keystroke reporter then fires onDraftChange('') which — before the fix — wrote back
+   * `{ [rootId]: '' }`, leaking one empty entry per thread ever posted to. `onThreadDraftChange`
+   * must treat '' as a DELETE, so the persisted map ends up WITHOUT the key (not `{ id: '' }`).
+   */
+  it('persists composer.draft.thread.v1 WITHOUT the root key when draft goes empty', async () => {
+    const mock = installMockApi()
+    mock.notes.list.mockResolvedValue([FEED_NOTE])
+    mock.system.getReconcileSkipped.mockResolvedValue(0)
+    mock.settings.getMany.mockResolvedValue({ values: {} })
+
+    renderWithProviders(<App />)
+
+    // Open FEED_NOTE's thread → the ThreadView sentinel mounts.
+    fireEvent.click(await screen.findByTestId('open-thread-btn-feed-note-1'))
+    // Report a non-empty draft → map = { 'feed-note-1': 'draft x' }.
+    fireEvent.click(await screen.findByTestId('thread-view-draft-x'))
+    await waitFor(() =>
+      expect(mock.settings.set).toHaveBeenCalledWith({
+        key: 'composer.draft.thread.v1',
+        value: { 'feed-note-1': 'draft x' },
+      }),
+    )
+    // Now report empty → the entry must be DELETED, persisting `{}`, NOT `{ 'feed-note-1': '' }`.
+    fireEvent.click(await screen.findByTestId('thread-view-draft-empty'))
+    await waitFor(() =>
+      expect(mock.settings.set).toHaveBeenCalledWith({
+        key: 'composer.draft.thread.v1',
+        value: {},
+      }),
+    )
+    expect(mock.settings.set).not.toHaveBeenCalledWith({
+      key: 'composer.draft.thread.v1',
+      value: { 'feed-note-1': '' },
+    })
   })
 })
 

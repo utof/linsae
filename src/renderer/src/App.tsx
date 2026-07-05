@@ -931,7 +931,19 @@ export function App() {
   const onThreadDraftChange = useCallback(
     (text: string) => {
       if (!threadNoteId) return
-      setDraftThreadMap((m) => ({ ...m, [threadNoteId]: text }))
+      setDraftThreadMap((m) => {
+        // Empty text = delete the entry, NOT `{ [rootId]: '' }`. Without this the
+        // keystroke-reporter effect's post-send `onDraftChange('')` writes an empty
+        // string back after `onThreadDraftClear` deleted it, leaking one empty entry
+        // per thread ever posted to (unbounded slow growth of the persisted map).
+        if (text === '') {
+          if (!(threadNoteId in m)) return m // no-op if already absent (stable identity)
+          const next = { ...m }
+          delete next[threadNoteId]
+          return next
+        }
+        return { ...m, [threadNoteId]: text }
+      })
     },
     [threadNoteId],
   )
