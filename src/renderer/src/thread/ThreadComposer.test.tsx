@@ -323,6 +323,42 @@ describe('ThreadComposer', () => {
     expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:39')
   })
 
+  // ── v0.7 Task 4.2: per-thread draft persistence ──────────────────────────
+
+  it('(t4.2) seeds the draft textarea from initialDraft (restore)', () => {
+    render(<ThreadComposer {...makeProps({ initialDraft: 'hello' })} />)
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('hello')
+  })
+
+  it('(t4.2) reports the full text via onDraftChange, but NOT on mount (skip-first)', () => {
+    const onDraftChange = vi.fn()
+    render(<ThreadComposer {...makeProps({ initialDraft: 'hi', onDraftChange })} />)
+    // Seeded value must not echo back to disk on mount.
+    expect(onDraftChange).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'hi there' } })
+    // Reports the FULL new text only (no chip/frozenAt — App closes over the key).
+    expect(onDraftChange).toHaveBeenCalledWith('hi there')
+  })
+
+  it('(t4.2) calls onDraftClear when a note is posted via Enter (clear-and-cancel)', () => {
+    const onDraftClear = vi.fn()
+    render(<ThreadComposer {...makeProps({ livePlayhead: 50, onDraftClear })} />)
+    const textarea = screen.getByRole('textbox')
+    fireEvent.focus(textarea)
+    fireEvent.change(textarea, { target: { value: 'note text' } })
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+    expect(onDraftClear).toHaveBeenCalledOnce()
+  })
+
+  it('(t4.2) does NOT call onDraftClear on a truly-empty no-op submit', () => {
+    const onDraftClear = vi.fn()
+    render(<ThreadComposer {...makeProps({ livePlayhead: 50, onDraftClear })} />)
+    const textarea = screen.getByRole('textbox')
+    // No draft, no pending frame → submit is a no-op.
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+    expect(onDraftClear).not.toHaveBeenCalled()
+  })
+
   it('(f) manual chip value resets to live tracking on blur-while-empty', () => {
     const { rerender } = render(<ThreadComposer {...makeProps({ livePlayhead: 30 })} />)
 

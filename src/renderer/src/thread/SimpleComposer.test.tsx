@@ -60,3 +60,48 @@ it('trims surrounding whitespace from the submitted body', () => {
   fireEvent.keyDown(ta, { key: 'Enter' })
   expect(onSubmit).toHaveBeenCalledWith('padded')
 })
+
+// ── v0.7 Task 4.2: per-thread draft persistence ──────────────────────────────
+
+it('seeds the textarea from initialDraft (Task 4.2 restore)', () => {
+  renderWithProviders(<SimpleComposer onSubmit={vi.fn()} initialDraft="hello" />)
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('hello')
+})
+
+it('reports the full text via onDraftChange, but NOT on mount (skip-first)', () => {
+  const onDraftChange = vi.fn()
+  renderWithProviders(
+    <SimpleComposer onSubmit={vi.fn()} initialDraft="hi" onDraftChange={onDraftChange} />,
+  )
+  // Seeded value must not echo back to disk on mount.
+  expect(onDraftChange).not.toHaveBeenCalled()
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'hi there' } })
+  // Reports the FULL new text (no rootId — App closes over the key).
+  expect(onDraftChange).toHaveBeenCalledWith('hi there')
+})
+
+it('calls onDraftClear when a note is sent via Enter (clear-and-cancel)', () => {
+  const onDraftClear = vi.fn()
+  renderWithProviders(<SimpleComposer onSubmit={vi.fn()} onDraftClear={onDraftClear} />)
+  const ta = screen.getByRole('textbox')
+  fireEvent.change(ta, { target: { value: 'a reply' } })
+  fireEvent.keyDown(ta, { key: 'Enter' })
+  expect(onDraftClear).toHaveBeenCalledOnce()
+})
+
+it('calls onDraftClear when a note is sent via the send button', () => {
+  const onDraftClear = vi.fn()
+  renderWithProviders(<SimpleComposer onSubmit={vi.fn()} onDraftClear={onDraftClear} />)
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'via button' } })
+  fireEvent.click(screen.getByRole('button', { name: /add note/i }))
+  expect(onDraftClear).toHaveBeenCalledOnce()
+})
+
+it('does NOT call onDraftClear on a whitespace-only no-op submit', () => {
+  const onDraftClear = vi.fn()
+  renderWithProviders(<SimpleComposer onSubmit={vi.fn()} onDraftClear={onDraftClear} />)
+  const ta = screen.getByRole('textbox')
+  fireEvent.change(ta, { target: { value: '   ' } })
+  fireEvent.keyDown(ta, { key: 'Enter' })
+  expect(onDraftClear).not.toHaveBeenCalled()
+})

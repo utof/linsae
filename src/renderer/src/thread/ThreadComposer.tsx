@@ -25,7 +25,7 @@
  */
 
 import { Camera } from 'lucide-react'
-import { type CSSProperties, type KeyboardEvent, useEffect, useState } from 'react'
+import { type CSSProperties, type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import type { Attachment } from '../../../shared/types'
 import { AnnotatedFrame } from '../annotate/AnnotatedFrame'
 import { SendButton } from '../composer/SendButton'
@@ -71,6 +71,29 @@ export interface ThreadComposerProps {
   error?: string | null
   /** Called on the next keystroke when `error` is set, so the parent clears it. */
   onClearError?: () => void
+  /**
+   * Restored draft text for THIS thread's root, applied ONCE as the initial
+   * `draft` (v0.7 Task 4.2). App sources it from `snap.data.draftThread[rootId]`.
+   * ONLY the draft text is persisted — never the chip / frozenAt / manuallyFrozen
+   * freeze state. @see docs/plans/v0.7-session-persistence.md §Task 4.2
+   */
+  // `| undefined` (not just `?`) so ThreadView can forward a possibly-absent
+  // `draftThreadMap[id]` lookup directly under `exactOptionalPropertyTypes`.
+  initialDraft?: string | undefined
+  /**
+   * Reports the live draft text up whenever it changes — App keys it by the
+   * thread root id and write-throughs it to `composer.draft.thread.v1`
+   * (debounced). NOT called on the initial mount (skip-first): the seeded value
+   * must not echo back to disk. Text only — App closes over the root id.
+   * @see src/renderer/src/App.tsx §draftThreadMap
+   */
+  onDraftChange?: ((text: string) => void) | undefined
+  /**
+   * Called on a real post (optimistic, in the submit path where local state is
+   * cleared) so App drops this root's entry from the draft map. Consistent with
+   * the existing local `setDraft('')` clear.
+   */
+  onDraftClear?: (() => void) | undefined
 }
 
 /** @see ThreadComposerProps */
@@ -83,9 +106,12 @@ export function ThreadComposer({
   onCapture,
   error = null,
   onClearError,
+  initialDraft = '',
+  onDraftChange,
+  onDraftClear,
 }: ThreadComposerProps) {
   // ── local state ────────────────────────────────────────────────────────────
-  const [draft, setDraft] = useState('')
+  const [draft, setDraft] = useState(initialDraft)
   const [focused, setFocused] = useState(false)
   const [frozenAt, setFrozenAt] = useState(livePlayhead)
   /**
@@ -105,6 +131,19 @@ export function ThreadComposer({
   // Auto-grow textarea via the shared hook (also used by Composer +
   // SimpleComposer). Mirrors the prior inline useLayoutEffect.
   const textareaRef = useAutoGrowTextarea(draft)
+
+  // Report the live draft text up (v0.7 Task 4.2 persistence). ONLY the text —
+  // never the chip/frozenAt/manuallyFrozen freeze state. Skip-first is expressed
+  // as "differs from the seed" rather than a boolean flag so it survives
+  // StrictMode's dev double-invoke of mount effects (both invokes see draft ===
+  // the seed → no report). Mirrors Composer.tsx's reporter.
+  // @see src/renderer/src/composer/Composer.tsx §onDraftChange
+  const lastReported = useRef(initialDraft)
+  useEffect(() => {
+    if (lastReported.current === draft) return
+    lastReported.current = draft
+    onDraftChange?.(draft)
+  }, [draft, onDraftChange])
 
   // ── derived ────────────────────────────────────────────────────────────────
   const hasDraft = draft.trim().length > 0
@@ -153,6 +192,9 @@ export function ThreadComposer({
       : chipTime({ focused: effectiveFocused, hasDraft, livePlayhead, frozenAt })
     onPost({ body: draft, t })
     setDraft('')
+    // Drop this root's persisted draft (Task 4.2 clear-and-cancel). Fires
+    // optimistically alongside the local clear, consistent with setDraft('').
+    onDraftClear?.()
     setManuallyFrozen(false)
     // Explicitly release the frozen state so chipTime resumes live-tracking
     // immediately on the next render with a new livePlayhead prop. This mirrors

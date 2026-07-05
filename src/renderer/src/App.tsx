@@ -230,6 +230,13 @@ export function App() {
   // persisted to `thread.scroll.v1`. @see docs/specs/v0.7-session-persistence.md §Task 2.2
   const [threadScrollMap, setThreadScrollMap] = useState<Record<string, number>>({})
   const threadScrollSeeded = useRef(false)
+  // v0.7 Task 4.2: per-root composer drafts (rootNoteId → draft text). BOTH thread
+  // composers (youtube ThreadComposer + plain/pdf SimpleComposer) report here via
+  // ThreadView's pass-through, keyed by `threadNoteId`. Seeded ONCE from the boot
+  // snapshot (below), then owned locally + persisted to `composer.draft.thread.v1`.
+  // @see docs/specs/v0.7-session-persistence.md §Task 4.2
+  const [draftThreadMap, setDraftThreadMap] = useState<Record<string, string>>({})
+  const draftThreadSeeded = useRef(false)
   // v0.7 Task 3.2: latest feed-scroll capture from <Feed>'s throttled onCapture. Boot
   // RESTORE flows the OTHER way (snap.data.feedScroll → Feed's `restore` prop, seeded at
   // its first render); this state only holds post-boot captures for the debounced writer,
@@ -907,6 +914,46 @@ export function App() {
   // matching the dock + ui.session writers); `usePersistedWrite` skips the seeded value.
   usePersistedWrite('thread.scroll.v1', threadScrollMap, { debounceMs: 250, enabled: snapSettled })
 
+  // Seed the per-root draft map ONCE from the boot snapshot (Task 4.2). Mirrors the
+  // thread-scroll seed above: async snapshot → effect, gated on `snapSettled`. Seeding
+  // the FULL map is load-bearing — a map that started empty would wipe other threads'
+  // saved drafts on the first keystroke. Skip when there's no saved history so the map
+  // ref stays `{}` and `usePersistedWrite` writes nothing on a fresh boot.
+  useEffect(() => {
+    if (draftThreadSeeded.current || !snapSettled) return
+    draftThreadSeeded.current = true
+    const saved = snap.data?.draftThread
+    if (saved && Object.keys(saved).length > 0) setDraftThreadMap(saved)
+  }, [snapSettled, snap.data])
+
+  // Per-thread draft report (Task 4.2): both composers report text-only via ThreadView;
+  // `threadNoteId` is the correct key (a thread is open whenever a composer can report).
+  const onThreadDraftChange = useCallback(
+    (text: string) => {
+      if (!threadNoteId) return
+      setDraftThreadMap((m) => ({ ...m, [threadNoteId]: text }))
+    },
+    [threadNoteId],
+  )
+
+  // On send, drop this root's entry so a late debounce can't resurrect the just-sent draft.
+  const onThreadDraftClear = useCallback(() => {
+    if (!threadNoteId) return
+    setDraftThreadMap((m) => {
+      const n = { ...m }
+      delete n[threadNoteId]
+      return n
+    })
+  }, [threadNoteId])
+
+  // Persist the whole per-root draft map, debounced. `enabled: snapSettled` (fail-open,
+  // matching the other writers); `usePersistedWrite` skips the seeded value so a restored
+  // draft isn't echoed on boot.
+  usePersistedWrite('composer.draft.thread.v1', draftThreadMap, {
+    debounceMs: 400,
+    enabled: snapSettled,
+  })
+
   // Persist the latest feed-scroll capture, debounced. `enabled: snapSettled` (fail-open,
   // matching the other writers — NOT `snap.isSuccess`, which would disable feed-scroll
   // persistence for the whole session on a transient snapshot-read failure). Starts null →
@@ -1266,6 +1313,12 @@ export function App() {
                         // playhead-follow owns scroll, so it ignores them.
                         initialScrollTop={threadScrollMap[threadNoteId]}
                         onScroll={onThreadScroll}
+                        // v0.7 Task 4.2: keyed on threadNoteId (= root id). Forwarded to
+                        // BOTH composers (youtube + plain/pdf) — unlike scroll, drafts
+                        // apply to every branch.
+                        initialDraft={draftThreadMap[threadNoteId]}
+                        onDraftChange={onThreadDraftChange}
+                        onDraftClear={onThreadDraftClear}
                       />
                     </motion.div>
                   ) : (

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { SendButton } from '../composer/SendButton'
 import { useAutoGrowTextarea } from '../composer/useAutoGrowTextarea'
 
@@ -22,17 +22,61 @@ import { useAutoGrowTextarea } from '../composer/useAutoGrowTextarea'
  * @see src/renderer/src/composer/useAutoGrowTextarea.ts (shared auto-grow)
  * @see src/renderer/src/composer/SendButton.tsx (shared send affordance)
  */
-export function SimpleComposer({ onSubmit }: { onSubmit: (body: string) => void }) {
-  const [body, setBody] = useState('')
+export function SimpleComposer({
+  onSubmit,
+  initialDraft = '',
+  onDraftChange,
+  onDraftClear,
+}: {
+  onSubmit: (body: string) => void
+  /**
+   * Restored draft text for THIS thread's root, applied ONCE as the initial
+   * `body` (v0.7 Task 4.2). App sources it from `snap.data.draftThread[rootId]`.
+   * @see docs/plans/v0.7-session-persistence.md §Task 4.2
+   */
+  // `| undefined` (not just `?`) so ThreadView can forward a possibly-absent
+  // `draftThreadMap[id]` lookup directly under `exactOptionalPropertyTypes`.
+  initialDraft?: string | undefined
+  /**
+   * Reports the live draft text up whenever it changes — App keys it by the
+   * thread root id and write-throughs it to `composer.draft.thread.v1`
+   * (debounced). NOT called on the initial mount (skip-first): the seeded value
+   * must not echo back to disk. Text only — App closes over the root id.
+   * @see src/renderer/src/App.tsx §draftThreadMap
+   */
+  onDraftChange?: ((text: string) => void) | undefined
+  /**
+   * Called on a real send (optimistic, in the submit path where local state is
+   * cleared) so App drops this root's entry from the draft map. Fires only on a
+   * non-empty post — a trimmed-empty no-op does not clear.
+   */
+  onDraftClear?: (() => void) | undefined
+}) {
+  const [body, setBody] = useState(initialDraft)
   const ref = useAutoGrowTextarea(body)
 
+  // Report the live draft up (v0.7 persistence). Skip-first is expressed as
+  // "differs from the seed" rather than a boolean flag so it survives StrictMode's
+  // dev double-invoke of mount effects (both invokes see body === the seed → no
+  // report). The compare-to-last-reported guard also makes an unstable
+  // `onDraftChange` harmless. Mirrors Composer.tsx's reporter.
+  // @see src/renderer/src/composer/Composer.tsx §onDraftChange
+  const lastReported = useRef(initialDraft)
+  useEffect(() => {
+    if (lastReported.current === body) return
+    lastReported.current = body
+    onDraftChange?.(body)
+  }, [body, onDraftChange])
+
   // Submit path shared by Enter and the send button. Trim-empty guard: a
-  // whitespace-only draft is a no-op. On a real post, clear the draft.
+  // whitespace-only draft is a no-op. On a real post, clear the draft AND
+  // signal App to drop the persisted entry (clear-and-cancel on send).
   const submit = () => {
     const t = body.trim()
     if (t) {
       onSubmit(t)
       setBody('')
+      onDraftClear?.()
     }
   }
 

@@ -116,6 +116,26 @@ export interface ThreadViewProps {
    * (the playhead-follow owns scroll there). @see initialScrollTop
    */
   onScroll?: (scrollTop: number) => void
+  /**
+   * Restored composer draft text for THIS thread's root, forwarded to BOTH the
+   * youtube `ThreadComposer` and the plain/pdf `SimpleComposer` as their
+   * `initialDraft` (v0.7 Task 4.2). Unlike `initialScrollTop` (which youtube
+   * ignores), drafts apply to every branch. App sources it from
+   * `snap.data.draftThread[rootId]`. @see docs/plans/v0.7-session-persistence.md §Task 4.2
+   */
+  // `| undefined` (not just `?`) so App can forward `draftThreadMap[id]` (a
+  // possibly-absent lookup) directly under `exactOptionalPropertyTypes`.
+  initialDraft?: string | undefined
+  /**
+   * Live draft-text reporter, forwarded to both composers. App keys it by the
+   * thread root id and persists to `composer.draft.thread.v1`. @see initialDraft
+   */
+  onDraftChange?: (text: string) => void
+  /**
+   * Called on a real send from either composer, forwarded to both. App drops
+   * this root's entry from the draft map. @see initialDraft
+   */
+  onDraftClear?: () => void
 }
 
 /** @see ThreadViewProps */
@@ -125,6 +145,9 @@ export function ThreadView({
   onWikilinkClick,
   initialScrollTop,
   onScroll,
+  initialDraft,
+  onDraftChange,
+  onDraftClear,
 }: ThreadViewProps) {
   // ── data fetches ──────────────────────────────────────────────────────────
 
@@ -753,6 +776,9 @@ export function ThreadView({
             duration={duration}
             error={postError}
             onClearError={() => setPostError(null)}
+            initialDraft={initialDraft}
+            onDraftChange={onDraftChange}
+            onDraftClear={onDraftClear}
             pendingFrame={pendingFrame}
             onCapture={() => {
               void onCapture()
@@ -927,7 +953,12 @@ export function ThreadView({
             }}
           >
             <div style={{ maxWidth: COL, margin: '0 auto' }}>
-              <SimpleComposer onSubmit={postPlain} />
+              <SimpleComposer
+                onSubmit={postPlain}
+                initialDraft={initialDraft}
+                onDraftChange={onDraftChange}
+                onDraftClear={onDraftClear}
+              />
             </div>
           </div>
         </div>
