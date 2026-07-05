@@ -216,6 +216,52 @@ describe('Composer', () => {
     expect((band.parentElement as HTMLElement).style.paddingLeft).toBe('0px')
   })
 
+  // v0.7 Task 4.1: draft persist/restore. The composer SEEDS its {body, mode} from a
+  // restored draft (via initialBody/initialMode) and REPORTS live edits up through
+  // `onDraftChange` so App can persist them. The report is skipped on the initial mount
+  // (StrictMode-safe compare-to-initial) — load-bearing so a restored draft isn't echoed
+  // straight back to disk AND the post-send empty remount doesn't resurrect a just-cleared
+  // draft (App clears the persisted key to null on successful send).
+  // @see docs/specs/v0.7-session-persistence.md §Composer draft
+  it('seeds body+mode from a restored draft and reports live edits via onDraftChange', () => {
+    const onDraftChange = vi.fn()
+    render(
+      <Composer
+        onSubmit={() => {}}
+        initialBody="restored"
+        initialMode="question"
+        onCancel={() => {}}
+        onDraftChange={onDraftChange}
+      />,
+    )
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    // Seeded from the persisted draft: body + question mode both restored.
+    expect(ta.value).toBe('restored')
+    expect(screen.getByText(/question/i)).toBeInTheDocument()
+    // Mount must NOT echo the restored draft back (skip-first).
+    expect(onDraftChange).not.toHaveBeenCalled()
+    // A live edit reports the new {body, mode} (mode carried through).
+    fireEvent.change(ta, { target: { value: 'restored!' } })
+    expect(onDraftChange).toHaveBeenLastCalledWith({ body: 'restored!', mode: 'question' })
+  })
+
+  it('reports a mode flip (claim → question) via onDraftChange', () => {
+    const onDraftChange = vi.fn()
+    render(
+      <Composer
+        onSubmit={() => {}}
+        initialBody=""
+        initialMode="claim"
+        onCancel={() => {}}
+        onDraftChange={onDraftChange}
+      />,
+    )
+    const ta = screen.getByRole('textbox')
+    // '?' on an empty claim composer promotes to question — the mode change must be reported.
+    fireEvent.keyDown(ta, { key: '?' })
+    expect(onDraftChange).toHaveBeenLastCalledWith({ body: '', mode: 'question' })
+  })
+
   it('Esc in plain claim mode (no edit, no question) does NOT stopPropagation — lets global handler fire', () => {
     let bubbled = false
     render(

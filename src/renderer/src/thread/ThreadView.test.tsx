@@ -336,6 +336,29 @@ describe('ThreadView capture flow', () => {
     await waitFor(() => expect(screen.queryByRole('img', { name: /captured frame/i })).toBeNull())
   })
 
+  // FIX B: a RESTORED draft (seeded initialDraft, no frame, no manual time) posts
+  // ANCHORLESS — the youtube locator must OMIT `t` entirely (not `t: null/undefined`).
+  it('posts a restored draft ANCHORLESS — notes.create omits `t` in source_locator', async () => {
+    mockApi.notes.create.mockResolvedValue({ ...SOURCE_NOTE, id: 'n2', type: 'claim' })
+
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} initialDraft="restored note" />)
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    const textarea = screen.getByRole('textbox')
+    // The draft is already seeded; press Enter to submit without adding a time.
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+
+    await waitFor(() => expect(mockApi.notes.create).toHaveBeenCalledOnce())
+    expect(mockApi.notes.create).toHaveBeenCalledWith({
+      body: 'restored note',
+      type: 'claim',
+      source_kind: 'youtube',
+      // No `t` key — anchorless. (deep-equal: an absent key must be truly absent.)
+      source_locator: { media: 'youtube', video_id: 'abc' },
+      commentOn: 'vid',
+    })
+  })
+
   it('⌘⇧C hotkey fires capture (and opens the editor) when no form tag is focused', async () => {
     mockApi.youtube.capture.mockResolvedValue({
       id: 'att2',
@@ -714,6 +737,49 @@ describe('ThreadView generic thread (plain/pdf)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Empty-thread dividers (Task 3): a thread with NO children must render no
+// stray horizontal rules — neither the ThreadRoot header rule nor the
+// composer's top rule. Both return when there ARE children.
+//
+// happy-dom does no layout, so we assert the inline-style contract directly.
+// A set border serializes to a non-empty `borderXStyle`; an unset border reads
+// as ''. (happy-dom mis-parses the `var()` shorthand into the *-style longhand,
+// but present-vs-absent is unambiguous, which is all this contract needs.)
+// ---------------------------------------------------------------------------
+
+describe('ThreadView empty-thread dividers (Task 3)', () => {
+  it('an empty plain thread renders NO header divider and NO composer divider', async () => {
+    mockApi.notes.get.mockResolvedValue(PLAIN_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([])
+
+    renderWithProviders(<ThreadView noteId="n1" onClose={() => {}} />)
+
+    // The root header renders once the note loads.
+    const root = await screen.findByTestId('thread-root')
+    const composer = screen.getByTestId('thread-composer-region')
+
+    expect(root.style.borderBottomStyle).toBe('')
+    expect(composer.style.borderTopStyle).toBe('')
+  })
+
+  it('a plain thread WITH children keeps both dividers', async () => {
+    mockApi.notes.get.mockResolvedValue(PLAIN_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([
+      { note: CHILD_ONE, attachment: null },
+      { note: CHILD_TWO, attachment: null },
+    ])
+
+    renderWithProviders(<ThreadView noteId="n1" onClose={() => {}} />)
+
+    // Wait for children to load so hasChildren flips true.
+    await screen.findByText(/child one/)
+
+    expect(screen.getByTestId('thread-root').style.borderBottomStyle).not.toBe('')
+    expect(screen.getByTestId('thread-composer-region').style.borderTopStyle).not.toBe('')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Media-pane (re)open on thread-open — issue #166
 // Opening a media note's thread MUST (re)open the corresponding dock pane,
 // even if the user had explicitly closed it before.
@@ -785,6 +851,97 @@ describe('ThreadView media-pane reopen on thread-open (#166)', () => {
 // ---------------------------------------------------------------------------
 // FIX 2: guard against empty commentOn when note hasn't loaded
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Scroll restore/persist for the generic (plain/pdf) thread — Task 2.2 (v0.7).
+// YouTube is EXCLUDED: its always-on playhead-follow (ThreadView follow effect)
+// would clobber a restored offset every tick, so youtube uses the notesPane
+// scroller which never reads initialScrollTop / attaches the persist listener.
+// ---------------------------------------------------------------------------
+
+describe('ThreadView scroll restore/persist (Task 2.2)', () => {
+  it('restores initialScrollTop onto the generic (plain) scroller after children mount', async () => {
+    mockApi.notes.get.mockResolvedValue(PLAIN_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([
+      { note: CHILD_ONE, attachment: null },
+      { note: CHILD_TWO, attachment: null },
+    ])
+
+    renderWithProviders(<ThreadView noteId="n1" onClose={() => {}} initialScrollTop={250} />)
+
+    // Restore is applied in a layout effect keyed on the child count (so it fires
+    // AFTER children establish scrollHeight); wait for children then assert the set.
+    const scroller = await screen.findByTestId('thread-generic-scroll')
+    await waitFor(() => expect(scroller.scrollTop).toBe(250))
+  })
+
+  it('reports scrollTop via onScroll (trailing-throttled) when the generic scroller scrolls', async () => {
+    mockApi.notes.get.mockResolvedValue(PLAIN_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([
+      { note: CHILD_ONE, attachment: null },
+      { note: CHILD_TWO, attachment: null },
+    ])
+    const onScroll = vi.fn()
+
+    renderWithProviders(<ThreadView noteId="n1" onClose={() => {}} onScroll={onScroll} />)
+
+    const scroller = await screen.findByTestId('thread-generic-scroll')
+    // happy-dom does no layout, but scrollTop is a settable property — set it, then
+    // fire the scroll event; the trailing throttle reads it back off the element.
+    Object.defineProperty(scroller, 'scrollTop', { value: 180, writable: true, configurable: true })
+    fireEvent.scroll(scroller)
+
+    await waitFor(() => expect(onScroll).toHaveBeenCalledWith(180))
+  })
+
+  it('a later initialScrollTop prop change does NOT re-apply scroll (echo-stomp regression)', async () => {
+    // Mount-time snapshot, not reactive: on a thread with NO saved offset the user's own
+    // scroll flows back down as initialScrollTop (onScroll → App map → prop). Reacting to
+    // that prop change would yank the in-progress scroll to the stale offset. The restore
+    // target is captured once at mount, so a later prop change must NOT move scrollTop.
+    mockApi.notes.get.mockResolvedValue(PLAIN_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([
+      { note: CHILD_ONE, attachment: null },
+      { note: CHILD_TWO, attachment: null },
+    ])
+
+    // Stable QueryClient so `rerender` updates the SAME ThreadView instance in place
+    // (a fresh client would remount the tree and defeat the per-instance-snapshot premise).
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const ui = (scrollTop?: number) => (
+      <QueryClientProvider client={qc}>
+        <ThreadView noteId="n1" onClose={() => {}} initialScrollTop={scrollTop} />
+      </QueryClientProvider>
+    )
+    // Mount with NO saved offset (undefined) — the no-saved-offset thread case.
+    const { rerender } = render(ui(undefined))
+    const scroller = await screen.findByTestId('thread-generic-scroll')
+    await screen.findByText(/child one/)
+
+    // Simulate the user's in-progress scroll.
+    scroller.scrollTop = 260
+
+    // The echo: App feeds the user's own scroll back down as initialScrollTop.
+    rerender(ui(240))
+
+    // A later prop change must NOT move scrollTop (mount-snapshot, not reactive).
+    await new Promise((r) => setTimeout(r, 30))
+    expect(scroller.scrollTop).toBe(260)
+  })
+
+  it('youtube thread IGNORES initialScrollTop (playhead-follow owns scroll)', async () => {
+    // beforeEach default note is a youtube source → the notesPane scroller renders,
+    // NOT the generic one. The youtube scroller must stay at 0 (never restored) and
+    // there must be no generic scroller in a youtube thread.
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} initialScrollTop={321} />)
+
+    const scroller = await screen.findByTestId('thread-scroll')
+    // Give any (incorrect) restore effect a tick to run before asserting untouched.
+    await new Promise((r) => setTimeout(r, 30))
+    expect(scroller.scrollTop).toBe(0)
+    expect(screen.queryByTestId('thread-generic-scroll')).toBeNull()
+  })
+})
 
 describe('ThreadView FIX 2 — post guard when note not loaded', () => {
   it('does not call notes.create when note is null (postPlain guard returns early)', async () => {

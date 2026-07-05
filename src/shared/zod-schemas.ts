@@ -407,6 +407,12 @@ export const SettingsSetInputSchema = z.object({
   // value is any JSON-serialisable thing; the query layer JSON-encodes it.
   value: z.unknown(),
 })
+/** `settings:getMany` input — batched read of the persistence key-set on boot.
+ * `.max(64)` caps the round-trip; each key mirrors SettingsGetInputSchema's bound.
+ * @see docs/specs/v0.7-session-persistence.md */
+export const SettingsGetManyInputSchema = z.object({
+  keys: z.array(z.string().min(1).max(120)).max(64),
+})
 
 /**
  * Input schema for `notes:recent` — recent/frecent note feed for ⌘O/⌘P empty-state.
@@ -472,3 +478,64 @@ export const ChooseFileInputSchema = z
  * @see docs/specs/v0.6.4-notes-as-threads.md §Data model
  */
 export const FindSourceByPdfIdInputSchema = z.object({ pdfId: z.string().min(1) })
+
+// ── v0.7 session persistence ──────────────────────────────────────────────
+/** Defensive read: parse a persisted setting, falling back to `def` on any mismatch
+ *  (schema drift, corrupt/edited DB). @see docs/specs/v0.7-session-persistence.md */
+export function safeParseOr<T>(schema: z.ZodType<T>, value: unknown, def: T): T {
+  const r = schema.safeParse(value)
+  return r.success ? r.data : def
+}
+
+const DockSliceV1 = z.object({
+  openPaneIds: z.array(z.string()),
+  activeId: z.string().nullable(),
+})
+// z.partialRecord (NOT z.record): z.record(z.enum(...)) is EXHAUSTIVE in zod v4 — it requires
+// BOTH keys, so the common `{}`/single-key widths would fail and safeParseOr would silently
+// discard the WHOLE dock layout. partialRecord accepts `{}` and `{right:5}`, still validating
+// values (`{right:'x'}` fails). Verified against the repo's installed zod 4.4.3.
+const SideNumV1 = z.partialRecord(z.enum(['left', 'right']), z.number())
+const SideBoolV1 = z.partialRecord(z.enum(['left', 'right']), z.boolean())
+export const DockLayoutV1Schema = z.object({
+  left: DockSliceV1,
+  right: DockSliceV1,
+  widths: SideNumV1,
+  collapsed: SideBoolV1,
+})
+export const UiSessionV1Schema = z.object({
+  focusedNoteId: z.string().nullable(),
+  threadNoteId: z.string().nullable(),
+})
+const VirtualItemLiteV1 = z.object({
+  key: z.union([z.string(), z.number()]),
+  index: z.number(),
+  start: z.number(),
+  end: z.number(),
+  size: z.number(),
+  lane: z.number(),
+})
+export const FeedScrollV1Schema = z.object({
+  snapshot: z.array(VirtualItemLiteV1),
+  offset: z.number(),
+  anchor: z
+    .object({
+      key: z.string(),
+      delta: z.number(),
+      atEnd: z.boolean(),
+    })
+    .nullable(),
+})
+export const ThreadScrollV1Schema = z.record(z.string(), z.number())
+export const ComposerDraftFeedV1Schema = z.object({
+  body: z.string(),
+  mode: z.enum(['claim', 'question']),
+})
+export const ComposerDraftThreadV1Schema = z.record(z.string(), z.string())
+export const PdfViewV1Schema = z.record(
+  z.string(),
+  z.object({
+    zoom: z.number(),
+    page: z.number().optional(),
+  }),
+)

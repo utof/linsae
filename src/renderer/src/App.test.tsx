@@ -32,10 +32,45 @@ import { useExcerptStore } from './pdf/excerptState'
 // ── Mock ThreadView to a lightweight sentinel ──────────────────────────────
 // This avoids loading usePlayer / playerSingleton / iframe machinery in jsdom.
 vi.mock('./thread/ThreadView', () => ({
-  ThreadView: ({ noteId, onClose }: { noteId: string; onClose: () => void }) => (
+  ThreadView: ({
+    noteId,
+    onClose,
+    onScroll,
+    onDraftChange,
+    onDraftClear,
+  }: {
+    noteId: string
+    onClose: () => void
+    onScroll?: (scrollTop: number) => void
+    onDraftChange?: (text: string) => void
+    onDraftClear?: () => void
+  }) => (
     <div data-testid="thread-view-sentinel" data-note-id={noteId}>
       <button type="button" aria-label="back" onClick={onClose}>
         back
+      </button>
+      {/* Task 2.2: drive App's onScroll wiring so the thread.scroll.v1 persist can be asserted. */}
+      <button type="button" data-testid="thread-view-scroll" onClick={() => onScroll?.(240)}>
+        scroll
+      </button>
+      {/* Task 4.2: drive App's per-root draft wiring so the composer.draft.thread.v1
+          persist (and the empty-delete normalization) can be asserted. */}
+      <button
+        type="button"
+        data-testid="thread-view-draft-x"
+        onClick={() => onDraftChange?.('draft x')}
+      >
+        draft-x
+      </button>
+      <button
+        type="button"
+        data-testid="thread-view-draft-empty"
+        onClick={() => onDraftChange?.('')}
+      >
+        draft-empty
+      </button>
+      <button type="button" data-testid="thread-view-draft-clear" onClick={() => onDraftClear?.()}>
+        draft-clear
       </button>
     </div>
   ),
@@ -908,6 +943,41 @@ describe('App — PDF boot-restore (C2)', () => {
     })
     expect(openPdfSpy).toHaveBeenCalledWith(null)
   })
+
+  /**
+   * Boot-ordering race (v0.7 regression): `usePdfOpenId` resolves the open-pdf id on
+   * its OWN timeline (a single-key setting read) while `dock.layout.v1` hydrates via the
+   * 7-key snapshot. `hydrate` FULL-REPLACES both side slices, dropping every content pane
+   * (pdf is content-kind) — so a pre-hydrate `openPane('pdf')` would be clobbered and,
+   * because `pdfOpenId` never changes, never re-opened. Here the mock resolves the id
+   * synchronously (pre-hydrate) yet the dock still carries `pdf` after hydrate settles —
+   * proving the effect re-fires on the `dockHydrated` latch. Without that gate this fails
+   * (pdf dropped by hydrate). @see docs/specs/v0.7-session-persistence.md §Key flows
+   */
+  it('keeps the restored pdf pane through dock hydrate (boot-ordering race)', async () => {
+    const mock = installMockApi()
+    // A saved layout WITH a utility pane forces the hydrate full-replace to run (the
+    // path that drops content panes); the pdf must survive it via the re-fire.
+    mock.settings.getMany.mockResolvedValue({
+      values: {
+        'dock.layout.v1': {
+          left: { openPaneIds: [], activeId: null },
+          right: { openPaneIds: ['backlinks'], activeId: 'backlinks' },
+          widths: {},
+          collapsed: {},
+        },
+      },
+    })
+    vi.mocked(usePdfOpenId).mockReturnValue('pdf-abc')
+    vi.mocked(useOpenPdf).mockReturnValue(vi.fn())
+
+    renderWithProviders(<App />)
+
+    await waitFor(() => expect(useDockStore.getState().hydrated).toBe(true))
+    await waitFor(() => {
+      expect(useDockStore.getState().right.openPaneIds).toContain('pdf')
+    })
+  })
 })
 
 describe('App — onOpenPdf → source note create-or-resolve (B3)', () => {
@@ -1163,5 +1233,259 @@ describe('App — backlinks dock pane (spec §3,§4)', () => {
     // Focusing a DIFFERENT note re-opens the side (openPane clears the collapse).
     await focusNote('feed-note-2')
     expect(await screen.findByLabelText(/close backlinks/i)).toBeInTheDocument()
+  })
+})
+
+describe('App — boot session gate + dock hydrate/persist (Task 1.6)', () => {
+  /**
+   * Boot hydrate: the persisted dock layout must reopen its UTILITY panes but never a
+   * content pane empty — `hydrate` drops content-kind ids (a pdf/player re-opens from
+   * its media context, not a restored id list). So a stored right side of ['pdf',
+   * 'backlinks'] restores to just ['backlinks'].
+   * @see src/renderer/src/panes/dockStore.ts hydrate
+   * @see docs/specs/v0.7-session-persistence.md
+   */
+  it('boot restores dock layout (utility panes), not empty content panes', async () => {
+    const mock = installMockApi()
+    mock.settings.getMany.mockResolvedValue({
+      values: {
+        'dock.layout.v1': {
+          left: { openPaneIds: ['shelf'], activeId: 'shelf' },
+          right: { openPaneIds: ['pdf', 'backlinks'], activeId: 'pdf' },
+          widths: {},
+          collapsed: {},
+        },
+      },
+    })
+    renderWithProviders(<App />)
+    await waitFor(() => expect(screen.getByTestId('dock-left')).toBeInTheDocument())
+    expect(useDockStore.getState().left.openPaneIds).toContain('shelf')
+    // 'pdf' is content-kind → dropped; only the utility 'backlinks' survives, re-pointed
+    // as the right side's active pane (it was 'pdf', now filtered out).
+    expect(useDockStore.getState().right.openPaneIds).toEqual(['backlinks'])
+  })
+
+  /**
+   * FAIL-OPEN boot gate (carry-forward A): the boot gate keys on
+   * `snap.isSuccess || snap.isError`, NOT `isSuccess` alone. When `settings.getMany`
+   * rejects, the snapshot query never reaches `isSuccess`; gating on it alone would
+   * hold the boot splash forever (permanent white screen). Asserting the snapshot-gated
+   * feed placeholder appears proves boot still COMPLETES on the error path.
+   */
+  it('fail-open: a rejected getMany still completes boot (feed placeholder reveals, no hang)', async () => {
+    const mock = installMockApi()
+    mock.settings.getMany.mockRejectedValue(new Error('boom'))
+    renderWithProviders(<App />)
+    // The placeholder is gated on `snapSettled` (= isError here). If the gate were
+    // isSuccess-only this findBy would time out — the test hanging IS the regression.
+    expect(await screen.findByText(/nothing yet\. start anywhere\./i)).toBeInTheDocument()
+  })
+})
+
+describe('App — session restore: focusedId / threadNoteId (Task 2.1)', () => {
+  afterEach(() => useCommandStore.getState().reset())
+
+  /**
+   * Backlinks-suppression (the TRAP): the [focusedId] auto-open-backlinks effect calls
+   * dock.openPane('backlinks') whenever focusedId becomes non-null, and openPane clears
+   * the collapse flag for that side (dockStore.ts openPane → `collapsed[side]: false`). So
+   * re-seeding a persisted focusedId at boot would clobber the just-hydrated dock — here it
+   * would un-collapse the right side the user had collapsed. The restoredFocusRef guard makes
+   * the effect skip exactly its first restore-sourced run, preserving collapsed.right === true.
+   */
+  it('restoring focusedId does not clear the hydrated collapse (backlinks-suppression)', async () => {
+    const mock = installMockApi()
+    mock.notes.get.mockResolvedValue({ id: 'n1' } as never)
+    mock.settings.getMany.mockResolvedValue({
+      values: {
+        'dock.layout.v1': {
+          left: { openPaneIds: [], activeId: null },
+          right: { openPaneIds: ['backlinks'], activeId: 'backlinks' },
+          widths: {},
+          collapsed: { right: true },
+        },
+        'ui.session.v1': { focusedNoteId: 'n1', threadNoteId: null },
+      },
+    })
+    renderWithProviders(<App />)
+    await waitFor(() => expect(useDockStore.getState().hydrated).toBe(true))
+    // Deterministically wait until the restored focus has propagated through BOTH [focusedId]
+    // effects: the command-registration effect (registers 'backlinks.open') runs immediately
+    // before the auto-open-backlinks effect in the SAME commit, so once 'backlinks.open' is
+    // present the suppression effect has also run and collapsed.right is in its final state.
+    await waitFor(() =>
+      expect(
+        useCommandStore
+          .getState()
+          .commands()
+          .some((c) => c.id === 'backlinks.open'),
+      ).toBe(true),
+    )
+    // backlinks is the ONLY right-side utility pane, so activeId cannot be "stolen" from
+    // another pane — that assertion would be a tautology. The load-bearing guard is that
+    // openPane('backlinks') must NOT clear the restored collapse; without restoredFocusRef the
+    // [focusedId] effect flips collapsed.right false.
+    expect(useDockStore.getState().collapsed.right).toBe(true)
+  })
+
+  /**
+   * Thread precedence: when both a thread and a focus are persisted, the thread wins — the
+   * restore opens the thread and IGNORES the focus (openThread itself clears focusedId). The
+   * mocked ThreadView renders a back affordance, so its presence proves we're in a thread.
+   */
+  it('thread wins: both persisted → thread opens, focus ignored', async () => {
+    const mock = installMockApi()
+    mock.notes.get.mockResolvedValue({ id: 't1' } as never)
+    mock.settings.getMany.mockResolvedValue({
+      values: { 'ui.session.v1': { focusedNoteId: 'n1', threadNoteId: 't1' } },
+    })
+    renderWithProviders(<App />)
+    // Anchored /^back$/i, not /back/i: the WindowFrame's always-present "toggle backlinks"
+    // button also contains "back", so a loose regex would either false-match with no thread
+    // open OR throw "multiple elements" once a thread IS open. The mocked ThreadView's leave-
+    // thread control has the exact accessible name "back" (aria-label="back").
+    await waitFor(() => expect(screen.getByRole('button', { name: /^back$/i })).toBeInTheDocument()) // in a thread
+    // Precedence lock: the `return` after openThread means the focus-id get is never reached.
+    // mock.notes.get is the raw window.api boundary, so the positional api.notes.get(id) wrapper
+    // (lib/api.ts:65) records the IPC shape `{ id }`, not the bare string.
+    expect(mock.notes.get).toHaveBeenCalledWith({ id: 't1' })
+    expect(mock.notes.get).not.toHaveBeenCalledWith({ id: 'n1' })
+  })
+})
+
+describe('App — thread scroll persist (Task 2.2)', () => {
+  afterEach(() => useCommandStore.getState().reset())
+
+  /**
+   * App owns the per-root thread-scroll map and persists it to `thread.scroll.v1`. When a
+   * (plain/pdf) ThreadView reports a scroll via onScroll, App keys it under threadNoteId and
+   * the debounced writer persists the WHOLE map — OBJECT-FORM `settings.set({ key, value })`
+   * (the renderer api wrapper reshapes the positional call). @see usePersistedWrite
+   */
+  it('persists thread.scroll.v1 (object-form) when the ThreadView reports a scroll', async () => {
+    const mock = installMockApi()
+    mock.notes.list.mockResolvedValue([FEED_NOTE])
+    mock.system.getReconcileSkipped.mockResolvedValue(0)
+    mock.settings.getMany.mockResolvedValue({ values: {} })
+
+    renderWithProviders(<App />)
+
+    // Open FEED_NOTE's thread via the mocked Feed → the ThreadView sentinel mounts.
+    fireEvent.click(await screen.findByTestId('open-thread-btn-feed-note-1'))
+    // Drive the sentinel's onScroll(240) report; App maps it under threadNoteId.
+    fireEvent.click(await screen.findByTestId('thread-view-scroll'))
+
+    await waitFor(() =>
+      expect(mock.settings.set).toHaveBeenCalledWith({
+        key: 'thread.scroll.v1',
+        value: { 'feed-note-1': 240 },
+      }),
+    )
+  })
+})
+
+describe('App — thread draft empty-delete normalization (FIX A)', () => {
+  afterEach(() => useCommandStore.getState().reset())
+
+  /**
+   * Regression: on send the composer clears (onDraftClear deletes the root's entry), but the
+   * keystroke reporter then fires onDraftChange('') which — before the fix — wrote back
+   * `{ [rootId]: '' }`, leaking one empty entry per thread ever posted to. `onThreadDraftChange`
+   * must treat '' as a DELETE, so the persisted map ends up WITHOUT the key (not `{ id: '' }`).
+   */
+  it('persists composer.draft.thread.v1 WITHOUT the root key when draft goes empty', async () => {
+    const mock = installMockApi()
+    mock.notes.list.mockResolvedValue([FEED_NOTE])
+    mock.system.getReconcileSkipped.mockResolvedValue(0)
+    mock.settings.getMany.mockResolvedValue({ values: {} })
+
+    renderWithProviders(<App />)
+
+    // Open FEED_NOTE's thread → the ThreadView sentinel mounts.
+    fireEvent.click(await screen.findByTestId('open-thread-btn-feed-note-1'))
+    // Report a non-empty draft → map = { 'feed-note-1': 'draft x' }.
+    fireEvent.click(await screen.findByTestId('thread-view-draft-x'))
+    await waitFor(() =>
+      expect(mock.settings.set).toHaveBeenCalledWith({
+        key: 'composer.draft.thread.v1',
+        value: { 'feed-note-1': 'draft x' },
+      }),
+    )
+    // Now report empty → the entry must be DELETED, persisting `{}`, NOT `{ 'feed-note-1': '' }`.
+    fireEvent.click(await screen.findByTestId('thread-view-draft-empty'))
+    await waitFor(() =>
+      expect(mock.settings.set).toHaveBeenCalledWith({
+        key: 'composer.draft.thread.v1',
+        value: {},
+      }),
+    )
+    expect(mock.settings.set).not.toHaveBeenCalledWith({
+      key: 'composer.draft.thread.v1',
+      value: { 'feed-note-1': '' },
+    })
+  })
+})
+
+describe('App — feed composer draft persist/restore (Task 4.1)', () => {
+  afterEach(() => useCommandStore.getState().reset())
+
+  /**
+   * Boot restore: a persisted `composer.draft.feed.v1` seeds the create composer with BOTH the
+   * body and the mode. App seeds `draftFeed` render-phase the instant the snapshot settles, and
+   * the create composer is gated on `snapSettled` so it first-mounts with that seed present.
+   */
+  it('restores the feed draft (body + mode) from composer.draft.feed.v1 on boot', async () => {
+    const mock = installMockApi()
+    mock.notes.list.mockResolvedValue([])
+    mock.system.getReconcileSkipped.mockResolvedValue(0)
+    mock.settings.getMany.mockResolvedValue({
+      values: { 'composer.draft.feed.v1': { body: 'a restored draft', mode: 'question' } },
+    })
+
+    renderWithProviders(<App />)
+
+    const ta = (await screen.findByRole('textbox')) as HTMLTextAreaElement
+    expect(ta.value).toBe('a restored draft')
+    // question mode restored → the "QUESTION — ESC TO CLEAR" pill renders.
+    expect(screen.getByText(/question/i)).toBeInTheDocument()
+  })
+
+  /**
+   * Clear-and-cancel on send (the load-bearing bit): typing schedules a debounced draft write;
+   * a send BEFORE that debounce elapses must CANCEL it and write null instead, so a late timer
+   * can't resurrect the just-sent text. `usePersistedWrite` cancels a pending write whenever its
+   * value changes, and createMut.onSuccess sets `draftFeed` to null → the pending {body:'sent…'}
+   * write is dropped and a null clear is written. OBJECT-FORM `settings.set({ key, value })`.
+   */
+  it('cancels the pending draft write and persists null when a typed draft is sent', async () => {
+    const mock = installMockApi()
+    mock.notes.list.mockResolvedValue([])
+    mock.system.getReconcileSkipped.mockResolvedValue(0)
+    mock.settings.getMany.mockResolvedValue({ values: {} })
+    mock.notes.create.mockResolvedValue({ ...FEED_NOTE, id: 'created-1' })
+
+    renderWithProviders(<App />)
+
+    const ta = await screen.findByRole('textbox')
+    // Type → schedules a debounced write of { body: 'sent draft', mode: 'claim' } (400ms).
+    fireEvent.change(ta, { target: { value: 'sent draft' } })
+    // Send before the debounce fires → onSuccess sets draftFeed null → cancels the pending
+    // draft write + schedules a null clear.
+    await act(async () => {
+      fireEvent.keyDown(ta, { key: 'Enter' })
+    })
+
+    // The null clear is written to the key…
+    await waitFor(() =>
+      expect(mock.settings.set).toHaveBeenCalledWith({
+        key: 'composer.draft.feed.v1',
+        value: null,
+      }),
+    )
+    // …and the just-sent draft was NEVER persisted (its pending write was cancelled).
+    expect(mock.settings.set).not.toHaveBeenCalledWith({
+      key: 'composer.draft.feed.v1',
+      value: { body: 'sent draft', mode: 'claim' },
+    })
   })
 })

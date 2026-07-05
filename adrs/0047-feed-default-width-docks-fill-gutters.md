@@ -76,8 +76,17 @@ until the feed's `min-width` forced an overflow *under* the panel (the reported 
 
 **One width per dock SIDE, not per pane (B15).** The store keys `widths` by
 `left`/`right` (seeded to the first-opened pane's kind default, updated on resize,
-clamped to the *resized* pane's kind band), so switching the active tab (pdf ↔
-backlinks) never changes the dock's width.
+clamped to the **dock's** kind band — the widest resident pane, so a `content` pane
+keeps the wide band even when a `utility` tab is active), so switching the active tab
+(pdf ↔ backlinks) never changes the dock's width.
+
+> **Amendment (2026-07-04, v0.6.5):** the clamp originally read "the *resized* pane's
+> kind band" — that was the latent defect: activating a narrow-kind tab (backlinks,
+> `utility`→400) re-clamped a wide dock down to 400. Both the resize clamp
+> (`dockStore.setWidth`) and the *render* band (`App.dockGeom` — undocumented in the
+> original ADR, and where the reported shrink actually surfaced) now derive from
+> `dockKindFor(side)` (the dock's widest resident pane), which is what makes the "tab
+> switch never changes width" guarantee actually hold.
 
 **The top toggle collapses the whole SIDE, not one tab (B19).** A per-side
 `collapsed` flag (top-level in the store, separate from the slice) hides a whole

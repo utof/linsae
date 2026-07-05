@@ -1448,6 +1448,36 @@ describe('CanvasStage', () => {
     expect(rot1).not.toBe(rot2)
   })
 
+  // ---- Bug #8b (§14 G2 centroid pill click does nothing): the pill sits INSIDE
+  // the viewport, so a real mouse-click's pointerdown bubbles to the viewport's
+  // onWorldPointerDown → onSurfacePointerDown, which calls setPointerCapture to
+  // begin a marquee. Once the viewport captures the pointer, Chromium dispatches
+  // the follow-up `click` to the CAPTURING element (the viewport), never to the
+  // pill <button> — so onFit never ran and "back to your notes" did nothing.
+  // (w3c/pointerevents#356.) The fix is a stopPropagation guard on the pill's
+  // pointerdown so it never reaches the surface router. happy-dom can't reproduce
+  // the click-retargeting itself (fireEvent.click always hits the button, and no
+  // real capture semantics exist), so we assert the ROOT cause directly: a
+  // pointerdown on the pill must NOT reach the surface handler — i.e. it must not
+  // call setPointerCapture. Pre-fix this fired once (marquee start); post-fix zero.
+  // The end-to-end "click actually recenters" is a Playwright/manual-only check.
+  it('(nn) #8b: pointerdown on the centroid pill does not start a marquee (no setPointerCapture)', async () => {
+    stubViewportRect(800, 600)
+    const captureSpy = vi
+      .spyOn(HTMLElement.prototype, 'setPointerCapture')
+      .mockImplementation(() => {})
+    mockApi.canvas.getState.mockResolvedValue({ camera_x: 0, camera_y: 0, zoom: 1 })
+    mockApi.canvas.listLayouts.mockResolvedValue([row('off', 5000, 5000, 1000)])
+    mockApi.notes.get.mockResolvedValue(note('off', 'off', 'Off-screen card body'))
+    const { container } = renderWithProviders(<CanvasStage {...noopProps} />)
+    await waitFor(() => {
+      expect(container.querySelector('[data-canvas-centroid-arrow]')).not.toBeNull()
+    })
+    const pill = container.querySelector('[data-canvas-centroid-arrow]') as HTMLElement
+    fireEvent.pointerDown(pill, { button: 0, clientX: 400, clientY: 584 })
+    expect(captureSpy).not.toHaveBeenCalled()
+  })
+
   // ---- Bug #119 (drag-commit snap-back flash): the timing flash itself is not
   // observable in happy-dom (no real rAF/layout), but the fix is an optimistic
   // query-cache write in commitMoves. We assert the cache holds the new x/y

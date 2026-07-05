@@ -445,6 +445,10 @@ export const api = {
   settings: {
     /** Read a JSON-decoded setting value (null if unset). @see src/main/ipc/notes.ts */
     get: (key: string): Promise<{ value: unknown }> => window.api.settings.get({ key }),
+    /** Batch-read many settings in one round-trip (`{ key: value | null }`) — the
+     * boot session-restore read. @see docs/specs/v0.7-session-persistence.md */
+    getMany: (keys: string[]): Promise<{ values: Record<string, unknown> }> =>
+      window.api.settings.getMany(keys),
     /** Upsert a setting (value JSON-encoded server-side). */
     set: (key: string, value: unknown): Promise<{ ok: true }> =>
       window.api.settings.set({ key, value }),

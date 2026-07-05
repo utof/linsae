@@ -21,11 +21,20 @@ import { ContentSearch } from './palette/ContentSearch'
 import { type Command, useCommandStore } from './palette/command-store'
 import { QuickSwitcher } from './palette/QuickSwitcher'
 import { DockHost } from './panes/DockHost'
-import { maxDockWidth } from './panes/dock-widths'
-import { dockWidthFor, isSideShown, paneKind, useDockStore } from './panes/dockStore'
+import { maxDockWidth, type PaneKind } from './panes/dock-widths'
+import {
+  dockKindFor,
+  dockWidthFor,
+  isSideShown,
+  subscribeDockPersist,
+  useDockStore,
+} from './panes/dockStore'
 import { ShelfContext } from './panes/ShelfPane'
 import { useExcerptStore } from './pdf/excerptState'
 import { useOpenPdf, usePdfOpenId } from './pdf/usePdfOpenId'
+import type { SessionSnapshot } from './persistence/keys'
+import { usePersistedWrite } from './persistence/usePersistedWrite'
+import { useSessionSnapshot } from './persistence/useSessionSnapshot'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { ThreadView } from './thread/ThreadView'
 import { WindowFrame } from './topbar/WindowFrame'
@@ -106,7 +115,26 @@ export function App() {
     // from the feed — they belong only in their thread (PDF thread, YouTube thread).
     queryFn: () => api.notes.list({ excludeThreadChildren: true }),
   })
+  // Boot session snapshot (v0.7): one batched read of every persisted session key,
+  // consumed only as boot-INITIAL values (never live truth — writers own updates).
+  // `snapSettled` is the FAIL-OPEN boot gate (carry-forward A): true once the read has
+  // RESOLVED OR ERRORED — gating on `isSuccess` alone would hang the splash forever if
+  // `settings.getMany` rejects. Downstream reads `snap.data ?? defaults`; on error
+  // `snap.data` is undefined, so `snap.data?.dockLayout` falls to the no-restore path.
+  // @see docs/specs/v0.7-session-persistence.md §Architecture
+  const snap = useSessionSnapshot()
+  const snapSettled = snap.isSuccess || snap.isError
   const [focusedId, setFocusedId] = useState<string | null>(null)
+  // v0.7 session-restore refs (Task 2.1). `restoredFocusRef` holds the SPECIFIC id the one-shot
+  // boot restore is about to re-seed into `focusedId` (not a bare boolean), set immediately before
+  // that `setFocusedId`, then value-matched+cleared by the [focusedId] auto-open-backlinks effect
+  // on its next run so the restore does NOT openPane('backlinks') — which would clobber the
+  // just-hydrated dock (openPane clears `collapsed[side]` and steals `activeId`). Holding the id
+  // (vs a boolean) means the guard suppresses ONLY that exact value's one run, so a lingering ref
+  // can never swallow a later genuine focus to a *different* note. `didRestoreSession` makes the
+  // restore one-shot. @see docs/specs/v0.7-session-persistence.md §Restore
+  const restoredFocusRef = useRef<string | null>(null)
+  const didRestoreSession = useRef(false)
   const [activePalette, setActivePalette] = useState<ActivePalette>('none')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null)
@@ -116,6 +144,33 @@ export function App() {
   const waveOn = useDevOverlay('wave')
   const revealOpen = useDevOverlay('reveal')
   const [draftBody, setDraftBody] = useState<string | null>(null)
+  // v0.7 Task 4.1: the persisted feed composer draft `{ body, mode }` (or null = no draft).
+  // Fed by the create Composer's `onDraftChange` and written-through to
+  // `composer.draft.feed.v1`; cleared to null on successful send (see createMut.onSuccess).
+  // Distinct from `draftBody` (the transient wikilink/New-note PREFILL seed that drives the
+  // remount key): `draftFeed` is the durable draft + the ONLY carrier of the restored `mode`.
+  const [draftFeed, setDraftFeed] = useState<SessionSnapshot['draftFeed']>(null)
+  // Boot restore (render-phase, one-shot): seed `draftFeed` from the snapshot the instant it
+  // settles. Done DURING render — not in an effect — so the value is already present when the
+  // `snapSettled`-gated create Composer FIRST mounts (below). An effect would land one render
+  // later, after the composer had already mounted with `initialBody=''`, and (its key
+  // unchanged) it would never pick the restored draft up. React blesses conditional
+  // setState-in-render for exactly this "derive state as a prop settles" case; the
+  // `draftFeedSeeded` guard makes it fire once, so there is no render loop.
+  // @see https://react.dev/reference/react/useState#storing-information-from-previous-renders
+  const [draftFeedSeeded, setDraftFeedSeeded] = useState(false)
+  if (snapSettled && !draftFeedSeeded) {
+    setDraftFeedSeeded(true)
+    setDraftFeed(snap.data?.draftFeed ?? null)
+  }
+  // Narrows the Composer's `NoteType` mode to the draft schema's `'claim' | 'question'` (the
+  // create composer never emits 'source'); memoised so it doesn't re-arm the composer's
+  // report effect on every App render.
+  const handleDraftChange = useCallback(
+    (draft: { body: string; mode: NoteType }) =>
+      setDraftFeed({ body: draft.body, mode: draft.mode === 'question' ? 'question' : 'claim' }),
+    [],
+  )
   // viewMode toggles the non-thread <main> between the rolling feed+composer and
   // the canvas stage. The feed↔canvas swap animates via the §6 stage slide
   // (AnimatePresence below) — only the two outer stage containers' x-transform
@@ -141,6 +196,11 @@ export function App() {
   const rightActiveId = useDockStore((s) => (isSideShown(s, 'right') ? s.right.activeId : null))
   const leftStoredW = useDockStore((s) => (isSideShown(s, 'left') ? dockWidthFor(s, 'left') : 0))
   const rightStoredW = useDockStore((s) => (isSideShown(s, 'right') ? dockWidthFor(s, 'right') : 0))
+  // Width band per side comes from the WIDEST resident pane, NOT the active tab (B15):
+  // switching to a narrow utility tab (backlinks) over a content pane (PDF) must not
+  // shrink the dock the user sized. @see dockKindFor / adrs/0047.
+  const leftDockKind = useDockStore((s) => dockKindFor(s, 'left'))
+  const rightDockKind = useDockStore((s) => dockKindFor(s, 'right'))
   const bodyRowRef = useRef<HTMLDivElement | null>(null)
   const [bodyWidth, setBodyWidth] = useState(0)
   // Recent-popover open state lives in App so the status-bar trigger and (Task
@@ -163,6 +223,26 @@ export function App() {
   // linger behind ThreadView; the key={threadNoteId} on ThreadView forces a remount on
   // each navigation so the player singleton and duration write-back state reset per video.
   const [threadNoteId, setThreadNoteId] = useState<string | null>(null)
+  // v0.7 Task 2.2: per-root thread scroll offsets (rootNoteId → scrollTop). Only the
+  // generic (plain/pdf) ThreadView writes here — youtube threads own scroll via the
+  // playhead-follow and ThreadView never reports scroll for them, so their ids never
+  // land in this map. Seeded ONCE from the boot snapshot (below), then owned locally +
+  // persisted to `thread.scroll.v1`. @see docs/specs/v0.7-session-persistence.md §Task 2.2
+  const [threadScrollMap, setThreadScrollMap] = useState<Record<string, number>>({})
+  const threadScrollSeeded = useRef(false)
+  // v0.7 Task 4.2: per-root composer drafts (rootNoteId → draft text). BOTH thread
+  // composers (youtube ThreadComposer + plain/pdf SimpleComposer) report here via
+  // ThreadView's pass-through, keyed by `threadNoteId`. Seeded ONCE from the boot
+  // snapshot (below), then owned locally + persisted to `composer.draft.thread.v1`.
+  // @see docs/specs/v0.7-session-persistence.md §Task 4.2
+  const [draftThreadMap, setDraftThreadMap] = useState<Record<string, string>>({})
+  const draftThreadSeeded = useRef(false)
+  // v0.7 Task 3.2: latest feed-scroll capture from <Feed>'s throttled onCapture. Boot
+  // RESTORE flows the OTHER way (snap.data.feedScroll → Feed's `restore` prop, seeded at
+  // its first render); this state only holds post-boot captures for the debounced writer,
+  // so it starts null and `usePersistedWrite` skips it until the first real capture.
+  // @see docs/specs/v0.7-session-persistence.md §Feed scroll
+  const [feedScroll, setFeedScroll] = useState<SessionSnapshot['feedScroll']>(null)
   // submitError surfaces a user-facing message from the last failed
   // create/update mutation (e.g. duplicate-slug). The Composer renders it
   // inline; the next keystroke clears it via onClearError. See issue #23.
@@ -180,14 +260,23 @@ export function App() {
   // (pane onClose, via handlePaneClose) clears it.
   const pdfOpenId = usePdfOpenId()
   const openPdf = useOpenPdf()
-  // Boot/restore: when the persisted open-pdf id resolves, open its dock pane.
-  // The store starts empty (in-memory), so the v0.6 "restore on boot" behavior
-  // must be reasserted explicitly here. Intentionally one-way (open only) — the
-  // close path flows solely through handlePaneClose, which clears the persisted
-  // id so this effect won't reopen it. @see docs/specs/v0.6.2-dock-shell.md §4 (C2)
+  // Reactive subscription to the dock's hydrate latch (NOT getState()) so the
+  // pdf-open effect below re-fires AFTER hydrate. `hydrate` full-replaces both
+  // side slices, DROPPING content-kind panes (pdf/player); if this effect ran
+  // pre-hydrate it would open pdf, hydrate would then clobber it, and — since
+  // `pdfOpenId` never changes — the effect would never re-open it (the v0.7
+  // boot-ordering regression). Gating on `dockHydrated` makes the two boot
+  // effects order-independent. @see docs/specs/v0.7-session-persistence.md §Key flows
+  const dockHydrated = useDockStore((s) => s.hydrated)
+  // Boot/restore: when the persisted open-pdf id resolves AND the dock has
+  // hydrated, open its dock pane. The store starts empty (in-memory), so the
+  // v0.6 "restore on boot" behavior must be reasserted explicitly here.
+  // Intentionally one-way (open only) — the close path flows solely through
+  // handlePaneClose, which clears the persisted id so this effect won't reopen
+  // it. @see docs/specs/v0.6.2-dock-shell.md §4 (C2)
   useEffect(() => {
-    if (pdfOpenId != null) useDockStore.getState().openPane('pdf')
-  }, [pdfOpenId])
+    if (pdfOpenId != null && dockHydrated) useDockStore.getState().openPane('pdf')
+  }, [pdfOpenId, dockHydrated])
   // closePane + side effects App owns: closing 'pdf' clears the persisted id
   // (else the restore effect reopens it); 'backlinks' clears focus (I1, Task 6).
   const handlePaneClose = useCallback(
@@ -456,6 +545,15 @@ export function App() {
   // Idempotent with I1's close→clear-focus (handlePaneClose): after a tab/header
   // close the pane is already gone, so the null-focus branch is a no-op — no loop.
   useEffect(() => {
+    // Task 2.1 backlinks-suppression: skip exactly the restore-sourced first run. The boot
+    // restore re-seeds `focusedId` from persistence; opening backlinks here would clobber the
+    // just-hydrated dock (openPane clears `collapsed[side]` + repoints `activeId`). Value-match
+    // the restored id (not a bare boolean) so ONLY that exact value's one run is skipped — a
+    // focus to a *different* note (even one racing the restore) can never be swallowed.
+    if (focusedId != null && focusedId === restoredFocusRef.current) {
+      restoredFocusRef.current = null
+      return
+    }
     const dock = useDockStore.getState()
     if (focusedId != null) dock.openPane('backlinks')
     else if (dock.right.openPaneIds.includes('backlinks')) dock.closePane('backlinks')
@@ -482,14 +580,38 @@ export function App() {
   // "nothing yet" flash. The splash lives outside React's #root (createRoot
   // never touches it), so we remove it imperatively. This effect runs after the
   // commit that rendered the feed has painted, so we reveal a painted feed.
+  //
+  // v0.7 FAIL-OPEN boot gate (carry-forward A): also hold the splash until the session
+  // snapshot has SETTLED (`snapSettled` = isSuccess||isError), so Feed's first render can
+  // receive the restored layout/scroll. Gating on `isSuccess` ALONE would white-splash-hang
+  // forever if `settings.getMany` rejects — so we fail open on the error too and reveal a
+  // no-restore feed. @see docs/specs/v0.7-session-persistence.md §Architecture
   useEffect(() => {
-    if (notesPending) return
+    if (notesPending || !snapSettled) return
     const splash = document.getElementById('boot-splash')
     if (!splash) return
     splash.classList.add('boot-splash--hide')
     const t = window.setTimeout(() => splash.remove(), 360)
     return () => window.clearTimeout(t)
-  }, [notesPending])
+  }, [notesPending, snapSettled])
+
+  // Boot: hydrate the dock from the persisted layout EXACTLY ONCE, then arm the persist
+  // writer. Double-hydrate guard (carry-forward B): a StrictMode double-invoke of this
+  // effect must not call `hydrate` twice — the 2nd would be a `hydrated=true→true`
+  // transition that `subscribeDockPersist` would echo as a redundant boot write. Always
+  // mark hydrated once the snapshot settles (no saved layout, or error → `snap.data`
+  // undefined) so the writer can arm on the first genuine post-boot change.
+  // @see src/renderer/src/panes/dockStore.ts — hydrate / subscribeDockPersist
+  useEffect(() => {
+    if (useDockStore.getState().hydrated) return
+    if (snap.data?.dockLayout) useDockStore.getState().hydrate(snap.data.dockLayout)
+    else if (snapSettled) useDockStore.setState({ hydrated: true })
+  }, [snap.data, snapSettled])
+
+  // Persist writer (v0.7): subscribe once at mount. `subscribeDockPersist` debounces and
+  // SKIPS the hydrate transition itself, writing only genuine post-boot dock changes to
+  // `dock.layout.v1`; its returned unsub clears the pending timer on unmount.
+  useEffect(() => subscribeDockPersist((s) => void api.settings.set('dock.layout.v1', s)), [])
 
   // Synchronous slug-only resolver for the Markdown component's dangling
   // class pass. The full alias-aware resolver runs only on click (below).
@@ -563,6 +685,11 @@ export function App() {
     onSuccess: () => {
       invalidate()
       setDraftBody(null)
+      // v0.7: clear the persisted draft on send. Setting it null CANCELS any pending draft
+      // write (usePersistedWrite's value-change cleanup) and schedules a null write, so a
+      // late debounce can't re-persist the just-sent text. Runs before the successCount tick
+      // remounts the composer (whose empty remount, skip-first, won't re-report a draft).
+      setDraftFeed(null)
       setSubmitError(null)
       setSuccessCount((c) => c + 1)
     },
@@ -734,6 +861,141 @@ export function App() {
     setThreadNoteId(id)
   }
 
+  // Boot session-restore (Task 2.1): once the snapshot first resolves, restore the persisted
+  // selection — THREAD WINS. If a persisted thread's note still exists, open it and IGNORE the
+  // persisted focus (the `return`; openThread itself clears focusedId). Otherwise re-seed the
+  // persisted focus if ITS note still exists. Stale-drop: `api.notes.get` returns null (not a
+  // throw) for a missing/soft-deleted id, so the `&&` silently drops a deleted target — a stale
+  // id can't crash boot. `didRestoreSession` (set synchronously) makes this one-shot: it need
+  // only react to `snap.data` first resolving. @see docs/specs/v0.7-session-persistence.md
+  // biome-ignore lint/correctness/useExhaustiveDependencies: one-shot (didRestoreSession guards re-runs); the effect fires when snap.data first resolves and captures openThread's closure over stable setters — listing openThread (recreated each render) would churn without changing behavior
+  useEffect(() => {
+    if (!snap.data || didRestoreSession.current) return
+    didRestoreSession.current = true
+    const s = snap.data.uiSession
+    if (!s) return
+    void (async () => {
+      // Boot fails open: `api.notes.get` RESOLVES null for a missing/soft-deleted id
+      // (the stale-drop path), but an IPC-level REJECTION would otherwise escape as an
+      // unhandled promise rejection. Log + continue — nothing restores, boot proceeds.
+      try {
+        if (s.threadNoteId && (await api.notes.get(s.threadNoteId))) {
+          openThread(s.threadNoteId)
+          return
+        }
+        if (s.focusedNoteId && (await api.notes.get(s.focusedNoteId))) {
+          restoredFocusRef.current = s.focusedNoteId // suppress the auto-open-backlinks run for THIS id
+          setFocusedId(s.focusedNoteId)
+        }
+      } catch (err) {
+        console.error('[boot-restore] session restore failed', err)
+      }
+    })()
+  }, [snap.data])
+
+  // Persist the selection to `ui.session.v1`, debounced. `enabled: snapSettled`
+  // (isSuccess || isError), NOT `snap.isSuccess` alone — a transient snapshot-read failure must
+  // not disable session persistence for the whole session (fail-open, matching the dock writer's
+  // boot arming). `usePersistedWrite` skips the initial (restored) value. @see spec §Write-through
+  usePersistedWrite(
+    'ui.session.v1',
+    useMemo(() => ({ focusedNoteId: focusedId, threadNoteId }), [focusedId, threadNoteId]),
+    { debounceMs: 400, enabled: snapSettled },
+  )
+
+  // Seed the thread-scroll map ONCE from the boot snapshot (Task 2.2). Must run in an
+  // effect (the snapshot resolves async), gated on `snapSettled`. Seeding the FULL map
+  // is load-bearing: persisting a map that started empty would wipe other threads'
+  // saved offsets on the first scroll. Skip the seed when there's no saved history so
+  // the map ref stays `{}` and `usePersistedWrite` writes nothing on a fresh boot.
+  useEffect(() => {
+    if (threadScrollSeeded.current || !snapSettled) return
+    threadScrollSeeded.current = true
+    const saved = snap.data?.threadScroll
+    if (saved && Object.keys(saved).length > 0) setThreadScrollMap(saved)
+  }, [snapSettled, snap.data])
+
+  // Generic-thread scroll report (Task 2.2): ThreadView reports (trailing-throttled)
+  // only for plain/pdf roots, so `threadNoteId` is the correct key. Youtube never
+  // reports, so no youtube id is ever stored here.
+  const onThreadScroll = useCallback(
+    (scrollTop: number) => {
+      if (!threadNoteId) return
+      setThreadScrollMap((m) => ({ ...m, [threadNoteId]: scrollTop }))
+    },
+    [threadNoteId],
+  )
+
+  // Persist the whole per-root scroll map, debounced. `enabled: snapSettled` (fail-open,
+  // matching the dock + ui.session writers); `usePersistedWrite` skips the seeded value.
+  usePersistedWrite('thread.scroll.v1', threadScrollMap, { debounceMs: 250, enabled: snapSettled })
+
+  // Seed the per-root draft map ONCE from the boot snapshot (Task 4.2). Mirrors the
+  // thread-scroll seed above: async snapshot → effect, gated on `snapSettled`. Seeding
+  // the FULL map is load-bearing — a map that started empty would wipe other threads'
+  // saved drafts on the first keystroke. Skip when there's no saved history so the map
+  // ref stays `{}` and `usePersistedWrite` writes nothing on a fresh boot.
+  useEffect(() => {
+    if (draftThreadSeeded.current || !snapSettled) return
+    draftThreadSeeded.current = true
+    const saved = snap.data?.draftThread
+    if (saved && Object.keys(saved).length > 0) setDraftThreadMap(saved)
+  }, [snapSettled, snap.data])
+
+  // Per-thread draft report (Task 4.2): both composers report text-only via ThreadView;
+  // `threadNoteId` is the correct key (a thread is open whenever a composer can report).
+  const onThreadDraftChange = useCallback(
+    (text: string) => {
+      if (!threadNoteId) return
+      setDraftThreadMap((m) => {
+        // Empty text = delete the entry, NOT `{ [rootId]: '' }`. Without this the
+        // keystroke-reporter effect's post-send `onDraftChange('')` writes an empty
+        // string back after `onThreadDraftClear` deleted it, leaking one empty entry
+        // per thread ever posted to (unbounded slow growth of the persisted map).
+        if (text === '') {
+          if (!(threadNoteId in m)) return m // no-op if already absent (stable identity)
+          const next = { ...m }
+          delete next[threadNoteId]
+          return next
+        }
+        return { ...m, [threadNoteId]: text }
+      })
+    },
+    [threadNoteId],
+  )
+
+  // On send, drop this root's entry so a late debounce can't resurrect the just-sent draft.
+  const onThreadDraftClear = useCallback(() => {
+    if (!threadNoteId) return
+    setDraftThreadMap((m) => {
+      const n = { ...m }
+      delete n[threadNoteId]
+      return n
+    })
+  }, [threadNoteId])
+
+  // Persist the whole per-root draft map, debounced. `enabled: snapSettled` (fail-open,
+  // matching the other writers); `usePersistedWrite` skips the seeded value so a restored
+  // draft isn't echoed on boot.
+  usePersistedWrite('composer.draft.thread.v1', draftThreadMap, {
+    debounceMs: 400,
+    enabled: snapSettled,
+  })
+
+  // Persist the latest feed-scroll capture, debounced. `enabled: snapSettled` (fail-open,
+  // matching the other writers — NOT `snap.isSuccess`, which would disable feed-scroll
+  // persistence for the whole session on a transient snapshot-read failure). Starts null →
+  // `usePersistedWrite` skips it until <Feed> reports the first real capture.
+  usePersistedWrite('feed.scroll.v1', feedScroll, { debounceMs: 250, enabled: snapSettled })
+
+  // Persist the feed composer draft, debounced. `enabled: snapSettled` (fail-open, matching the
+  // other writers); `usePersistedWrite` skips the seeded value so the restored draft isn't
+  // echoed on boot. On successful send, createMut.onSuccess sets `draftFeed` to null — which
+  // CANCELS any pending draft write (value-change cleanup) and schedules a null write, clearing
+  // the key so a late debounce can't resurrect the just-sent draft.
+  // @see docs/specs/v0.7-session-persistence.md §Composer draft
+  usePersistedWrite('composer.draft.feed.v1', draftFeed, { debounceMs: 400, enabled: snapSettled })
+
   const onWikilinkClick = async (slug: string) => {
     const match = await api.links.resolve(slug)
     if (match) {
@@ -857,17 +1119,32 @@ export function App() {
   // no flash. The SAME eff widths feed both the dock render and the feed band, so
   // the dock can never overlap the feed at any width.
   const dockGeom = useMemo(() => {
-    const resolve = (activeId: string | null, stored: number, otherStored: number) => {
+    const resolve = (
+      activeId: string | null,
+      kind: PaneKind,
+      stored: number,
+      otherStored: number,
+    ) => {
       if (!activeId) return { eff: 0, max: 0 }
       if (bodyWidth <= 0) return { eff: stored, max: stored }
-      const max = maxDockWidth(paneKind(activeId), otherStored, bodyWidth)
+      // `kind` is the DOCK's band (widest resident pane), not the active pane's — so
+      // activating a utility tab over a content pane never re-caps the width down.
+      const max = maxDockWidth(kind, otherStored, bodyWidth)
       return { eff: Math.min(stored, max), max }
     }
     return {
-      left: resolve(leftActiveId, leftStoredW, rightStoredW),
-      right: resolve(rightActiveId, rightStoredW, leftStoredW),
+      left: resolve(leftActiveId, leftDockKind, leftStoredW, rightStoredW),
+      right: resolve(rightActiveId, rightDockKind, rightStoredW, leftStoredW),
     }
-  }, [leftActiveId, rightActiveId, leftStoredW, rightStoredW, bodyWidth])
+  }, [
+    leftActiveId,
+    rightActiveId,
+    leftDockKind,
+    rightDockKind,
+    leftStoredW,
+    rightStoredW,
+    bodyWidth,
+  ])
 
   // "Model A" feed band (ADR 0047): null while no dock is open (feed uses its
   // default centered band) or before the body width is measured. Fed the EFFECTIVE
@@ -1059,6 +1336,17 @@ export function App() {
                         noteId={threadNoteId}
                         onClose={() => setThreadNoteId(null)}
                         onWikilinkClick={onWikilinkClick}
+                        // v0.7 Task 2.2: keyed on threadNoteId (= root id). ThreadView
+                        // applies/attaches these ONLY for plain/pdf roots — youtube's
+                        // playhead-follow owns scroll, so it ignores them.
+                        initialScrollTop={threadScrollMap[threadNoteId]}
+                        onScroll={onThreadScroll}
+                        // v0.7 Task 4.2: keyed on threadNoteId (= root id). Forwarded to
+                        // BOTH composers (youtube + plain/pdf) — unlike scroll, drafts
+                        // apply to every branch.
+                        initialDraft={draftThreadMap[threadNoteId]}
+                        onDraftChange={onThreadDraftChange}
+                        onDraftClear={onThreadDraftClear}
                       />
                     </motion.div>
                   ) : (
@@ -1076,7 +1364,16 @@ export function App() {
                         overflow: 'hidden',
                       }}
                     >
-                      {notes.length === 0 ? (
+                      {/* v0.7: gate Feed's FIRST mount on `snapSettled` so its initial
+                          render can receive `restore` from the session snapshot (Batch 3);
+                          the splash covers this pre-settle gap, so `null` is never seen.
+                          LOAD-BEARING for feed-scroll restore: Feed must FIRST-mount with notes
+                          PRESENT (the notes.length===0 placeholder branch defers the mount until
+                          they arrive), because the virtualizer consumes `initialOffset` /
+                          `initialMeasurementsCache` ONLY at its first render. If Feed ever
+                          first-mounts on an empty feed, `scrollOffset` locks to 0 and the restore
+                          silently lands at the top — do NOT relax this notes-present gate. */}
+                      {!snapSettled ? null : notes.length === 0 ? (
                         <div
                           style={{
                             flex: 1,
@@ -1096,6 +1393,10 @@ export function App() {
                           scrollerRef={feedScrollerRef}
                           sendInFlight={sendInFlight}
                           band={feedBand}
+                          // v0.7 Task 3.2: boot restore (seeded at Feed's first render —
+                          // App gates this mount on `snapSettled`) + throttled capture up.
+                          restore={snap.data?.feedScroll ?? undefined}
+                          onCapture={setFeedScroll}
                           focusedId={focusedId}
                           // Toggle behaviour: clicking an unfocused bubble focuses it (opens
                           // BacklinksPane); clicking the already-focused bubble unfocuses it
@@ -1136,18 +1437,27 @@ export function App() {
                           }
                           onCancel={() => setEditingNoteId(null)}
                         />
-                      ) : (
+                      ) : snapSettled ? (
+                        // v0.7: gated on `snapSettled` so the create composer FIRST-mounts with
+                        // the render-phase-seeded `draftFeed` already present — that is what makes
+                        // the boot draft restore land in the textarea (the splash covers the
+                        // pre-settle gap, mirroring the Feed gate above).
                         // Composite key: `draftBody ?? 'fresh'` handles the dangling-wikilink
-                        // prefill remount; `successCount` ticks on successful create to
-                        // force a remount → fresh empty textarea. Failed creates leave the
-                        // key unchanged so the user's text + cursor survive.
+                        // prefill remount; `successCount` ticks on successful create to force a
+                        // remount → fresh empty textarea. Failed creates leave the key unchanged
+                        // so the user's text + cursor survive.
                         <Composer
                           key={`${draftBody ?? 'fresh'}-${successCount}`}
                           band={feedBand}
-                          initialBody={draftBody ?? ''}
-                          initialMode="claim"
+                          // A live prefill (`draftBody`) wins over the restored/live draft; else
+                          // the persisted `draftFeed` seeds body + mode. Prefills are always claim
+                          // (a titled new note), so mode comes from `draftFeed` ONLY when there's
+                          // no active prefill — preserving the old hard-coded 'claim' for prefills.
+                          initialBody={draftBody ?? draftFeed?.body ?? ''}
+                          initialMode={draftBody != null ? 'claim' : (draftFeed?.mode ?? 'claim')}
                           error={submitError}
                           onClearError={() => setSubmitError(null)}
+                          onDraftChange={handleDraftChange}
                           // Flag the send so the Feed suppresses its auto-scroll while the new
                           // note glides in (see `beginSend`), THEN create it.
                           onSubmit={({ body, type }) => {
@@ -1157,7 +1467,7 @@ export function App() {
                           onCancel={() => setDraftBody(null)}
                           onPasteText={handlePasteText}
                         />
-                      )}
+                      ) : null}
                     </motion.div>
                   )}
                 </AnimatePresence>

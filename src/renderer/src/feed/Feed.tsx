@@ -2,13 +2,16 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { Check, CheckCircle2, Copy, ListChecks, Trash2, XCircle } from 'lucide-react'
 import { type Ref, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
+import type { z } from 'zod'
 import type { Note } from '../../../shared/types'
+import type { FeedScrollV1Schema } from '../../../shared/zod-schemas'
 import { ScrollThumb, useScrollThumb } from '../components/ScrollArea'
 import { dayKey, formatDayLabel } from '../lib/day'
 import { type ContextMenuItem, type ContextMenuPos, ContextMenuShell } from './ContextMenu'
 import { DayDivider, ScrollDatePill } from './DatePills'
 import { useEntranceAnimation } from './entrance/useEntranceAnimation'
 import { FEED_BAND, type FeedBand } from './feedBand'
+import { pickFeedRestore } from './feedScrollRestore'
 import { NoteBubble } from './NoteBubble'
 import { SelectionBar } from './SelectionBar'
 import { fillToIndex } from './selectionRange'
@@ -70,7 +73,33 @@ interface Props {
    * (the pre-dock layout, unchanged). @see src/renderer/src/feed/feedBand.ts
    */
   band?: FeedBand | null
+  /**
+   * v0.7 boot session-restore: the persisted feed-scroll record (from
+   * `snap.data.feedScroll`). App gates Feed's FIRST mount on `snapSettled`, so this
+   * is present on render 1 — load-bearing, because the virtualizer consumes
+   * `initialMeasurementsCache`/`initialOffset` (seeded from it) ONLY at that first
+   * render. `undefined` ⇒ the default chat scroll-to-bottom (unchanged).
+   * @see docs/specs/v0.7-session-persistence.md §Feed scroll
+   */
+  restore?: Restore | undefined
+  /**
+   * v0.7 capture: trailing-throttled (~200ms) report of the current feed-scroll state
+   * (the full measured-size snapshot + offset + top-visible anchor) so App can persist
+   * `feed.scroll.v1`. `takeSnapshot()` returns EVERY row measured so far — not just the
+   * rendered/overscan window — accumulating as the user scrolls up to the ~500-note feed
+   * cap (so it's bounded; the write is debounce-coalesced and lands at ~tens of KB).
+   * @see docs/specs/v0.7-session-persistence.md §Feed scroll
+   */
+  onCapture?: (feedScroll: Restore) => void
 }
+
+/** The persisted feed-scroll shape (Zod-inferred), consumed by {@link pickFeedRestore}. */
+type Restore = z.infer<typeof FeedScrollV1Schema>
+
+/** Trailing-throttle window (ms) for the feed-scroll capture: at most one `onCapture`
+ *  per window while scrolling; the trailing read pulls the LATEST virtualizer state so a
+ *  fast scroll persists where it lands. Mirrors ThreadView's scroll-report throttle. */
+const FEED_SCROLL_CAPTURE_THROTTLE_MS = 200
 
 /** Stable empty set so the default `placedNoteIds` keeps a frozen identity
  * across renders (no new `Set` per render → no needless reconcile). */
@@ -259,9 +288,14 @@ export function Feed({
   scrollerRef,
   sendInFlight = false,
   band = null,
+  restore,
+  onCapture,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
+  // v0.7: gates the one-shot initial-scroll/restore layout effect (below) so it fires
+  // exactly once per mount even under a React-19 ref detach/reattach. @see the effect.
+  const didRestoreRef = useRef(false)
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null)
   // Holder for the external scrollerRef so `handleScrollerRef` can stay
   // `[]`-memoized (ADR 0004): reading a ref of stable identity inside the
@@ -442,6 +476,20 @@ export function Feed({
   // feed back into the next setOptions). @see docs/specs/v0.2.2-repulsion-wave.md §Guard.
   const suppressFollow = sendInFlight || revealing || waveSettling
 
+  // v0.7 feed-scroll restore decision, computed in the RENDER BODY (not an effect): the
+  // seed options below are consumed by the virtualizer ONLY at its FIRST render, so an
+  // effect would run too late. `pickFeedRestore` returns `seed` ONLY when the persisted
+  // indices still map to the same note ids, so a stale cache can never be seeded (that is
+  // the whole point of deciding here). @see docs/specs/v0.7-session-persistence.md §Feed scroll
+  const fr = useMemo(
+    () =>
+      pickFeedRestore(
+        restore ?? null,
+        notes.map((n) => n.id),
+      ),
+    [restore, notes],
+  )
+
   const virtualizer = useVirtualizer({
     count: notes.length,
     getScrollElement: () => scrollerEl,
@@ -480,6 +528,15 @@ export function Feed({
     anchorTo: morphingIndexRef.current === null && !suppressFollow ? 'end' : 'start',
     followOnAppend: !suppressFollow,
     scrollEndThreshold: SCROLL_END_THRESHOLD,
+    // v0.7 restore seed (Batch 3): the virtualizer consumes these ONCE at its first
+    // render — the flash-free path (no mount-then-jump). Spread in ONLY for `mode:'seed'`
+    // (matching indices ⇒ the cache is still valid); omitted otherwise so virtual-core
+    // keeps its defaults (offset 0 / empty cache). Spread (not `key: cond ? v : undefined`)
+    // so the keys are ABSENT under `exactOptionalPropertyTypes`, never explicit `undefined`.
+    // @see docs/specs/v0.7-session-persistence.md §Feed scroll
+    ...(fr.mode === 'seed'
+      ? { initialMeasurementsCache: fr.initialMeasurementsCache, initialOffset: fr.initialOffset }
+      : {}),
     // Rows rendered beyond the viewport on each side — tanstack's documented
     // lever for "slow-rendering blank items when scrolling": a scroll event
     // costs a recompute + re-render + paint, and a hard wheel flick can outrun
@@ -622,15 +679,23 @@ export function Feed({
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () =>
     morphingIndexRef.current === null && !suppressFollow
 
-  // Initial scroll-to-bottom once the scroller is available. Layout
-  // effect (not effect) so the bottom-pinned position is set BEFORE the
-  // browser paints — no first-frame flash at the top.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally one-shot; depends on `virtualizer` instance identity (stable across renders) and the boolean availability of `scrollerEl`
+  // Initial scroll position, applied ONCE the scroller is available. Layout effect
+  // (not effect) so the position is set BEFORE the browser paints — no first-frame
+  // flash. v0.7 restore (Batch 3) folds into this single one-shot: `seed` is already
+  // applied via the useVirtualizer options above (so it scrolls NOTHING here — and,
+  // crucially, must NOT be clobbered by a scrollToEnd), `index` scrolls to the anchor
+  // note's index, and `bottom`/`default` keep the chat scroll-to-bottom (identical to
+  // the pre-v0.7 behavior when no `restore` prop is passed → `fr.mode === 'default'`).
+  // `didRestoreRef` makes it strictly one-shot so a React-19 ref detach/reattach
+  // (ADR 0004) can't re-yank a user who has since scrolled.
+  // @see docs/specs/v0.7-session-persistence.md §Feed scroll
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally one-shot (didRestoreRef guards re-runs); captures the first-mount `fr` (the boot restore) + the stable `virtualizer`. Keyed on `scrollerEl` availability AND `notes.length` so the one-shot restore still fires the first time notes become non-empty — App gates the mount on notes-present today, but this keeps the guard functional instead of dead.
   useLayoutEffect(() => {
-    if (scrollerEl && notes.length > 0) {
-      virtualizer.scrollToEnd()
-    }
-  }, [scrollerEl])
+    if (didRestoreRef.current || !scrollerEl || notes.length === 0) return
+    didRestoreRef.current = true
+    if (fr.mode === 'index') virtualizer.scrollToIndex(fr.index, { align: 'start' })
+    else if (fr.mode !== 'seed') virtualizer.scrollToEnd() // 'bottom' | 'default'
+  }, [scrollerEl, notes.length])
 
   // Re-pin to the bottom when the feed container resizes AND the user
   // was already at the end. `followOnAppend` only fires on data change,
@@ -654,6 +719,49 @@ export function Feed({
     ro.observe(el)
     return () => ro.disconnect()
   }, [virtualizer])
+
+  // v0.7 feed-scroll capture: trailing-throttled (~200ms) report of the current scroll
+  // state so App can persist `feed.scroll.v1`. One timer per window; the trailing read
+  // pulls the LATEST virtualizer state (so a fast scroll persists where it LANDS). A
+  // native scroll listener (not the React `onScroll`, which the date pill owns) keeps
+  // the two concerns independent. Skips the pre-measure window (`scrollOffset == null`)
+  // so a boot-time phantom capture can't clobber the real saved position. The anchor is
+  // the top-visible item; `String(item.key)` normalizes the numeric-fallback getItemKey
+  // so the anchor key always round-trips as a string note-id.
+  // @see docs/specs/v0.7-session-persistence.md §Feed scroll
+  const captureTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => {
+    const el = scrollerEl
+    if (!el || !onCapture) return
+    const onScroll = () => {
+      if (captureTimer.current) return
+      captureTimer.current = setTimeout(() => {
+        captureTimer.current = undefined
+        const offset = virtualizer.scrollOffset
+        if (offset == null) return // pre-measure: no real position yet
+        // TRUE top-visible row: the first item whose bottom edge is past the scroll offset.
+        // NOT getVirtualItems()[0] — that's an OVERSCAN row (up to `overscan`=8 rows above the
+        // viewport top), so anchoring on it persisted a key ~8 notes too high and pickFeedRestore's
+        // index-fallback then scrollToIndex'd above the real position. Mirrors the date pill's
+        // `it.end > top + 1` predicate (see onFeedScroll below) so the two top-visible reads agree;
+        // falls back to items[0] when nothing qualifies.
+        const items = virtualizer.getVirtualItems()
+        const top = items.find((it) => it.end > offset + 1) ?? items[0]
+        const anchor = top
+          ? { key: String(top.key), delta: offset - top.start, atEnd: virtualizer.isAtEnd() }
+          : null
+        // takeSnapshot() keys are `string | number` by construction (getItemKey), never
+        // the `bigint` its type union allows — cast to the persisted Zod shape.
+        onCapture({ snapshot: virtualizer.takeSnapshot() as Restore['snapshot'], offset, anchor })
+      }, FEED_SCROLL_CAPTURE_THROTTLE_MS)
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      clearTimeout(captureTimer.current)
+      captureTimer.current = undefined
+    }
+  }, [scrollerEl, onCapture, virtualizer])
 
   // Stable id-taking toggle (compiler-friendly; no per-item closure).
   //

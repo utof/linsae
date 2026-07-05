@@ -27,6 +27,7 @@ import {
   ResolveInputSchema,
   SearchRunInputSchema,
   SettingsGetInputSchema,
+  SettingsGetManyInputSchema,
   SettingsSetInputSchema,
 } from '../../shared/zod-schemas'
 import { backlinks, commentsForNote } from '../db/queries/links'
@@ -34,7 +35,7 @@ import { getNote, getSourceNoteByPdfId, listNotes } from '../db/queries/notes'
 import { listTitles, recentNotes, recordAccess } from '../db/queries/recency'
 import { resolveWikilink } from '../db/queries/resolver'
 import { searchNotes } from '../db/queries/search'
-import { getSetting, setSetting } from '../db/queries/settings'
+import { getManySettings, getSetting, setSetting } from '../db/queries/settings'
 import type { NotesDir } from '../files/notes-dir'
 import { saveNote } from '../save-note'
 
@@ -128,6 +129,10 @@ export function registerNotesIpc(db: DB, nd: NotesDir): void {
   ipcMain.handle('settings:get', (_e, input) => {
     const i = SettingsGetInputSchema.parse(input)
     return { value: getSetting(db, i.key) }
+  })
+  ipcMain.handle('settings:getMany', (_e, input) => {
+    const i = SettingsGetManyInputSchema.parse(input)
+    return { values: getManySettings(db, i.keys) }
   })
   ipcMain.handle('settings:set', (_e, input) => {
     const i = SettingsSetInputSchema.parse(input)

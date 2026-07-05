@@ -2,7 +2,7 @@
 import Database from 'better-sqlite3'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { runMigrations } from '../migrate'
-import { getSetting, setSetting } from './settings'
+import { getManySettings, getSetting, setSetting } from './settings'
 
 let db: Database.Database
 beforeEach(() => {
@@ -23,5 +23,14 @@ describe('settings query', () => {
     setSetting(db, 'k', 'b')
     expect(getSetting(db, 'k')).toBe('b')
     expect((db.prepare('SELECT count(*) c FROM app_settings').get() as { c: number }).c).toBe(1)
+  })
+  it('getManySettings returns a key→value map, null for absent keys', () => {
+    setSetting(db, 'a', { x: 1 })
+    setSetting(db, 'b', 'hi')
+    expect(getManySettings(db, ['a', 'b', 'missing'])).toEqual({
+      a: { x: 1 },
+      b: 'hi',
+      missing: null,
+    })
   })
 })

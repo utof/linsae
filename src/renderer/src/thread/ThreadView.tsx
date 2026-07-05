@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, Clock, Film } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import type { Attachment } from '../../../shared/types'
 import { AnnotateEditor } from '../annotate/AnnotateEditor'
@@ -23,6 +23,16 @@ import { useThreadNotes } from './useThreadNotes'
 
 /** ms the accent flash ring stays on a cluster after follow-scroll / click-to-seek. */
 const FLASH_MS = 600
+
+/**
+ * Trailing-throttle window (ms) for reporting the generic (plain/pdf) thread's
+ * scrollTop up to App for persistence (`thread.scroll.v1`, v0.7 Task 2.2). One
+ * report per window while the user scrolls; the trailing edge reads the FINAL
+ * position off the live element, so a settle always persists the last offset.
+ *
+ * @see docs/plans/v0.7-session-persistence.md §Task 2.2
+ */
+const SCROLL_PERSIST_THROTTLE_MS = 200
 
 /**
  * Centered content column width — matches ThreadView.jsx in the design-system
@@ -84,10 +94,61 @@ export interface ThreadViewProps {
    * @see src/renderer/src/App.tsx (onWikilinkClick)
    */
   onWikilinkClick?: (slug: string) => void
+  /**
+   * Restored scrollTop for THIS thread's root, applied ONCE to the generic
+   * (plain/pdf) scroller after its children establish scrollHeight (v0.7 Task 2.2).
+   * App sources it from `snap.data.threadScroll[rootId]`. Undefined = no restore.
+   *
+   * YouTube threads deliberately IGNORE this: their always-on playhead-follow
+   * auto-scroll re-scrolls every tick, so a restored offset would be clobbered
+   * instantly. The youtube layout (`notesPane`) never reads this prop — the
+   * exclusion is structural (App can't reliably know the root's kind, so
+   * ThreadView, which fetches the note, owns the gate).
+   *
+   * @see docs/plans/v0.7-session-persistence.md §Task 2.2
+   */
+  // `| undefined` (not just `?`) so App can forward `threadScrollMap[id]` (a
+  // possibly-absent lookup) directly under `exactOptionalPropertyTypes`.
+  initialScrollTop?: number | undefined
+  /**
+   * Trailing-throttled report of the generic (plain/pdf) scroller's scrollTop, for
+   * App-owned persistence to `thread.scroll.v1`. NOT attached for youtube threads
+   * (the playhead-follow owns scroll there). @see initialScrollTop
+   */
+  onScroll?: (scrollTop: number) => void
+  /**
+   * Restored composer draft text for THIS thread's root, forwarded to BOTH the
+   * youtube `ThreadComposer` and the plain/pdf `SimpleComposer` as their
+   * `initialDraft` (v0.7 Task 4.2). Unlike `initialScrollTop` (which youtube
+   * ignores), drafts apply to every branch. App sources it from
+   * `snap.data.draftThread[rootId]`. @see docs/plans/v0.7-session-persistence.md §Task 4.2
+   */
+  // `| undefined` (not just `?`) so App can forward `draftThreadMap[id]` (a
+  // possibly-absent lookup) directly under `exactOptionalPropertyTypes`.
+  initialDraft?: string | undefined
+  /**
+   * Live draft-text reporter, forwarded to both composers. App keys it by the
+   * thread root id and persists to `composer.draft.thread.v1`. @see initialDraft
+   */
+  onDraftChange?: (text: string) => void
+  /**
+   * Called on a real send from either composer, forwarded to both. App drops
+   * this root's entry from the draft map. @see initialDraft
+   */
+  onDraftClear?: () => void
 }
 
 /** @see ThreadViewProps */
-export function ThreadView({ noteId, onClose, onWikilinkClick }: ThreadViewProps) {
+export function ThreadView({
+  noteId,
+  onClose,
+  onWikilinkClick,
+  initialScrollTop,
+  onScroll,
+  initialDraft,
+  onDraftChange,
+  onDraftClear,
+}: ThreadViewProps) {
   // ── data fetches ──────────────────────────────────────────────────────────
 
   const { data: note } = useQuery({
@@ -441,7 +502,7 @@ export function ThreadView({ noteId, onClose, onWikilinkClick }: ThreadViewProps
   // pass the empty-body Zod gate (NotesCreateInputSchema superRefine, A3). After
   // create, the pending attachment is linked to the new note.
   const post = useMutation({
-    mutationFn: async ({ body, t }: { body: string; t: number }) => {
+    mutationFn: async ({ body, t }: { body: string; t: number | null }) => {
       // FIX 2: guard against posting before the video note has loaded — an
       // empty commentOn would create an orphan note with no thread parent.
       // Why: note resolves async; the composer is mounted before it settles.
@@ -451,10 +512,18 @@ export function ThreadView({ noteId, onClose, onWikilinkClick }: ThreadViewProps
       // the re-assigned React state would make the SECOND capture's attachmentId
       // land on this (first) note — wrong. Using a local constant prevents that.
       const frame = pendingFrame
-      const tAnchor = frame ? frame.t : t
+      const tAnchor = frame ? frame.t : t // number | null (null = anchorless)
       const created = await api.notes.create(body, 'claim', {
         source_kind: 'youtube',
-        source_locator: { media: 'youtube', video_id: videoId, t: tAnchor },
+        // Omit `t` entirely when anchorless (null) — under
+        // exactOptionalPropertyTypes the key must be ABSENT, never `t: undefined`.
+        // The schema's `t` is optional ("omitted for anchorless comment-notes").
+        // @see src/shared/zod-schemas.ts
+        source_locator: {
+          media: 'youtube',
+          video_id: videoId,
+          ...(tAnchor != null ? { t: tAnchor } : {}),
+        },
         commentOn: note.slug,
       })
       if (frame) await api.attachments.attachToNote(frame.attachment.id, created.id)
@@ -520,7 +589,60 @@ export function ThreadView({ noteId, onClose, onWikilinkClick }: ThreadViewProps
     [note, noteId, queryClient],
   )
 
+  // ── generic (plain/pdf) thread scroll restore/persist (v0.7 · Task 2.2) ──────
+  // ONLY the generic branch wires these. YouTube's `notesPane` owns scroll via the
+  // always-on playhead-follow, so restoring/persisting there fights the follow — it
+  // is excluded structurally: `genericScrollerRef` is never bound in the youtube
+  // layout, so both the restore effect and the persist listener no-op for youtube.
+  const genericScrollerRef = useRef<HTMLDivElement | null>(null)
+  const scrollRestoredRef = useRef(false)
+  // Snapshot the restore target ONCE at mount. ThreadView is keyed on threadNoteId, so
+  // this instance is per-thread; the boot path seeds threadScrollMap BEFORE openThread
+  // fires, making the mount-time `initialScrollTop` authoritative. Deliberately NOT
+  // reactive to later prop changes: `initialScrollTop` flows back from the user's OWN
+  // scroll (onScroll → App threadScrollMap → back down as this prop), so reacting to it
+  // would yank an in-progress scroll to a stale offset on the first sustained scroll of a
+  // no-saved-offset thread ("echo stomp"). Do NOT add `initialScrollTop` to the deps.
+  const restoreTargetRef = useRef(initialScrollTop)
+  // Apply the restored scrollTop ONCE, in a layout effect keyed on the child count so
+  // it fires AFTER the children mount and establish scrollHeight — setting it before
+  // content exists clamps the browser to 0. `scrollRestoredRef` makes it a one-shot so
+  // later renders never stomp the user's live scroll position.
+  useLayoutEffect(() => {
+    if (scrollRestoredRef.current) return
+    const target = restoreTargetRef.current
+    if (target == null) {
+      scrollRestoredRef.current = true
+      return
+    }
+    const el = genericScrollerRef.current
+    if (!el) return
+    // Wait for children to establish scrollHeight before restoring a non-zero offset.
+    if (target > 0 && sorted.length === 0) return
+    el.scrollTop = target
+    scrollRestoredRef.current = true
+  }, [sorted.length])
+
+  // Trailing-throttled scrollTop report → App persists the whole per-root map. One
+  // timer per window; the trailing read pulls the LATEST scrollTop off the element.
+  const scrollPersistTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const onGenericScroll = useCallback(() => {
+    if (!onScroll || scrollPersistTimer.current) return
+    scrollPersistTimer.current = setTimeout(() => {
+      scrollPersistTimer.current = undefined
+      const el = genericScrollerRef.current
+      if (el) onScroll(el.scrollTop)
+    }, SCROLL_PERSIST_THROTTLE_MS)
+  }, [onScroll])
+  // Clear a pending throttle timer on unmount (thread close / navigation).
+  useEffect(() => () => clearTimeout(scrollPersistTimer.current), [])
+
   // ── render ────────────────────────────────────────────────────────────────
+
+  // Whether this thread has any comment-on children. Drives the generic
+  // (plain/pdf) branch's dividers: an empty thread suppresses the ThreadRoot
+  // header rule + the composer's top rule so it reads clean (Task 3).
+  const hasChildren = sorted.length > 0
 
   // Sort row + scrollable notes + composer (all layouts; player is in the dock).
   const notesPane = (
@@ -662,6 +784,9 @@ export function ThreadView({ noteId, onClose, onWikilinkClick }: ThreadViewProps
             duration={duration}
             error={postError}
             onClearError={() => setPostError(null)}
+            initialDraft={initialDraft}
+            onDraftChange={onDraftChange}
+            onDraftClear={onDraftClear}
             pendingFrame={pendingFrame}
             onCapture={() => {
               void onCapture()
@@ -701,7 +826,11 @@ export function ThreadView({ noteId, onClose, onWikilinkClick }: ThreadViewProps
       <header
         style={{
           flex: '0 0 auto',
-          height: 46,
+          // Match the dock pane header height token so the thread header's bottom
+          // border lands on the SAME y as the right-dock pane header's border
+          // (Task 6 — both were misaligned at 46px vs --topbar-h 44px).
+          // @see src/renderer/src/panes/Dock.tsx (pane header: height var(--topbar-h))
+          height: 'var(--topbar-h)',
           padding: '0 24px',
           borderBottom: '1px solid var(--border-0)',
         }}
@@ -769,40 +898,75 @@ export function ThreadView({ noteId, onClose, onWikilinkClick }: ThreadViewProps
         // `handleWikilink` forwards to the app-level resolver so wikilinks in
         // the root header and every child card navigate correctly (spec §"Wikilink
         // navigation in thread cards"). @see docs/plans/v0.6.4-notes-as-threads.md §Task 2.3
-        <div
-          style={{
-            flex: 1,
-            minHeight: 0,
-            overflowY: 'auto',
-            padding: '12px 24px 20px',
-          }}
-        >
-          <div style={{ maxWidth: COL, margin: '0 auto' }}>
-            {note && <ThreadRoot note={note} onWikilinkClick={handleWikilink} />}
-            <div style={{ marginTop: 8 }}>
-              {sorted.map((item) => (
-                <NoteBubble
-                  key={item.id}
-                  note={item.note}
-                  focused={false}
-                  expanded={true}
-                  onToggleExpand={() => {}}
-                  onFocus={() => {}}
-                  onWikilinkClick={handleWikilink}
-                  onEdit={() => {}}
-                  onDelete={() => {}}
-                  onCopyLink={() => {}}
-                />
-              ))}
+        //
+        // Layout: a flex column so the scrollable content region (root + children)
+        // takes the free space and the composer stays PINNED to the bottom of the
+        // pane instead of flowing under short content (Task 4 — was top-aligned
+        // with dead space below). An EMPTY thread (no children) suppresses both
+        // the ThreadRoot header rule and the composer's top rule (Task 3).
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <div
+            ref={genericScrollerRef}
+            data-testid="thread-generic-scroll"
+            onScroll={onGenericScroll}
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: 'auto',
+              padding: '12px 24px 20px',
+            }}
+          >
+            <div style={{ maxWidth: COL, margin: '0 auto' }}>
+              {note && (
+                <ThreadRoot note={note} divider={hasChildren} onWikilinkClick={handleWikilink} />
+              )}
+              {/* flex column + gap gives consistent vertical spacing between child
+                  bubbles (Task 2 — they were flush: NoteBubble carries no outer
+                  margin, so borders touched). 12px matches the feed's 6+6 row
+                  rhythm. `marginTop` only when there are children to separate from
+                  the root. */}
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 'var(--space-4)',
+                  marginTop: hasChildren ? 8 : 0,
+                }}
+              >
+                {sorted.map((item) => (
+                  <NoteBubble
+                    key={item.id}
+                    note={item.note}
+                    focused={false}
+                    expanded={true}
+                    onToggleExpand={() => {}}
+                    onFocus={() => {}}
+                    onWikilinkClick={handleWikilink}
+                    onEdit={() => {}}
+                    onDelete={() => {}}
+                    onCopyLink={() => {}}
+                  />
+                ))}
+              </div>
             </div>
-            <div
-              style={{
-                marginTop: 16,
-                borderTop: '1px solid var(--border-0)',
-                paddingTop: 12,
-              }}
-            >
-              <SimpleComposer onSubmit={postPlain} />
+          </div>
+          <div
+            data-testid="thread-composer-region"
+            style={{
+              flex: '0 0 auto',
+              // Divider only when there are children — an empty thread reads clean.
+              ...(hasChildren ? { borderTop: '1px solid var(--border-0)' } : {}),
+              padding: '10px 24px 12px',
+              background: 'var(--bg-0)',
+            }}
+          >
+            <div style={{ maxWidth: COL, margin: '0 auto' }}>
+              <SimpleComposer
+                onSubmit={postPlain}
+                initialDraft={initialDraft}
+                onDraftChange={onDraftChange}
+                onDraftClear={onDraftClear}
+              />
             </div>
           </div>
         </div>

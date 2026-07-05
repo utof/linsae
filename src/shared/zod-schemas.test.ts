@@ -4,12 +4,20 @@ import {
   AttachmentsListInputSchema,
   AttachToNoteInputSchema,
   CaptureInputSchema,
+  ComposerDraftFeedV1Schema,
+  ComposerDraftThreadV1Schema,
+  DockLayoutV1Schema,
+  FeedScrollV1Schema,
   FetchOEmbedInputSchema,
   NotesCreateInputSchema,
   NotesListInputSchema,
   NotesUpdateInputSchema,
+  PdfViewV1Schema,
   SaveOverlayInputSchema,
   SourceLocatorSchema,
+  safeParseOr,
+  ThreadScrollV1Schema,
+  UiSessionV1Schema,
   VideoSourcesGetInputSchema,
   VideoSourcesUpsertInputSchema,
 } from './zod-schemas'
@@ -247,5 +255,84 @@ describe('SourceLocatorSchema — PdfLocator widening (B3)', () => {
     const parsed = SourceLocatorSchema.parse({ media: 'pdf', pdf_id: 'p1', page: 42 })
     expect(parsed).toMatchObject({ media: 'pdf', pdf_id: 'p1', page: 42 })
     expect((parsed as { quote?: string }).quote).toBeUndefined()
+  })
+})
+
+describe('safeParseOr — defensive read with fallback', () => {
+  it('safeParseOr returns the default on malformed input', () => {
+    expect(safeParseOr(UiSessionV1Schema, { focusedNoteId: 5 }, null)).toBeNull()
+    const dl = safeParseOr(DockLayoutV1Schema, 'garbage', null)
+    expect(dl).toBeNull()
+  })
+  it('safeParseOr passes valid input through', () => {
+    expect(
+      safeParseOr(UiSessionV1Schema, { focusedNoteId: 'x', threadNoteId: null }, null),
+    ).toEqual({ focusedNoteId: 'x', threadNoteId: null })
+  })
+  it('safeParseOr rejects a malformed nested value (bad partialRecord value → whole-key default)', () => {
+    expect(
+      safeParseOr(
+        DockLayoutV1Schema,
+        {
+          left: { openPaneIds: [], activeId: null },
+          right: { openPaneIds: [], activeId: null },
+          widths: { right: 'x' }, // string value → SideNumV1 (partialRecord of numbers) rejects → whole layout defaults
+          collapsed: {},
+        },
+        null,
+      ),
+    ).toBeNull()
+  })
+})
+
+describe('v0.7 persisted session schemas — smoke tests', () => {
+  it('DockLayoutV1Schema accepts a well-formed dock layout', () => {
+    const v = DockLayoutV1Schema.parse({
+      left: { openPaneIds: [], activeId: null },
+      right: { openPaneIds: ['p1'], activeId: 'p1' },
+      widths: { right: 300 },
+      collapsed: {},
+    })
+    expect(v.left.activeId).toBeNull()
+    expect(v.right.activeId).toBe('p1')
+  })
+  it('FeedScrollV1Schema accepts a feed scroll snapshot', () => {
+    const v = FeedScrollV1Schema.parse({
+      snapshot: [
+        {
+          key: 'note-1',
+          index: 0,
+          start: 0,
+          end: 100,
+          size: 100,
+          lane: 0,
+        },
+      ],
+      offset: 0,
+      anchor: null,
+    })
+    expect(v.snapshot).toHaveLength(1)
+    expect(v.offset).toBe(0)
+  })
+  it('ThreadScrollV1Schema accepts thread scroll positions', () => {
+    const v = ThreadScrollV1Schema.parse({ 'note-1': 42, 'note-2': 100 })
+    expect(v['note-1']).toBe(42)
+  })
+  it('ComposerDraftFeedV1Schema accepts a feed composer draft', () => {
+    const v = ComposerDraftFeedV1Schema.parse({ body: 'draft text', mode: 'claim' })
+    expect(v.body).toBe('draft text')
+    expect(v.mode).toBe('claim')
+  })
+  it('ComposerDraftThreadV1Schema accepts thread composer drafts', () => {
+    const v = ComposerDraftThreadV1Schema.parse({ 'note-1': 'reply 1', 'note-2': 'reply 2' })
+    expect(v['note-1']).toBe('reply 1')
+  })
+  it('PdfViewV1Schema accepts pdf view states', () => {
+    const v = PdfViewV1Schema.parse({
+      'pdf-1': { zoom: 1.5, page: 3 },
+      'pdf-2': { zoom: 1.0 },
+    })
+    expect(v['pdf-1']?.zoom).toBe(1.5)
+    expect(v['pdf-2']?.page).toBeUndefined()
   })
 })

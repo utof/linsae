@@ -3,22 +3,13 @@ import {
   type KeyboardEvent,
   type Ref,
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
 } from 'react'
 import type { NoteType } from '../../../shared/types'
 import { FEED_BAND, type FeedBand } from '../feed/feedBand'
 import { SendButton } from './SendButton'
-
-/**
- * Cap on the auto-grown textarea height. ~10 lines at 14px text + 1.5
- * line-height + the inner padding leaves a comfortable Telegram-style
- * draft window before the internal scrollbar kicks in. Past this, the
- * textarea overflow-scrolls inside itself; the composer container does
- * not push the feed any further upward.
- */
-const TEXTAREA_MAX_HEIGHT_PX = 220
+import { useAutoGrowTextarea } from './useAutoGrowTextarea'
 
 interface Props {
   onSubmit: (input: { body: string; type: NoteType }) => void
@@ -54,6 +45,18 @@ interface Props {
    * @see src/renderer/src/App.tsx §paste handler
    */
   onPasteText?: (text: string) => boolean
+  /**
+   * Optional draft reporter (v0.7 session persistence). Called with the live
+   * `{ body, mode }` whenever either changes — App keeps this as `draftFeed` state
+   * and write-throughs it to `composer.draft.feed.v1` (debounced). NOT called on the
+   * initial mount (skip-first): the mount value is either a boot-restored draft (must
+   * not echo back to disk) or the fresh empty composer after a send (must not resurrect
+   * the just-cleared draft — App writes `null` on successful send). Only the create-mode
+   * composer wires this; edit-mode never persists a draft.
+   * @see src/renderer/src/App.tsx §draftFeed
+   * @see docs/specs/v0.7-session-persistence.md §Composer draft
+   */
+  onDraftChange?: (draft: { body: string; mode: NoteType }) => void
   /**
    * Optional ref to the composer card-root element. Currently unused at the call
    * site (the send ghost that needed it was removed — ADR 0020); kept as the natural
@@ -112,34 +115,33 @@ export function Composer({
   error = null,
   onClearError,
   onPasteText,
+  onDraftChange,
   cardRef,
   band = null,
 }: Props) {
   const [body, setBody] = useState(initialBody)
   const [mode, setMode] = useState<NoteType>(initialMode)
-  const ref = useRef<HTMLTextAreaElement>(null)
+  // Auto-grow textarea via the shared hook (also used by ThreadComposer +
+  // SimpleComposer). Runs on `body` — including the edit-mode prefill — so the
+  // textarea sizes to the initial text without a `rows` prop.
+  const ref = useAutoGrowTextarea(body)
 
   useEffect(() => {
     ref.current?.focus()
-  }, [])
+  }, [ref])
 
-  // Auto-grow: reset to 'auto' so scrollHeight reports the natural content
-  // height (without this it monotonically grows), then clamp to the cap.
-  // useLayoutEffect (not useEffect) runs synchronously after DOM mutation
-  // and before paint, so users never see a one-frame flash of the old
-  // height. Runs on initialBody too (edit mode arrives with prefilled text).
-  // Cannot rely on `rows={...}` for the initial size now that we control
-  // height directly — the textarea has no `rows` prop below. `body` is a
-  // trigger-only dep: the effect reads el.scrollHeight via ref AFTER React
-  // flushes the controlled value to the DOM. Without [body] in the deps the
-  // resize would only fire on mount and the textarea would never grow.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: see comment above
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, TEXTAREA_MAX_HEIGHT_PX)}px`
-  }, [body])
+  // Report the live draft up (v0.7 persistence). Skip-first is expressed as
+  // "differs from the seed" rather than a boolean flag so it survives StrictMode's
+  // dev double-invoke of mount effects (both invokes see body/mode === the seed →
+  // no report). The compare-to-last-reported guard also makes an unstable
+  // `onDraftChange` harmless: a re-run with unchanged body/mode returns early, so
+  // there is no render loop even without a memoised callback.
+  const lastReported = useRef({ body: initialBody, mode: initialMode })
+  useEffect(() => {
+    if (lastReported.current.body === body && lastReported.current.mode === mode) return
+    lastReported.current = { body, mode }
+    onDraftChange?.({ body, mode })
+  }, [body, mode, onDraftChange])
 
   const submit = () => {
     if (!body.trim()) return
@@ -273,10 +275,9 @@ export function Composer({
               border: 0,
               outline: 'none',
               // resize:none disables the user-drag handle (we drive height
-              // programmatically via the useLayoutEffect above);
-              // overflowY:auto puts the scrollbar INSIDE the textarea once
-              // content exceeds TEXTAREA_MAX_HEIGHT_PX, so the composer
-              // container stops pushing the feed up.
+              // programmatically via useAutoGrowTextarea); overflowY:auto puts
+              // the scrollbar INSIDE the textarea once content exceeds the hook's
+              // height cap, so the composer container stops pushing the feed up.
               resize: 'none',
               overflowY: 'auto',
               // Reserve the bottom-right corner for the floating send button so a

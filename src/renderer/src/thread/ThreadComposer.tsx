@@ -25,22 +25,13 @@
  */
 
 import { Camera } from 'lucide-react'
-import {
-  type CSSProperties,
-  type KeyboardEvent,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from 'react'
+import { type CSSProperties, type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import type { Attachment } from '../../../shared/types'
 import { AnnotatedFrame } from '../annotate/AnnotatedFrame'
 import { SendButton } from '../composer/SendButton'
+import { useAutoGrowTextarea } from '../composer/useAutoGrowTextarea'
 import { clampSeconds, formatClock, parseTimeDigits } from '../lib/time'
 import { chipTime, nextFrozenAt } from './composer-chip'
-
-/** Cap on auto-grown textarea height — mirrors the main Composer's ceiling. */
-const TEXTAREA_MAX_HEIGHT_PX = 220
 
 export interface ThreadComposerProps {
   /** Current playback time in seconds, live from usePlayer.currentTime. */
@@ -60,8 +51,16 @@ export interface ThreadComposerProps {
    * @see docs/specs/v0.2.5-screenshot-annotation.md §Capture-time
    */
   pendingFrame?: { attachment: Attachment; t: number } | null
-  /** Called on submit. ThreadView owns the api.notes.create + commentOn call. */
-  onPost: (args: { body: string; t: number }) => void
+  /**
+   * Called on submit. ThreadView owns the api.notes.create + commentOn call.
+   * `t: null` = ANCHORLESS (untimestamped) — the note is posted without a `t`
+   * on its youtube locator. Happens when a RESTORED draft is posted without the
+   * user adding a manual time (v0.7: only draft text is persisted, never the
+   * chip's frozenAt, so the original timestamp is unrecoverable). A numeric `t`
+   * is the anchored second (live/frozen chip time, manual entry, or frame).
+   * @see docs/plans/v0.7-session-persistence.md §Task 4.2
+   */
+  onPost: (args: { body: string; t: number | null }) => void
   /**
    * Optional seek callback triggered when the user manually enters a time via
    * the chip input. Allows the player to jump to the chosen anchor.
@@ -80,6 +79,29 @@ export interface ThreadComposerProps {
   error?: string | null
   /** Called on the next keystroke when `error` is set, so the parent clears it. */
   onClearError?: () => void
+  /**
+   * Restored draft text for THIS thread's root, applied ONCE as the initial
+   * `draft` (v0.7 Task 4.2). App sources it from `snap.data.draftThread[rootId]`.
+   * ONLY the draft text is persisted — never the chip / frozenAt / manuallyFrozen
+   * freeze state. @see docs/plans/v0.7-session-persistence.md §Task 4.2
+   */
+  // `| undefined` (not just `?`) so ThreadView can forward a possibly-absent
+  // `draftThreadMap[id]` lookup directly under `exactOptionalPropertyTypes`.
+  initialDraft?: string | undefined
+  /**
+   * Reports the live draft text up whenever it changes — App keys it by the
+   * thread root id and write-throughs it to `composer.draft.thread.v1`
+   * (debounced). NOT called on the initial mount (skip-first): the seeded value
+   * must not echo back to disk. Text only — App closes over the root id.
+   * @see src/renderer/src/App.tsx §draftThreadMap
+   */
+  onDraftChange?: ((text: string) => void) | undefined
+  /**
+   * Called on a real post (optimistic, in the submit path where local state is
+   * cleared) so App drops this root's entry from the draft map. Consistent with
+   * the existing local `setDraft('')` clear.
+   */
+  onDraftClear?: (() => void) | undefined
 }
 
 /** @see ThreadComposerProps */
@@ -92,9 +114,12 @@ export function ThreadComposer({
   onCapture,
   error = null,
   onClearError,
+  initialDraft = '',
+  onDraftChange,
+  onDraftClear,
 }: ThreadComposerProps) {
   // ── local state ────────────────────────────────────────────────────────────
-  const [draft, setDraft] = useState('')
+  const [draft, setDraft] = useState(initialDraft)
   const [focused, setFocused] = useState(false)
   const [frozenAt, setFrozenAt] = useState(livePlayhead)
   /**
@@ -107,11 +132,37 @@ export function ThreadComposer({
    * We model it as `focused=true` for display purposes via this flag.
    */
   const [manuallyFrozen, setManuallyFrozen] = useState(false)
+  /**
+   * True when this draft has NO timestamp anchor — posts land as anchorless
+   * (untimestamped) comment-notes. Only a RESTORED draft (non-empty
+   * `initialDraft`) starts anchorless: v0.7 persists ONLY the draft text, never
+   * the chip's frozenAt, so at restore the anchor would otherwise freeze at the
+   * mount-time livePlayhead (≈0:00 on a fresh restart) — a wrong anchor. A
+   * freshly-typed draft (empty initialDraft) is NEVER anchorless. The user exits
+   * anchorless by committing a manual time via the chip (see commitChipInput).
+   * @see docs/plans/v0.7-session-persistence.md §Task 4.2
+   */
+  const [anchorless, setAnchorless] = useState((initialDraft ?? '').trim().length > 0)
   // Whether the chip manual-entry input is open.
   const [chipEditing, setChipEditing] = useState(false)
   const [chipInputValue, setChipInputValue] = useState('')
 
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // Auto-grow textarea via the shared hook (also used by Composer +
+  // SimpleComposer). Mirrors the prior inline useLayoutEffect.
+  const textareaRef = useAutoGrowTextarea(draft)
+
+  // Report the live draft text up (v0.7 Task 4.2 persistence). ONLY the text —
+  // never the chip/frozenAt/manuallyFrozen freeze state. Skip-first is expressed
+  // as "differs from the seed" rather than a boolean flag so it survives
+  // StrictMode's dev double-invoke of mount effects (both invokes see draft ===
+  // the seed → no report). Mirrors Composer.tsx's reporter.
+  // @see src/renderer/src/composer/Composer.tsx §onDraftChange
+  const lastReported = useRef(initialDraft)
+  useEffect(() => {
+    if (lastReported.current === draft) return
+    lastReported.current = draft
+    onDraftChange?.(draft)
+  }, [draft, onDraftChange])
 
   // ── derived ────────────────────────────────────────────────────────────────
   const hasDraft = draft.trim().length > 0
@@ -145,17 +196,6 @@ export function ThreadComposer({
     setFrozenAt((prev) => nextFrozenAt(prev, { focused, hasDraft, livePlayhead }))
   }, [focused, hasDraft, manuallyFrozen]) // livePlayhead deliberately excluded
 
-  // ── auto-grow textarea ─────────────────────────────────────────────────────
-  // Mirrors the pattern in src/renderer/src/composer/Composer.tsx.
-  // useLayoutEffect runs before paint so the resize is never visible.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional — see Composer.tsx
-  useLayoutEffect(() => {
-    const el = textareaRef.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, TEXTAREA_MAX_HEIGHT_PX)}px`
-  }, [draft])
-
   // ── submit ────────────────────────────────────────────────────────────────
   const submit = () => {
     // FIX 4: allow an empty-caption post when a pending frame is present —
@@ -166,12 +206,22 @@ export function ThreadComposer({
     // moment (pendingFrame.t), not the live chip time — they can differ.
     // Using the same value for both the chip display and onPost keeps them
     // consistent from the user's perspective.
-    const t = pendingFrame
+    // Anchor precedence: a captured frame ALWAYS wins (explicit anchor, carries
+    // its own t) → else an anchorless (restored) draft posts with t: null → else
+    // the live/frozen chip time. See `anchorless` state + FIX B.
+    const t: number | null = pendingFrame
       ? pendingFrame.t
-      : chipTime({ focused: effectiveFocused, hasDraft, livePlayhead, frozenAt })
+      : anchorless
+        ? null
+        : chipTime({ focused: effectiveFocused, hasDraft, livePlayhead, frozenAt })
     onPost({ body: draft, t })
     setDraft('')
+    // Drop this root's persisted draft (Task 4.2 clear-and-cancel). Fires
+    // optimistically alongside the local clear, consistent with setDraft('').
+    onDraftClear?.()
     setManuallyFrozen(false)
+    // Reset anchorless so the NEXT fresh note is normally-anchored (live chip).
+    setAnchorless(false)
     // Explicitly release the frozen state so chipTime resumes live-tracking
     // immediately on the next render with a new livePlayhead prop. This mirrors
     // the "clearing resumes live-tracking" contract from the spec — submitting
@@ -202,6 +252,8 @@ export function ThreadComposer({
       const secs = clampSeconds(parseTimeDigits(chipInputValue), duration)
       setFrozenAt(secs)
       setManuallyFrozen(true)
+      // Adding a manual time converts a restored (anchorless) draft to anchored.
+      setAnchorless(false)
       onManualSeekEntry?.(secs)
     }
     setChipEditing(false)
@@ -311,12 +363,20 @@ export function ThreadComposer({
           <button
             type="button"
             data-testid="composer-chip"
-            title="click to edit anchor time — type digits, e.g. 1234 → 12:34"
-            aria-label="anchor time"
+            // Anchorless (restored) draft with no captured frame: show an
+            // "add time" affordance instead of a bogus clock (the original
+            // timestamp isn't persisted). Clicking still opens the chip input,
+            // and committing a time converts the draft to anchored. FIX B.
+            title={
+              anchorless && !pendingFrame
+                ? 'no timestamp — click to add an anchor time'
+                : 'click to edit anchor time — type digits, e.g. 1234 → 12:34'
+            }
+            aria-label={anchorless && !pendingFrame ? 'add anchor time' : 'anchor time'}
             onClick={openChipInput}
             style={{ ...inlineTimeStyle, border: 0, cursor: 'pointer' }}
           >
-            {displayTime}
+            {anchorless && !pendingFrame ? '+ time' : displayTime}
           </button>
         )}
 
