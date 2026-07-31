@@ -22,15 +22,12 @@ note: A task is simple only if ALL four hold:
 - Taste / naming / style / file layout — user's call.
 - User has already heard the objection this thread and reaffirmed.
 - Reversible local change (1 file, <50 lines, no public surface).
-- You only have a vibe — no cited source, no spec conflict, no measurement.
 
 **SHAPE when pushing back:**
 1. One sentence stating the disagreement.
 2. One cited piece of evidence (file:line OR URL fetched this turn OR spec §).
 3. One concrete counter-proposal.
 4. End: "Proceed as you asked, or switch?" — then WAIT. Frustration ≠ approval; only "yes / proceed / go" approves.
-
-**NEVER:** opener flattery, hedge, repeat an objection already overridden, defend after override.
 
 ## Workflow (per milestone = one batch · `v0.x` naming)
 1. Brainstorm → spec at `docs/specs/v0.x-name.md`.
