@@ -22,13 +22,15 @@ describe('estimateHeight', () => {
   })
   it('doubles with zoom 2, up to the single floor in computePdfRender', () => {
     // Not exactly 2x: computePdfRender floors cssH (computePdfRender.ts:85), and
-    // floor(2x) - 2*floor(x) = floor(2*frac(x)) is 0 or 1. Here frac is 0.7059, so
-    // it is 1. Tolerance 1 is the exact bound, not slop — a wider window would hide
-    // genuine estimate-vs-render drift, which is the bug class this file guards.
-    const doubled = estimateHeight(1, DIMS, FB, 900, 1) * 2
-    const actual = estimateHeight(1, DIMS, FB, 900, 2)
-    expect(actual - doubled).toBeGreaterThanOrEqual(0)
-    expect(actual - doubled).toBeLessThanOrEqual(1)
+    // floor(2x) - 2*floor(x) = floor(2*frac(x)). For this fixture frac is 0.7059,
+    // so the answer is exactly 1 — asserted as an equality, not a range, so a
+    // change in zoom handling fails loudly instead of sliding inside a window.
+    //
+    // This checks LINEARITY (zoom is applied once, not dropped or squared); it does
+    // NOT discriminate the floating-point associativity trap, since a hand-rolled
+    // floor(floor(h*fs)*zoom) would land inside any bound expressible here. The
+    // next test is the one that catches that, by comparing against real cssH.
+    expect(estimateHeight(1, DIMS, FB, 900, 2) - estimateHeight(1, DIMS, FB, 900, 1) * 2).toBe(1)
   })
   it('is byte-identical to the rendered canvas cssH (no FP drift)', () => {
     // guards the associativity trap: h*(fs*zoom) !== (h*fs)*zoom in floating point

@@ -66,12 +66,16 @@ describe('installPdfLayout', () => {
 })
 
 describe('stubPageRects', () => {
+  let unstub: (() => void) | null = null
+
   afterEach(() => {
+    unstub?.()
+    unstub = null
     vi.restoreAllMocks()
   })
 
   it('stacks pages so page N starts at (N-1) * pageHeight', () => {
-    stubPageRects(1000)
+    unstub = stubPageRects(1000)
     const page = document.createElement('div')
     page.setAttribute('data-page-number', '3')
     expect(page.getBoundingClientRect().top).toBe(2000)
@@ -81,7 +85,7 @@ describe('stubPageRects', () => {
   it('resolves the page from an ANCESTOR, so nested content inherits its page rect', () => {
     // Excerpt capture measures the page's contentEl, which is a child of the
     // [data-page-number] wrapper — closest() must climb to it.
-    stubPageRects(1000)
+    unstub = stubPageRects(1000)
     const page = document.createElement('div')
     page.setAttribute('data-page-number', '2')
     const content = document.createElement('div')
@@ -90,7 +94,19 @@ describe('stubPageRects', () => {
   })
 
   it('treats an element outside any page as page 0, so it sorts above page 1', () => {
-    stubPageRects(1000)
+    unstub = stubPageRects(1000)
     expect(document.createElement('div').getBoundingClientRect().top).toBe(-1000)
+  })
+
+  it('restores getBoundingClientRect, so the stub cannot leak into later test files', () => {
+    // The leak is real if unguarded: tests/setup.tsx:250 runs vi.clearAllMocks()
+    // (calls only, not implementations) and vitest.config.ts:35 sets isolate:false,
+    // so one happy-dom context is shared across a worker's files.
+    const undo = stubPageRects(1000)
+    const page = document.createElement('div')
+    page.setAttribute('data-page-number', '3')
+    expect(page.getBoundingClientRect().top).toBe(2000)
+    undo()
+    expect(page.getBoundingClientRect().top).toBe(0)
   })
 })

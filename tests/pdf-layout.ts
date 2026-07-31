@@ -58,9 +58,20 @@ export function installPdfLayout(opts: { width?: number; height?: number } = {})
  * Give every `[data-page-number]` element a non-zero rect, so excerpt-capture's
  * page resolution and rect filtering have real geometry to work against.
  * `pageHeight` must match what `estimateHeight` yields for the mocked dims.
+ *
+ * Returns a restore fn, mirroring `installPdfLayout`. Why it must be called:
+ * `vi.spyOn` replaces the prototype method, the global afterEach in
+ * `tests/setup.tsx:250` runs `vi.clearAllMocks()` (which clears CALLS, not
+ * implementations) rather than `restoreAllMocks()`, and the renderer project sets
+ * `isolate: false` (`vitest.config.ts:35`) so one happy-dom context is shared by
+ * every file in a worker. Without restoring, a stubbed `getBoundingClientRect`
+ * leaks into unrelated later files and fails them in confusing places.
+ *
+ * @see docs/plans/v0.8-multipage-pdf.md §Task 1.0
+ * @issue utof/linsae#154
  */
-export function stubPageRects(pageHeight: number, width = 900): void {
-  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+export function stubPageRects(pageHeight: number, width = 900): () => void {
+  const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
     this: HTMLElement,
   ) {
     const n = Number(this.closest('[data-page-number]')?.getAttribute('data-page-number') ?? 0)
@@ -77,4 +88,5 @@ export function stubPageRects(pageHeight: number, width = 900): void {
       toJSON: () => ({}),
     } as DOMRect
   })
+  return () => spy.mockRestore()
 }
