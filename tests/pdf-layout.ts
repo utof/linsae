@@ -39,7 +39,17 @@ export function installPdfLayout(opts: { width?: number; height?: number } = {})
   globalThis.ResizeObserver = class {
     constructor(private cb: ResizeObserverCallback) {}
     observe(el: Element) {
-      this.cb([{ target: el } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver)
+      // contentRect/borderBoxSize are populated, not just `target`: a real RO entry
+      // carries them, and PdfReader measuring via `entry.contentRect.width` is at
+      // least as idiomatic as `el.clientWidth`. With a target-only entry the former
+      // throws, so the harness would silently dictate the consumer's implementation.
+      const entry = {
+        target: el,
+        contentRect: { width, height, top: 0, left: 0, bottom: height, right: width, x: 0, y: 0 },
+        borderBoxSize: [{ inlineSize: width, blockSize: height }],
+        contentBoxSize: [{ inlineSize: width, blockSize: height }],
+      } as unknown as ResizeObserverEntry
+      this.cb([entry], this as unknown as ResizeObserver)
     }
     unobserve() {}
     disconnect() {}

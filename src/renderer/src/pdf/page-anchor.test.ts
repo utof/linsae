@@ -18,8 +18,10 @@ describe('page-anchor', () => {
   })
 
   it('round-trips at a non-round offset', () => {
-    // 40777 is interior to [40000, 42000); assert exact equality — both directions
-    // are plain multiply/divide with no intermediate flooring, so no FP slop.
+    // 40777 is interior to [40000, 42000); assert exact equality. NOT because
+    // (x/y)*y === x in general — it does not, for many IEEE-754 pairs — but because
+    // `start` and `size` are integers here, as they are in production (estimateHeight
+    // floors cssH and virtual-core sums integer starts). Residual error stays ≤1 ULP.
     const anchor = anchorFromOffset(40777, ITEM)
     expect(offsetFromAnchor(anchor.fraction, ITEM)).toBe(40777)
   })

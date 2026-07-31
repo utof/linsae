@@ -35,6 +35,10 @@ export function estimateHeight(
   zoom: number,
 ): number {
   const d = dims.get(pageNumber) ?? fallback
+  // Only `w` is guarded because only `w` is a DIVISOR (fitScale = containerWidth / w),
+  // so w === 0 yields floor(0 * Infinity) = NaN and a NaN item size corrupts the
+  // virtualizer. `h` is a multiplicand: h === 0 degrades to cssH 0, indistinguishable
+  // from an unmeasured page. The asymmetry is deliberate, not an oversight.
   if (d.w <= 0 || containerWidth <= 0) return 0
   return computePdfRender(containerWidth, d.w, d.h, 1, zoom).cssH
 }
@@ -86,7 +90,13 @@ export function usePdfPageDims(doc: PDFDocumentProxy | null | undefined) {
         dimsRef.current.set(1, d)
         setFallback(d)
       })
-      .catch(() => {})
+      // Do NOT reopen the gate on failure — `fallback === null` is what keeps doc A's
+      // heights from leaking into doc B (see the swap note above). But do not swallow
+      // the reason either: pdf.js resolves getDocument() before validating the page
+      // tree, so a corrupt page-1 object opens fine and fails only here, leaving a
+      // permanently blank pane. Without this line there is nothing in the console to
+      // explain it. Surfacing it in the UI is tracked separately.
+      .catch((err) => console.error('[usePdfPageDims] page 1 dims failed', err))
   }, [doc])
 
   /**
@@ -101,7 +111,13 @@ export function usePdfPageDims(doc: PDFDocumentProxy | null | undefined) {
       if (!doc) return null
       if (dimsRef.current.has(pageNumber) || inFlightRef.current.has(pageNumber)) return null
       const gen = genRef.current
-      inFlightRef.current.add(pageNumber)
+      // Capture the SET, not just the generation: the effect above installs a fresh
+      // Set on every document swap, so a `finally` that re-read `inFlightRef.current`
+      // would delete this page from the NEXT document's in-flight set — clearing a
+      // marker it never placed and letting a duplicate getPage through for a page
+      // that is still airborne. Deleting from our own (now-discarded) set is a no-op.
+      const inFlight = inFlightRef.current
+      inFlight.add(pageNumber)
       try {
         const p = await doc.getPage(pageNumber)
         if (genRef.current !== gen) return null // document swapped mid-flight — discard
@@ -112,7 +128,7 @@ export function usePdfPageDims(doc: PDFDocumentProxy | null | undefined) {
       } catch {
         return null
       } finally {
-        inFlightRef.current.delete(pageNumber)
+        inFlight.delete(pageNumber)
       }
     },
     [doc],

@@ -20,7 +20,12 @@ describe('capBitmapPixels', () => {
     const base = computePdfRender(900, 612, 792, 2, 5) // zoom 5
     const capped = capBitmapPixels(base.cssW, base.cssH, 2)
     expect(base.bitmapW * base.bitmapH).toBeGreaterThan(MAX_PAGE_BITMAP_PX) // precondition
-    expect(capped.bitmapW * capped.bitmapH).toBeLessThanOrEqual(MAX_PAGE_BITMAP_PX)
+    // 1.001, not an exact ceiling: the dims are Math.round'ed, so the product can sit
+    // a few thousand px over (worst measured +3,444 = 0.02%). Math.floor would remove
+    // the overshoot but break identity-with-computePdfRender at fractional dpr. This
+    // fixture happens to land 157px UNDER the cap, so an exact assertion here would be
+    // green by luck and would go red on an unrelated fixture change.
+    expect(capped.bitmapW * capped.bitmapH).toBeLessThanOrEqual(MAX_PAGE_BITMAP_PX * 1.001)
     expect(capped.bitmapW * capped.bitmapH).toBeGreaterThan(MAX_PAGE_BITMAP_PX * 0.98)
   })
 
@@ -36,5 +41,21 @@ describe('capBitmapPixels', () => {
 
   it('handles a zero-area page without NaN', () => {
     expect(Number.isNaN(capBitmapPixels(0, 0, 2).bitmapW)).toBe(false)
+  })
+
+  it('honours an explicit maxPx, so the cap is a parameter and not just a constant', () => {
+    // The 4th param had no coverage; a small explicit ceiling also makes the cap
+    // arithmetic checkable by hand instead of against an 8-digit constant.
+    const capped = capBitmapPixels(1000, 1000, 4, 1_000_000)
+    expect(capped.bitmapW).toBe(1000) // sqrt(1e6/1e6) = 1, so dpr degrades 4 -> 1
+    expect(capped.bitmapW * capped.bitmapH).toBeLessThanOrEqual(1_000_000)
+  })
+
+  it('drops the transform when the cap lands EXACTLY on dpr 1', () => {
+    // 4096*4096*1 == 2^24 exactly, so effectiveDpr is precisely 1 and the result must
+    // be indistinguishable from the uncapped dpr-1 case — no identity transform.
+    const capped = capBitmapPixels(4096, 4096, 2)
+    expect(capped.transform).toBeUndefined()
+    expect(capped.bitmapW).toBe(4096)
   })
 })
