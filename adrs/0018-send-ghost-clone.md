@@ -1,6 +1,6 @@
 # 0018 — Send animation via a position:fixed ghost clone
 
-Status: accepted (v0.2.1)
+Status: superseded by [0020](0020-remove-send-ghost.md) (v0.2.1)
 
 ## Context
 
