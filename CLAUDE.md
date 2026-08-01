@@ -64,6 +64,10 @@ note: A task is simple only if ALL four hold:
 
 **Retirement (the other half of the gate):** every milestone closes or explicitly re-affirms the open issues in the area it touched — filing without a closing rule is how a backlog reaches 156 open / 24 closed. Closing on "this is already fixed" requires a `file:line` that proves it; without one, leave it open and say why.
 
+**Don't file consolidated issues.** One issue = one closable claim. A "review nits Tasks 4–12" bucket (#8, ~20 items) or a "5 residuals" bucket (#7) can **never** reach fixed — one live line pins it open forever while its dead sub-items rot invisibly, and no sweep can see them without re-verifying every line by hand. For the ones that already exist: when the majority of sub-items is dead, close the bucket and re-file the live remainder as singletons.
+
+**A stale issue can be worse than an open one — it can be inverted.** #7's item 4 asked to document why `lefthook.yml` must stay `parallel: false`; the precommit-parallelization work made it `parallel: true`, so the item now instructs the opposite of current policy. When a milestone invalidates an issue's *premise* rather than fixing it, say so on the issue — a reader who finds it later will otherwise implement the reversal.
+
 ## Subagent briefing (paste verbatim into every Task prompt)
 > **Tools (in priority order):** `mcp__codebase-memory-mcp__*` before Grep/Glob/find; `context7` MCP (`mcp__plugin_context7_context7__*`) for any library/framework/SDK doc — training data is stale, verify even well-known APIs. **deepwiki is NOT installed** — use `gh` CLI or WebFetch for GitHub repos. WebSearch / WebFetch for anything else uncertain. Do not guess API shapes. **Read `CLAUDE.md` first.** Outputs must be falsifiable: cite file:line, link sources.
 
