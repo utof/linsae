@@ -7,6 +7,7 @@ import type { SessionSnapshot } from '../persistence/keys'
 import { useSessionSnapshot } from '../persistence/useSessionSnapshot'
 import { clampZoom, computePdfRender } from './computePdfRender'
 import { useExcerptStore } from './excerptState'
+import { PageIndicator, type PageIndicatorHandle } from './PageIndicator'
 import { type AnchorItem, anchorFromOffset, offsetFromAnchor, type PageAnchor } from './page-anchor'
 import { pdfRectToCssBox } from './pdfRectToCssBox'
 import { usePendingJumpStore } from './pendingJumpState'
@@ -337,6 +338,8 @@ export function PdfReader(): React.JSX.Element {
   // by the re-anchor effect below (and, from Batch 5, the persist writer) at event
   // time; as state it would re-render the whole pane on every scroll frame.
   const anchorRef = useRef<PageAnchor | null>(null)
+  /** The page indicator's imperative handle — see `setAnchor` for why it is one. */
+  const indicatorRef = useRef<PageIndicatorHandle>(null)
   /**
    * A read-back jump taken out of the store but not yet performed — tagged with the
    * document it is for, since it is routinely consumed while `pdf.openDocId` is
@@ -389,6 +392,53 @@ export function PdfReader(): React.JSX.Element {
     commitRef.current()
   }, [])
 
+  /**
+   * Adopt a position as the live reader anchor AND mirror it into the page
+   * indicator. The SINGLE place `anchorRef` is assigned a value, so the two can
+   * never drift apart.
+   *
+   * Why the indicator is pushed to rather than reading state: `anchorRef` is a ref
+   * deliberately — it is written on every scroll frame precisely so a scroll does
+   * not re-render this pane. The indicator must RENDER that number, so promoting the
+   * anchor to state here would re-render every windowed page per frame and undo that
+   * decision. Pushing through the handle re-renders one leaf instead, and only when
+   * the integer page changes (`PageIndicator` bails out on an unchanged value).
+   */
+  const setAnchor = useCallback((a: PageAnchor) => {
+    anchorRef.current = a
+    indicatorRef.current?.report(a.page)
+  }, [])
+
+  /**
+   * Jump to a page from the indicator (plan §Task 6.1).
+   *
+   * The clamp is load-bearing, not hygiene: an out-of-range page indexes
+   * `measurementsCache` outside `count`, `readAnchorItem` returns null, and the jump
+   * SILENTLY does nothing — typing 9999 would read as a broken control rather than
+   * "the document ends at 500".
+   *
+   * Unlike the restore below this needs no `ensureDims`/`measure()` round-trip,
+   * because it lands at `fraction: 0`: `offsetFromAnchor(0, item)` is `item.start`,
+   * which never consults the TARGET page's own height. `readAnchorItem`'s own
+   * `getTotalSize()` is still what makes `item.start` current.
+   *
+   * `schedulePersist` is explicit rather than left to the `scroll` event the
+   * programmatic scroll will emit: the write must be armed whether or not that echo
+   * arrives (it does not under happy-dom), exactly as the zoom path is.
+   */
+  const jumpToPage = useCallback(
+    (page: number) => {
+      if (!doc) return
+      const target = Math.min(Math.max(1, Math.round(page)), Math.max(1, doc.numPages))
+      const item = readAnchorItem(virtualizer, target)
+      if (!item) return
+      virtualizer.scrollToOffset(offsetFromAnchor(0, item), { align: 'start' })
+      setAnchor({ page: target, fraction: 0 })
+      schedulePersist()
+    },
+    [doc, virtualizer, setAnchor, schedulePersist],
+  )
+
   // Wired as React's `onScroll` prop, NOT a native listener. `scroll` is one of
   // React's non-delegated events (`react-dom-client.development.js:27450-27454`), so
   // React attaches it directly to THIS element rather than to the root — it fires for
@@ -402,14 +452,14 @@ export function PdfReader(): React.JSX.Element {
       if (!ready) return
       const offset = e.currentTarget.scrollTop
       const item = virtualizer.getVirtualItemForOffset(offset)
-      if (item) anchorRef.current = anchorFromOffset(offset, item)
+      if (item) setAnchor(anchorFromOffset(offset, item))
       // v0.8/M7: the position write is driven from HERE, not from a `useEffect` dep.
       // `anchorRef` is deliberately a ref (a scroll must not re-render the pane), so
       // there is no render for a dep array to observe — the scroll event itself is
       // the only trigger that exists. Same shape as `ThreadView.onGenericScroll`.
       schedulePersist()
     },
-    [ready, virtualizer, schedulePersist],
+    [ready, virtualizer, schedulePersist, setAnchor],
   )
 
   /**
@@ -637,10 +687,10 @@ export function PdfReader(): React.JSX.Element {
       // byte-equal to what is stored, so the echo guard suppresses the write
       // entirely; after a jump the writer persists where the user now IS. Leaving it
       // null instead would keep the pre-jump page as the thing that gets persisted.
-      anchorRef.current = { page, fraction }
+      setAnchor({ page, fraction })
       setFlash(overlay)
     })()
-  }, [ready, doc, pdfId, pendingJump, ensureDims, virtualizer])
+  }, [ready, doc, pdfId, pendingJump, ensureDims, virtualizer, setAnchor])
 
   // Fade the flash after FLASH_MS. Keyed on the overlay object, so a second jump
   // while one is up restarts the clock instead of inheriting the old timer.
@@ -774,9 +824,26 @@ export function PdfReader(): React.JSX.Element {
     )
 
   return (
+    // A `div` receives PageUp / PageDown / Home / End only while FOCUSED, and this
+    // root carried no `tabIndex` until now — so those keys did nothing in the reader.
+    // `tabIndex={0}` is the whole fix: the browser then pages a focused scrollable
+    // box natively, which is strictly better than re-implementing paging (it already
+    // knows the viewport height, the overscroll behaviour and the platform's
+    // smooth-scroll setting). No focus ring is added: Chromium paints the UA outline
+    // only on `:focus-visible`, i.e. keyboard focus — exactly when the user needs to
+    // know the keys are live — and never on the click-to-focus that selecting text
+    // performs. (Plan §Task 6.1.)
+    //
+    // No `role="region"` to go with it: biome's `useSemanticElements` correctly says
+    // that role belongs on a `<section>`, and this element cannot become one — it is
+    // typed `HTMLDivElement` through `useVirtualizer<HTMLDivElement, HTMLDivElement>`
+    // and `useExcerptCapture`'s `scrollEl`. A bare `aria-label` without a role is not
+    // exposed by AT, so it would be decoration.
     <div
       ref={setPageEl}
       onScroll={onScroll}
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable box MUST be keyboard-reachable (WCAG 2.1.1 / SC 2.1.1 scrollable-region technique), and the alternative — hand-implementing PageUp/PageDown/Home/End — is what plan §Task 6.1 forbids
+      tabIndex={0}
       style={{
         position: 'relative',
         width: '100%',
@@ -857,6 +924,23 @@ export function PdfReader(): React.JSX.Element {
             </div>
           ))}
         </div>
+      )}
+      {ready && doc && (
+        // AFTER the spacer, never before it: the spacer must stay this scroller's
+        // first element child — that is what makes native `scrollHeight` the virtual
+        // document's height (and what `tests/pdf-layout.ts`'s `installScrollHeight`
+        // reads). BEFORE the excerpt bar so that bar, a later positioned sibling,
+        // paints over the pill on the frames where both are up.
+        //
+        // `key={pdfId}` is defence in depth, NOT what resets the page today — and the
+        // swap test does not bite on removing it (mutation-checked). What resets it is
+        // the `ready` gate above: `usePdfPageDims` re-nulls `fallback` on every doc
+        // change, so this whole subtree unmounts across a swap and the indicator's
+        // page state goes with it. The key states the invariant locally — this
+        // component's identity IS the document — so that showing the indicator during
+        // a load (i.e. outside the gate) cannot silently reintroduce "doc B opens
+        // claiming doc A's page".
+        <PageIndicator key={pdfId} ref={indicatorRef} numPages={doc.numPages} onJump={jumpToPage} />
       )}
       {pending && (
         <div

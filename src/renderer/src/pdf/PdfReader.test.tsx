@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, render, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { installPdfLayout, installScrollHeight } from '../../../../tests/pdf-layout'
 import { installMockApi, type MockApi } from '../../../../tests/setup'
@@ -1028,5 +1028,132 @@ describe('PdfReader read-back drain (spec §5.2–§5.4)', () => {
     await flushThrottle()
 
     expect(lastSet(mockApi).value.A).toMatchObject({ page: 120, pageFraction: 0 })
+  })
+})
+
+// ─── Page indicator + jump-to-page + focusable scroller (plan §Task 6.1) ─────
+
+/** The indicator's display-mode pill; null while its editor is open. */
+const pageIndicator = (container: HTMLElement): HTMLElement | null =>
+  container.querySelector('[data-testid="pdf-page-indicator"]')
+
+/** Click the indicator, type `value`, press Enter. */
+async function jumpTo(container: HTMLElement, value: string): Promise<void> {
+  await act(async () => {
+    fireEvent.click(pageIndicator(container) as HTMLElement)
+  })
+  const input = container.querySelector('[data-testid="pdf-page-input"]') as HTMLInputElement
+  await act(async () => {
+    fireEvent.change(input, { target: { value } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+  })
+}
+
+describe('PdfReader page indicator (plan §Task 6.1)', () => {
+  it('makes the scroll container focusable so the browser can page it natively', async () => {
+    // The whole of "PageUp / PageDown / Home / End work". A `div` receives those keys
+    // only while focused, and this root had no `tabIndex` before Task 6.1 — so the
+    // keys went to the document and did nothing here. Asserted as the ATTRIBUTE
+    // rather than via `focus()`: happy-dom's `HTMLElement.focus()` sets
+    // `document.activeElement` without consulting focusability, so an activeElement
+    // assertion passes with `tabIndex` deleted and proves nothing.
+    const { container } = await bootAt({})
+
+    expect(pageEl(container).getAttribute('tabindex')).toBe('0')
+    expect(pageEl(container).tabIndex).toBe(0)
+  })
+
+  it('shows the page the reader is parked on, in "page / numPages" form', async () => {
+    const { container } = await bootAt({})
+    expect(pageIndicator(container)?.textContent).toBe(`1 / ${NUM_PAGES}`)
+
+    await scrollToPage(container, 7)
+
+    // `anchorRef` is a REF on purpose — nothing re-renders the pane on a scroll — so
+    // this string existing at all is the proof that the reader pushes the anchor into
+    // the indicator rather than the indicator reading render state that never updates.
+    expect(pageIndicator(container)?.textContent).toBe(`7 / ${NUM_PAGES}`)
+  })
+
+  it('shows the RESTORED page at boot, before the user has scrolled', async () => {
+    const { container } = await bootAt({ A: { zoom: 1, page: 40, pageFraction: 0 } })
+
+    await landedOn(container, 40)
+
+    // happy-dom's programmatic scroll fires no `scroll` event (`Element.js:993-1011`),
+    // so nothing reaches `onScroll` here: the indicator is only right if the restore's
+    // own landing is reported too. In a real browser the echo would mask that gap.
+    await waitFor(() => expect(pageIndicator(container)?.textContent).toBe(`40 / ${NUM_PAGES}`))
+  })
+
+  it('jumps to a typed page FAR beyond the current scroll position, in one shot', async () => {
+    // Also the #188 check. That bug is a scroll issued in the same task as a change to
+    // the CONTENT SIZE: the spacer still carries the old height, so the browser clamps
+    // the new offset into the old range. A jump changes only the offset — the spacer
+    // already spans all 500 pages — so the range it needs is already there. Jumping
+    // from page 1 to the LAST page is the maximal version of that claim: if a jump
+    // could be clamped by a stale range, 500 is where it would show.
+    const { container } = await bootAt({})
+    expect(pageEl(container).scrollTop).toBe(0) // guard the guard
+
+    await jumpTo(container, String(NUM_PAGES))
+
+    expect(anchorAt(container, 1)).toEqual({ page: NUM_PAGES, fraction: 0 })
+    expect(pageEl(container).scrollTop).toBeCloseTo((NUM_PAGES - 1) * strideAt(1), 0)
+  })
+
+  it('clamps a past-the-end page to the last page instead of doing nothing', async () => {
+    // Unclamped, `readAnchorItem(v, 9999)` reads `measurementsCache` outside `count`
+    // and the jump is a SILENT no-op — the control reads as broken rather than as
+    // "the document ends at 500".
+    const { container } = await bootAt({})
+
+    await jumpTo(container, '9999')
+
+    expect(anchorAt(container, 1).page).toBe(NUM_PAGES)
+  })
+
+  it('clamps a below-1 page to page 1', async () => {
+    const { container } = await bootAt({})
+    await scrollToPage(container, 50)
+    expect(anchorAt(container, 1).page).toBe(50) // guard the guard
+
+    await jumpTo(container, '0')
+
+    expect(pageEl(container).scrollTop).toBe(0)
+    expect(anchorAt(container, 1)).toEqual({ page: 1, fraction: 0 })
+  })
+
+  it('persists the jumped-to page', async () => {
+    // `schedulePersist` is called by the jump itself rather than left to the `scroll`
+    // event the programmatic scroll emits — which happy-dom never emits, and which a
+    // real browser emits only after the fact.
+    const { container } = await bootAt({})
+    // Drain the MOUNT-TIME throttle arm first. Without this the assertion below is
+    // vacuous (mutation-checked): that timer fires ~200 ms in, i.e. after the jump,
+    // and commits the jumped anchor even with `schedulePersist` deleted from the jump.
+    await flushThrottle()
+    expect(mockApi.settings.set).not.toHaveBeenCalled()
+
+    await jumpTo(container, '120')
+    await flushThrottle()
+
+    expect(lastSet(mockApi).value.A).toMatchObject({ page: 120, pageFraction: 0 })
+  })
+
+  it('does not show doc A’s page after swapping to doc B', async () => {
+    const { container, swapTo } = await bootAt({})
+    await scrollToPage(container, 7)
+    expect(pageIndicator(container)?.textContent).toBe(`7 / ${NUM_PAGES}`) // guard the guard
+
+    await swapTo('B')
+
+    // The indicator's page is local state, and B must not open claiming to be on A's
+    // page — for an unseen B, forever, since nothing would ever report a correction.
+    // What resets it is the boot gate: `fallback` re-nulls on a doc change, so the
+    // indicator's subtree unmounts across the swap. (`key={pdfId}` on the component
+    // states the same invariant locally but is NOT what this test bites on —
+    // mutation-checked.)
+    await waitFor(() => expect(pageIndicator(container)?.textContent).toBe(`1 / ${NUM_PAGES}`))
   })
 })
