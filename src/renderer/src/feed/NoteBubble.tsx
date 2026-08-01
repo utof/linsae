@@ -1,9 +1,10 @@
-import { ChevronDown, LayoutGrid, Link2, MessagesSquare, Pen, Trash2 } from 'lucide-react'
+import { ChevronDown, FileText, LayoutGrid, Link2, MessagesSquare, Pen, Trash2 } from 'lucide-react'
 import { type MouseEvent, useEffect, useRef, useState } from 'react'
-import type { Note } from '../../../shared/types'
+import type { Note, PdfLocator } from '../../../shared/types'
 import { useClock24 } from '../lib/clock-pref'
 import { Markdown } from '../lib/markdown'
 import { formatTimeOnly } from '../lib/wallclock'
+import { useOpenPdfAt } from '../pdf/useOpenPdfAt'
 import { type ContextMenuPos, NoteContextMenu } from './ContextMenu'
 import { MediaFeedNoteContainer } from './MediaFeedNote'
 import { PdfFeedNoteContainer } from './PdfFeedNote'
@@ -16,6 +17,65 @@ import { PdfFeedNoteContainer } from './PdfFeedNote'
  * pasted 10k-char log doesn't dominate the feed's visual rhythm.
  */
 const BODY_TRUNCATE_AT = 4096
+
+/**
+ * The "open source" read-back chip on a PDF excerpt bubble (spec §5.1) — clicking
+ * it reopens the reader scrolled to, and flashing, the rect this note was captured
+ * from.
+ *
+ * Store-driven, not prop-driven: `NoteBubble` is rendered by the feed AND by the
+ * generic thread child list, which passes no reader prop at all
+ * (`thread/ThreadView.tsx:937-949`) — and the thread is exactly where excerpts are
+ * read, so a prop-driven affordance would be silently dead there.
+ *
+ * Why a separate component rather than an inline chip in `NoteBubble`'s body: it
+ * exists to keep `useOpenPdfAt` off `NoteBubble`'s hook list. That hook reaches
+ * `useQueryClient` (`lib/use-setting.ts:21`), which throws without a
+ * `QueryClientProvider`, and `NoteBubble` is rendered as a plain leaf under bare
+ * RTL `render` in suites that install no provider (`feed/Feed.selection.test.tsx:2`
+ * — calling it unconditionally in the parent threw in all 25 of that file's tests).
+ * Mounted only for excerpts, the provider requirement lands exactly where the
+ * feature does.
+ *
+ * @see docs/specs/v0.8-multipage-pdf.md §5.1
+ * @issue utof/linsae#155
+ */
+function PdfReadBackChip({ locator }: { locator: PdfLocator }) {
+  const openPdfAt = useOpenPdfAt()
+  return (
+    <button
+      type="button"
+      title={`open source — page ${locator.page}`}
+      aria-label="open source"
+      onClick={(e) => {
+        // stopPropagation so read-back doesn't ALSO focus the bubble (which opens
+        // the backlinks pane — see handleContextMenu's note on the same hazard).
+        e.stopPropagation()
+        // The whole locator, not just the id: `useOpenPdfAt` queues it as the
+        // pending jump (`pdf/useOpenPdfAt.ts:34`), and that is what makes the
+        // reader scroll to the captured rect and flash rather than reopening the
+        // document wherever it was last left (spec §5.2 vs §6).
+        openPdfAt(locator.pdf_id, locator)
+      }}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        border: 0,
+        background: 'transparent',
+        color: 'var(--type-source)',
+        cursor: 'pointer',
+        padding: 0,
+        // The time row it sits in is pointerEvents:none so it never eats bubble
+        // clicks; the chip opts back in, same as the ▦ placed chip.
+        pointerEvents: 'auto',
+        fontSize: 11,
+        lineHeight: 1,
+      }}
+    >
+      <FileText size={11} />
+    </button>
+  )
+}
 
 interface Props {
   note: Note
@@ -243,6 +303,20 @@ export function NoteBubble({
       </button>
     ) : null
 
+  // "open source" read-back chip (spec §5.1) — a pdf EXCERPT only. `page != null`
+  // is the load-bearing half of the predicate: `media === 'pdf'` alone also matches
+  // the document-level source note (which early-returns into PdfFeedNoteContainer
+  // below and carries its own "open in pdf reader" button) and a page-less pdf
+  // comment-note, which has no page to read back TO. Mirrors `isPdfDoc`'s
+  // discriminator, inverted. Rendered inline beside `placedChip` rather than in the
+  // hover bar: it is the primary reason to touch an excerpt, and the thread is
+  // where excerpts are read.
+  const readBack =
+    note.source_locator?.media === 'pdf' && note.source_locator.page != null
+      ? note.source_locator
+      : null
+  const readBackChip = readBack ? <PdfReadBackChip locator={readBack} /> : null
+
   // PDF document-level branch: render PdfFeedNoteContainer for a doc-level PDF
   // source note (no page anchor). The `page == null` check (covers both null and
   // undefined) is the load-bearing discriminator: excerpts are ALSO
@@ -406,6 +480,7 @@ export function NoteBubble({
             {expanded ? 'collapse' : `expand (${wordCount.toLocaleString()} words)`}
           </button>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            {readBackChip}
             {placedChip}
             {note.updated_at > note.created_at && (
               <span
@@ -446,6 +521,7 @@ export function NoteBubble({
             pointerEvents: 'none',
           }}
         >
+          {readBackChip}
           {placedChip}
           {note.updated_at > note.created_at && (
             <span

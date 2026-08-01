@@ -25,11 +25,16 @@
  *   G4 zoom to ZOOM_MAX    — resident canvas bytes AND renderer working set stay under
  *                            stated §4.4 ceilings, and the reader keeps its page
  *                            (criterion 3).
+ *   G3c read-back          — clicking that note's "open source" chip reopens the reader
+ *                            ON page N and paints the flash over the very rect that was
+ *                            captured (criterion 6). Driven from the PDF's THREAD — the
+ *                            only surface that renders an excerpt, and the one that
+ *                            passes no reader prop.
  *   G5 500-page open       — open-to-first-paint has no stall and the list stays
  *                            windowed; G6 scrolling to page 500 completes and paints
  *                            (criterion 2 at book scale).
- *   G7 restore-to-page     — SKIPPED until Batch 5 lands the writer; see
- *                            RESTORE_GATE_LANDS_IN_BATCH_5 (Task 5.3 Step 3).
+ *   G7 restore-to-page     — quit + relaunch lands back on the page that was left
+ *                            (criterion 5). Live since Batch 5 (Task 5.3 Step 3).
  *
  * Every gate is independently trapped and reported, then the run throws once at the
  * end listing all failures. A diagnostic smoke that dies on its first assertion hides
@@ -158,12 +163,21 @@ const MAX_MOUNTED_PAGES = 6
 const PAGE_GAP_PX = 12
 
 /**
- * G7 (quit → relaunch → restore to the same page) is written out below but not run:
- * the `pdf.view.v1` page / pageFraction writer does not exist until Batch 5 Task 5.1,
- * so today it would fail for a missing feature rather than a broken one.
- * **Task 5.3 Step 3 flips this to `false`.**
+ * G7 (quit → relaunch → restore to the same page) ran as a SKIP until the
+ * `pdf.view.v1` page / pageFraction writer landed in Batch 5 Task 5.1 — before that it
+ * would have failed for a missing feature rather than a broken one. Task 5.3 Step 3
+ * flipped it to `false`; the flag is kept (rather than deleted with its `else` branch
+ * inlined) so re-skipping it is a one-character change if the writer is ever pulled.
  */
-const RESTORE_GATE_LANDS_IN_BATCH_5 = true
+const RESTORE_GATE_LANDS_IN_BATCH_5 = false
+
+/**
+ * How far the read-back flash may sit from the captured rect projected onto the page,
+ * in CSS px. The overlay reproduces `PdfPage`'s content box exactly
+ * (`PdfReader.tsx:827-855`), so the only slack is the user-space → CSS scale rounding;
+ * observed here at well under 1 px.
+ */
+const FLASH_POSITION_TOLERANCE_CSS_PX = 3
 
 // ── Page-realm helpers ───────────────────────────────────────────────────────
 // Each is passed whole to `evaluate` / `waitForFunction`, which serializes the
@@ -573,6 +587,108 @@ try {
         return `left edge ${x} ≈ ${PAGE3_TEXT_LEFT_PDF_X}, and the box sits inside ${PAGE3_USER_W} × ${PAGE3_USER_H}`
       })
 
+      // ── G3c — read-back lands on page N WITH the flash (criterion 6) ───────
+      // Driven through the PDF's THREAD, not the feed. The excerpt is created as a
+      // comment-on child (`App.tsx:381-385`) and the feed excludes those
+      // (`App.tsx:117`, `excludeThreadChildren: true`), so the thread is the only
+      // surface that renders it — and it is the call-site that passes NO reader prop
+      // (`thread/ThreadView.tsx:937-949`), which is the entire reason the affordance
+      // is store-driven. Exercising it anywhere else would not test that.
+      //
+      // The thread is left open afterwards: it is a branch inside <main>, peer to the
+      // feed, and both DockHosts stay mounted across it (`App.tsx:1204`), so the
+      // reader — which every gate below measures — is untouched by it.
+      await gate('read-back-jump-and-flash', async () => {
+        assert.ok(detail.locator?.rect, 'no captured locator (see excerpt-page-resolution)')
+
+        // Park the reader on page 1 FIRST. G3's drag left it on page 3, so
+        // "read-back landed on page 3" would otherwise be true without any jump
+        // having happened — a gate that cannot fail.
+        await scroller.evaluate((el) => {
+          el.scrollTop = 0
+        })
+        await win.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))))
+        const parked = await scroller.evaluate(visiblePages)
+        assert.ok(
+          !parked.includes(MULTI_PAGE_COUNT),
+          `could not park the reader off page ${MULTI_PAGE_COUNT} (visible ${JSON.stringify(parked)}) — the jump below would be unobservable`,
+        )
+
+        await win.locator('button[aria-label="open notes"]').first().click()
+        const readBack = win.locator('button[aria-label="open source"]').first()
+        await readBack.waitFor({ timeout: 15_000 })
+
+        // Record the flash the instant it mounts. It is unmounted after FLASH_MS
+        // (600 ms, `PdfReader.tsx:58-60`), so querying for it after the click races
+        // the fade — and a gate that intermittently misses the window is worse than
+        // no gate. `offsetLeft`/`offsetTop` are relative to the overlay's own
+        // position:relative wrapper, which reproduces the page's content box
+        // (`PdfReader.tsx:831-833`), so they are directly comparable to the captured
+        // rect projected through the page's CSS scale.
+        await win.evaluate(() => {
+          window.__flashSeen = null
+          const capture = () => {
+            if (window.__flashSeen) return
+            const host = document.querySelector('[data-testid="pdf-readback-flash"]')
+            const wrap = host?.firstElementChild
+            const box = wrap?.firstElementChild
+            if (!box) return
+            const r = box.getBoundingClientRect()
+            window.__flashSeen = {
+              page: Number(
+                host.parentElement
+                  ?.querySelector('[data-page-number]')
+                  ?.getAttribute('data-page-number') ?? 0,
+              ),
+              pageWidth: wrap.getBoundingClientRect().width,
+              left: box.offsetLeft,
+              top: box.offsetTop,
+              width: r.width,
+              height: r.height,
+            }
+          }
+          new MutationObserver(capture).observe(document.body, { childList: true, subtree: true })
+          capture()
+        })
+
+        await readBack.click()
+        const handle = await win.waitForFunction(() => window.__flashSeen ?? null, undefined, {
+          timeout: 20_000,
+        })
+        const flash = await handle.jsonValue()
+        detail.flash = flash
+
+        const landed = await scroller.evaluate(visiblePages)
+        assert.ok(
+          landed.includes(MULTI_PAGE_COUNT),
+          `read-back left the reader on page(s) ${JSON.stringify(landed)}, not ${MULTI_PAGE_COUNT}`,
+        )
+        assert.equal(
+          flash.page,
+          MULTI_PAGE_COUNT,
+          `the flash painted over page ${flash.page}, not the page the excerpt came from (${MULTI_PAGE_COUNT})`,
+        )
+
+        // …and over the RIGHT box, not merely somewhere on the right page. The rect's
+        // VISUAL top is `y + h` because PDF user space is y-up (`pdfRectToCssBox`);
+        // asserting `y` instead would pass a flash one rect-height too low.
+        const [rx, ry, rw, rh] = detail.locator.rect
+        const scale = flash.pageWidth / PAGE3_USER_W
+        const want = {
+          left: rx * scale,
+          top: (PAGE3_USER_H - (ry + rh)) * scale,
+          width: rw * scale,
+          height: rh * scale,
+        }
+        for (const k of Object.keys(want)) {
+          assert.ok(
+            Math.abs(flash[k] - want[k]) <= FLASH_POSITION_TOLERANCE_CSS_PX,
+            `the flash's ${k} is ${flash[k].toFixed(1)}px, expected ${want[k].toFixed(1)}px from the captured rect ${JSON.stringify(detail.locator.rect)} at ${scale.toFixed(4)}× — the overlay is not on the excerpt`,
+          )
+        }
+        return `page ${flash.page} (from page(s) ${JSON.stringify(parked)}), flash at [${flash.left.toFixed(1)}, ${flash.top.toFixed(1)}, ${flash.width.toFixed(1)}, ${flash.height.toFixed(1)}] vs expected [${want.left.toFixed(1)}, ${want.top.toFixed(1)}, ${want.width.toFixed(1)}, ${want.height.toFixed(1)}]`
+      })
+
       // ── G4 — ZOOM_MAX: bounded canvas + bounded renderer (criterion 3) ─────
       const before = await rendererWorkingSetKb(app)
       const beforeCensus = await win.evaluate(canvasCensus)
@@ -788,6 +904,7 @@ try {
   console.log(`  resident canvas @ ZOOM_MAX  : ${JSON.stringify(detail.zoomMax?.census.canvases)}`)
   console.log(`  500-page first paint        : ${detail.bigFirstPaintMs}ms`)
   console.log(`  captured locator            : ${JSON.stringify(detail.locator)}`)
+  console.log(`  read-back flash             : ${JSON.stringify(detail.flash)}`)
 
   const failed = results.filter((r) => r.status === 'FAIL')
   if (failed.length > 0) {
