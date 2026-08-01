@@ -403,11 +403,10 @@ export function PdfReader(): React.JSX.Element {
     return () => pageEl.removeEventListener('wheel', onWheel)
   }, [pageEl])
 
-  // TODO(Batch 3): replaced by registry-based capture (#154). Until then capture is
-  // deliberately inert — the v0.6 hook resolves ONE page from reader-held state, which
-  // a page list cannot supply. Passing the live scroll element with null page/viewport
-  // would bind a listener that can never fire; passing nulls makes that explicit.
-  useExcerptCapture({ pdfId: pdfId ?? '', page: null, viewport: null, pageEl, contentEl: null })
+  // Excerpt capture resolves the anchor page from the selection itself and reads
+  // `registryRef.current` at event time, so ONE listener on the scroll container
+  // serves every windowed page and no page mount/unmount re-binds it (spec §4.7).
+  useExcerptCapture({ pdfId: pdfId ?? '', registryRef, scrollEl: pageEl })
 
   if (!pdfId)
     return <div style={{ padding: 'var(--space-4)', color: 'var(--fg-2)' }}>No PDF open.</div>
