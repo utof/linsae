@@ -524,7 +524,9 @@ describe('ThreadView capture flow', () => {
 
     // Esc → discard/keep-orphan prompt → Discard.
     fireEvent.keyDown(window, { key: 'Escape' })
-    fireEvent.click(screen.getByRole('button', { name: /^discard$/i }))
+    // findByRole, not getByRole: the prompt renders in response to the keydown, so a
+    // synchronous query asserts it committed in the same tick. That raced ~1 run in 3.
+    fireEvent.click(await screen.findByRole('button', { name: /^discard$/i }))
 
     await waitFor(() => expect(mockApi.attachments.remove).toHaveBeenCalledWith({ id: 'att-disc' }))
     // No chip after discard.
@@ -578,7 +580,8 @@ describe('ThreadView capture flow', () => {
     })
     fireEvent.pointerUp(svgEl, { clientX: 40, clientY: 50, pointerType: 'mouse', pressure: 0.5 })
     fireEvent.keyDown(window, { key: 'Escape' })
-    fireEvent.click(screen.getByRole('button', { name: /keep as orphan/i }))
+    // findByRole for the same reason as the discard case above — same prompt, same race.
+    fireEvent.click(await screen.findByRole('button', { name: /keep as orphan/i }))
 
     // (a) the drawing was saved (non-empty scene → serialized svg)
     await waitFor(() => expect(mockApi.youtube.saveOverlay).toHaveBeenCalled())

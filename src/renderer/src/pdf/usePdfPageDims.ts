@@ -1,4 +1,4 @@
-import type { PDFDocumentProxy } from 'pdfjs-dist'
+import type { RefObject } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { computePdfRender } from './computePdfRender'
 
@@ -6,6 +6,22 @@ import { computePdfRender } from './computePdfRender'
 export interface PageDims {
   w: number
   h: number
+}
+
+/**
+ * The MINIMAL document surface this hook needs — deliberately structural rather than
+ * `PDFDocumentProxy`.
+ *
+ * Why: the hook reads exactly `getPage(n)` and that page's scale-1 viewport size.
+ * Depending on the full proxy forced every test to cast its mock `as never`, which is
+ * a blunt instrument that would silently absorb a real mismatch if this hook later
+ * started reading, say, `numPages`. A real `PDFDocumentProxy` satisfies this
+ * structurally, so callers are unaffected. @issue utof/linsae#185
+ */
+export interface PageDimsSource {
+  getPage(pageNumber: number): Promise<{
+    getViewport(params: { scale: number }): { width: number; height: number }
+  }>
 }
 
 /**
@@ -64,7 +80,12 @@ export function estimateHeight(
  * @see docs/specs/v0.8-multipage-pdf.md §4.2
  * @issue utof/linsae#154
  */
-export function usePdfPageDims(doc: PDFDocumentProxy | null | undefined) {
+export function usePdfPageDims(doc: PageDimsSource | null | undefined): {
+  /** Read-only by contract: callers read it in `estimateSize`; only this hook writes. */
+  dimsRef: RefObject<ReadonlyMap<number, PageDims>>
+  fallback: PageDims | null
+  ensureDims: (pageNumber: number) => Promise<PageDims | null>
+} {
   const dimsRef = useRef<Map<number, PageDims>>(new Map())
   const [fallback, setFallback] = useState<PageDims | null>(null)
   const inFlightRef = useRef<Set<number>>(new Set())

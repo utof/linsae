@@ -34,7 +34,13 @@ export interface PageAnchor {
   fraction: number
 }
 
-const clamp01 = (n: number): number => Math.min(1, Math.max(0, n))
+// NaN is special-cased because `Math.max(0, NaN)` is NaN, so a bare min/max would
+// return NaN and `offsetFromAnchor` would hand the CSSOM a non-finite scrollTop, which
+// it normalizes to 0 — silently jumping to page 1 rather than clamping within the page,
+// breaking the guarantee stated on `offsetFromAnchor` below.
+// ±Infinity needs NO special case: min/max already carry them to 1 and 0, which is the
+// right reading of "past the end" / "before the start". @issue utof/linsae#184
+const clamp01 = (n: number): number => (Number.isNaN(n) ? 0 : Math.min(1, Math.max(0, n)))
 
 /**
  * Scroll offset → page anchor, given the item covering that offset.

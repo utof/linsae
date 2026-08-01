@@ -59,14 +59,14 @@ describe('usePdfPageDims (hook)', () => {
 
   it('seeds the fallback from page 1 only', async () => {
     const doc = mkDoc('A')
-    const { result } = renderHook(() => usePdfPageDims(doc as never))
+    const { result } = renderHook(() => usePdfPageDims(doc))
     await waitFor(() => expect(result.current.fallback).toEqual({ w: 612, h: 792 }))
     expect(doc.getPage).toHaveBeenCalledTimes(1) // NOT once per page — the 500-page cost model
   })
 
   it('coalesces concurrent ensureDims for the same page into one getPage', async () => {
     const doc = mkDoc('A')
-    const { result } = renderHook(() => usePdfPageDims(doc as never))
+    const { result } = renderHook(() => usePdfPageDims(doc))
     await waitFor(() => expect(result.current.fallback).not.toBeNull())
     await Promise.all([result.current.ensureDims(5), result.current.ensureDims(5)])
     expect(doc.getPage.mock.calls.filter((c) => c[0] === 5)).toHaveLength(1)
@@ -74,7 +74,7 @@ describe('usePdfPageDims (hook)', () => {
 
   it('returns null for an already-cached page (so the caller skips a redundant resizeItem)', async () => {
     const doc = mkDoc('A')
-    const { result } = renderHook(() => usePdfPageDims(doc as never))
+    const { result } = renderHook(() => usePdfPageDims(doc))
     await waitFor(() => expect(result.current.fallback).not.toBeNull())
     expect(await result.current.ensureDims(5)).not.toBeNull()
     expect(await result.current.ensureDims(5)).toBeNull()
@@ -91,7 +91,7 @@ describe('usePdfPageDims (hook)', () => {
             release = () => res({ getViewport: () => ({ width: 111, height: 111 }) })
           }),
     )
-    const { result, rerender } = renderHook(({ d }) => usePdfPageDims(d as never), {
+    const { result, rerender } = renderHook(({ d }) => usePdfPageDims(d), {
       initialProps: { d: docA },
     })
     await waitFor(() => expect(result.current.fallback).not.toBeNull())
@@ -106,7 +106,7 @@ describe('usePdfPageDims (hook)', () => {
     // The fixture makes page 7 a different height (500 vs 792) precisely so this is
     // checkable; without this assertion a set(n, {w, h: w}) transposition passes.
     const doc = mkDoc('A')
-    const { result } = renderHook(() => usePdfPageDims(doc as never))
+    const { result } = renderHook(() => usePdfPageDims(doc))
     await waitFor(() => expect(result.current.fallback).not.toBeNull())
     expect(await result.current.ensureDims(7)).toEqual({ w: 612, h: 500 })
   })
@@ -117,7 +117,7 @@ describe('usePdfPageDims (hook)', () => {
     // holding the reader's ready gate (and thus virtual-core's itemSizeCache reset).
     // Nothing tested that contract, so the exact "optimization" it forbids was free.
     const docA = mkDoc('A')
-    const { result, rerender } = renderHook(({ d }) => usePdfPageDims(d as never), {
+    const { result, rerender } = renderHook(({ d }) => usePdfPageDims(d), {
       initialProps: { d: docA },
     })
     await waitFor(() => expect(result.current.fallback).not.toBeNull())
@@ -152,7 +152,7 @@ describe('usePdfPageDims (hook)', () => {
             releaseB = () => res({ getViewport: () => ({ width: 612, height: 792 }) })
           }),
     )
-    const { result, rerender } = renderHook(({ d }) => usePdfPageDims(d as never), {
+    const { result, rerender } = renderHook(({ d }) => usePdfPageDims(d), {
       initialProps: { d: docA },
     })
     await waitFor(() => expect(result.current.fallback).not.toBeNull())

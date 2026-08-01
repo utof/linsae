@@ -41,4 +41,17 @@ describe('page-anchor', () => {
     expect(offsetFromAnchor(1.7, ITEM)).toBe(ITEM.start + ITEM.size)
     expect(offsetFromAnchor(-3, ITEM)).toBe(ITEM.start)
   })
+
+  it('clamps non-finite fractions to the page top rather than emitting NaN', () => {
+    // A NaN offset would reach the CSSOM as a non-finite scrollTop, which normalizes
+    // to 0 — a silent jump to page 1, not a clamp. Unreachable today because
+    // PdfViewV1Schema rejects NaN, but the module promises the guarantee itself.
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const offset = offsetFromAnchor(bad, ITEM)
+      expect(Number.isFinite(offset)).toBe(true)
+    }
+    expect(offsetFromAnchor(Number.NaN, ITEM)).toBe(ITEM.start)
+    // Infinity is a legitimate "past the end" signal, so it clamps to the bottom edge.
+    expect(offsetFromAnchor(Number.POSITIVE_INFINITY, ITEM)).toBe(ITEM.start + ITEM.size)
+  })
 })
