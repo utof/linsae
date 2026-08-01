@@ -338,6 +338,45 @@ describe('useExcerptCapture', () => {
     expect((rect as number[])[3]).toBeCloseTo(40 / SCALE, 6)
   })
 
+  it('drops zero-area rects, so a multi-line selection is not widened by <br> boxes', async () => {
+    // pdf.js v6's TextLayer emits `<br role="presentation">` between line spans.
+    // Their boxes are width 0, height ~21, pinned at x = 0 relative to the content
+    // box, and the topmost sits slightly ABOVE the page. Unioned, they drag the rect
+    // to the page's left edge and overflow its top — the captured rect then bounds
+    // the page, not the text. The page-membership test alone does NOT catch this: a
+    // box at top -3 with height 21 has centre +7.5 and passes it.
+    //
+    // Found by scripts/pdf-multipage-smoke.mjs against real Electron; happy-dom
+    // renders no text layer, so no component test could have seen it.
+    const { scrollEl, registryRef, pages } = mountPages([
+      { pageNumber: 3, viewport: FLIP_VIEWPORT },
+    ])
+    const page3 = pages.get(3) as MountedPage
+    const range = document.createRange()
+    range.setStart(page3.textNode, 0)
+    range.setEnd(page3.textNode, 5)
+    stubSelection(range, [
+      // Two real line boxes, indented from the left margin…
+      rectOnPage(3, { top: 100, height: 20, width: 300, left: 60 }),
+      rectOnPage(3, { top: 130, height: 20, width: 300, left: 60 }),
+      // …and the zero-width <br> between them, at x = 0 and reaching above the page.
+      rectOnPage(3, { top: -3, height: 21, width: 0, left: 0 }),
+    ])
+
+    renderHook(() => useExcerptCapture({ pdfId: 'pdf-1', registryRef, scrollEl }))
+    await mouseUp(page3.wrapper)
+
+    const rect = pending()?.locator.rect
+    expect(rect).toBeDefined()
+    const [x, y, , h] = rect as [number, number, number, number]
+    // Left edge is the text's indent, NOT the page's left edge.
+    expect(x).toBeGreaterThan(0)
+    // The box stays inside the page: unfiltered, top would exceed PAGE_PDF_HEIGHT.
+    expect(y + h).toBeLessThanOrEqual(PAGE_PDF_HEIGHT)
+    // Height spans the two real lines only (100 → 150 CSS px), not the <br>.
+    expect(h).toBeCloseTo(50 / SCALE, 6)
+  })
+
   it('rounds the rect to 3 decimals (v0.6 behaviour)', async () => {
     const { scrollEl, registryRef, pages } = mountPages([{ pageNumber: 1 }])
     const page1 = pages.get(1) as MountedPage

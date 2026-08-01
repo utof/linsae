@@ -74,6 +74,20 @@ export function useExcerptCapture({ pdfId, registryRef, scrollEl }: UseExcerptCa
       // partial scroll — both `getClientRects()` and `getBoundingClientRect()` are
       // unclipped viewport-space boxes, so ancestor overflow does not clip them.
       const rects = Array.from(range.getClientRects()).filter((r) => {
+        // Drop zero-area boxes BEFORE the page test. pdf.js v6's TextLayer emits
+        // `<br role="presentation">` between line spans, and their boxes are width 0,
+        // height ~21, at x = 0 relative to the content box — with the topmost one
+        // sitting slightly ABOVE the page. `clientRectsToPdfRect` unions whatever it
+        // is given (`clientRectsToPdfRect.ts:21-28`), so a multi-line selection would
+        // report a rect starting at the page's left edge and overflowing its top,
+        // rather than one bounding the selected text. The page test alone does not
+        // catch it: a box at top -3 with height 21 has centre +7.5 and passes.
+        // Caught by the real-Electron smoke gate; happy-dom renders no text layer.
+        // @see scripts/pdf-multipage-smoke.mjs (excerpt-rect-geometry)
+        // Derived from the edges rather than r.width/r.height: those are the only
+        // four fields `clientRectsToPdfRect` itself consumes, so the check holds for
+        // any rect-like this is ever handed, not just a real DOMRect.
+        if (r.right - r.left <= 0 || r.bottom - r.top <= 0) return false
         const cy = (r.top + r.bottom) / 2
         return cy >= pageRect.top && cy <= pageRect.bottom
       })
