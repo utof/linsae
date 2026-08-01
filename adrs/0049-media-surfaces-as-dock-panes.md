@@ -88,7 +88,7 @@ the thread view; the player dock pane remains open.
 - Commit `4ab51f0` — "player lifts into a right-dock pane; persists across feed|canvas (B5)"
 - Commit `02ebeac` — "(re)open the media dock pane when a media note's thread opens (#166)"
 - `src/renderer/src/panes/PlayerPane.tsx` — sole `<webview>` mount site
-- `adrs/0016-webview-single-mount.md` — single-mount invariant
-- `adrs/0017-yt-player-persist-partition.md` — `persist:yt-player` session
+- `adrs/0016-webview-youtube-player.md` — single-mount invariant
+- `adrs/0017-youtube-auth-cookie-and-servicelogin.md` — `persist:yt-player` session
 - `adrs/0045-dock-ordered-panes-zustand.md` — dock registry, content-pane kind
 - Issue #169 — docked-player transport controls (scrubber/speed/follow)

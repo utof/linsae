@@ -1,5 +1,7 @@
 # 0009 — Screenshot capture pipeline
 
+Status: accepted (v0.2)
+
 ## Context
 v0.2 lets users capture a still frame of the pinned YouTube player to attach to
 a comment-note. The renderer knows only a CSS-pixel `DOMRect` (from

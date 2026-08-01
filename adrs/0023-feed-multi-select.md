@@ -1,5 +1,7 @@
 # 0023 — Feed multi-select: gutter drag + modal selection mode
 
+Status: accepted (v0.2.3)
+
 ## Context
 Users want Telegram-style bulk operations on feed notes (reference
 screenshot in docs/plans/v0.2.3-multi-select.md): drag in the empty area

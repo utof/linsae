@@ -1,5 +1,7 @@
 # 0014 — happy-dom over jsdom for the Vitest DOM environment
 
+Status: accepted (v0.2.1)
+
 ## Context
 
 Component tests run under a simulated DOM via Vitest's `environment` option. The

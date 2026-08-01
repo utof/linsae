@@ -1,5 +1,7 @@
 # 0013 — Rebuilding the native SQLite addon between Electron and Node ABIs
 
+Status: accepted (v0.2.1)
+
 > Self-contained for external review. The open question (is this sound or a
 > smell?) is stated explicitly at the end.
 

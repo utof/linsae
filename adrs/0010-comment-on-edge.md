@@ -1,5 +1,7 @@
 # 0010 — Comment-on edge as data (not a parent column)
 
+Status: accepted (v0.2)
+
 ## Context
 v0.2 introduces comment-notes: notes created in the context of a specific
 video-note that appear as a threaded list in `ThreadView`. Each comment-note

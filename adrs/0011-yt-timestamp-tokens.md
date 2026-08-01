@@ -1,5 +1,7 @@
 # 0011 — @-prefixed timestamp syntax
 
+Status: accepted (v0.2)
+
 ## Context
 v0.2 allows comment-notes to contain inline timestamp references (e.g. `@1:23`)
 that seek the pinned player when clicked. A syntax must be chosen that (a)

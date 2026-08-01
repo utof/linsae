@@ -1,5 +1,7 @@
 # 0007 — Animating item resize in a measured virtual list
 
+Status: accepted (v0.1.3)
+
 ## Context
 Expand/collapse of over-cap feed notes was disorienting (collapse teleported the
 reader), un-animated at the feed level (siblings snapped via untransitioned
