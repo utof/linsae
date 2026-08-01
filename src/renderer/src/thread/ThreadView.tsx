@@ -570,17 +570,35 @@ export function ThreadView({
    * No media anchor — pure text, comment-on the root note's slug.
    * Invalidates the same keys as the youtube post so the child list re-renders.
    *
-   * Why useCallback (not useMutation): the plain branch needs no loading/error
-   * surface in the composer — SimpleComposer is intentionally minimal. A
-   * useCallback keeps the wiring thin; error handling can be layered in v0.7+.
+   * **Rejects on failure, by contract.** `SimpleComposer` clears the draft only
+   * when this resolves, so resolving is a promise that the note exists. Both
+   * failure modes therefore throw AND set `postError` (the same pair the
+   * youtube mutation gets from `onError`/`onSuccess`):
+   *  - `!note?.slug` — a bare `return` used to resolve here, which under the
+   *    clear-on-success contract would eat the draft with no note created. The
+   *    youtube path has always thrown for this (`'video note not loaded'`).
+   *  - `notes.create` rejecting, e.g. a duplicate body-derived slug.
+   * Query invalidation stays on the success path only.
    *
+   * Why useCallback (not useMutation): the plain branch needs no pending state,
+   * and `postError` is already owned here for the youtube branch — the two
+   * composers render in mutually exclusive branches, so one piece of state
+   * serves both. A useCallback keeps the wiring thin.
+   *
+   * @issue utof/linsae#161
    * @see src/renderer/src/lib/api.ts (notes.create signature)
    * @see src/renderer/src/thread/useThreadNotes.ts (queryKey: ['thread', noteId])
    */
   const postPlain = useCallback(
     async (body: string) => {
-      if (!note?.slug) return
-      await api.notes.create(body, 'claim', { commentOn: note.slug })
+      try {
+        if (!note?.slug) throw new Error('note not loaded')
+        await api.notes.create(body, 'claim', { commentOn: note.slug })
+      } catch (err) {
+        setPostError(err instanceof Error ? err.message : String(err))
+        throw err
+      }
+      setPostError(null)
       void queryClient.invalidateQueries({ queryKey: ['thread', noteId] })
       void queryClient.invalidateQueries({ queryKey: ['notes'] })
       void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
@@ -963,6 +981,8 @@ export function ThreadView({
             <div style={{ maxWidth: COL, margin: '0 auto' }}>
               <SimpleComposer
                 onSubmit={postPlain}
+                error={postError}
+                onClearError={() => setPostError(null)}
                 initialDraft={initialDraft}
                 onDraftChange={onDraftChange}
                 onDraftClear={onDraftClear}

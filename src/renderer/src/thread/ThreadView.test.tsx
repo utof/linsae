@@ -16,6 +16,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushMicrotasks } from '../../../../tests/flush'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
 import { serializeScene } from '../ink/svg'
@@ -947,10 +948,14 @@ describe('ThreadView scroll restore/persist (Task 2.2)', () => {
 })
 
 describe('ThreadView FIX 2 — post guard when note not loaded', () => {
-  it('does not call notes.create when note is null (postPlain guard returns early)', async () => {
+  it('does not call notes.create when note is null, and does NOT eat the draft', async () => {
     // Override notes.get to return null so `note` never populates.
     // With branching: note=null → kind='plain' → generic branch renders with SimpleComposer.
-    // postPlain guards: `if (!note?.slug) return` — notes.create is never reached.
+    // postPlain guards on `!note?.slug`. v0.8.2 A3 turned that early `return` into a
+    // THROW: a resolve here would let the clear-on-success composer clear the draft
+    // with no note created — the same silent data-loss in a new place. Mirrors the
+    // youtube path's `throw new Error('video note not loaded')` (ThreadView.tsx:509).
+    // @issue utof/linsae#161
     mockApi.notes.get.mockResolvedValue(null)
 
     renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
@@ -958,13 +963,63 @@ describe('ThreadView FIX 2 — post guard when note not loaded', () => {
     await waitFor(() => expect(screen.getByLabelText('back')).toBeInTheDocument())
 
     // The generic branch renders SimpleComposer (note=null → kind='plain').
-    // Type a caption and submit — postPlain returns early because note?.slug is falsy.
-    const textarea = screen.getByRole('textbox')
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
     fireEvent.change(textarea, { target: { value: 'caption' } })
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
 
-    // Allow async postPlain a tick to run its early return.
-    await new Promise((r) => setTimeout(r, 50))
+    // The user is TOLD nothing happened…
+    expect(await screen.findByRole('alert')).toHaveTextContent('note not loaded')
+    await flushMicrotasks()
+    // …no note was created…
     expect(mockApi.notes.create).not.toHaveBeenCalled()
+    // …and the caption is still there to retry with.
+    expect(textarea.value).toBe('caption')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v0.8.2 cluster A — a failed plain post must not destroy the user's text.
+// `notes.create` is a real throw site: `save-note.ts:164` rejects with
+// `a note named "<slug>" already exists` when two short identical replies
+// collide on the body-derived slug.
+// @issue utof/linsae#161 · @see docs/plans/v0.8.2-composer-dataloss.md §2
+// ---------------------------------------------------------------------------
+
+describe('ThreadView plain post failure (A3 — postPlain propagates)', () => {
+  it('a rejected notes.create keeps the typed text and surfaces the error', async () => {
+    mockApi.notes.get.mockResolvedValue(PLAIN_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([])
+    mockApi.notes.create.mockRejectedValue(new Error('a note named "yes" already exists'))
+
+    renderWithProviders(<ThreadView noteId="n1" onClose={() => {}} />)
+    // Wait for the ROOT BODY, not just the textarea: `postPlain` guards on
+    // `note?.slug`, so submitting before the notes.get query settles would
+    // exercise the not-loaded path instead of the create-rejects one.
+    await screen.findByText(/root body/)
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'yes' } })
+    fireEvent.keyDown(ta, { key: 'Enter' })
+
+    await waitFor(() => expect(mockApi.notes.create).toHaveBeenCalledOnce())
+    // The rejection must reach the user, not just the console.
+    expect(await screen.findByRole('alert')).toHaveTextContent('a note named "yes" already exists')
+    await flushMicrotasks()
+    expect(ta.value).toBe('yes')
+  })
+
+  it('a resolved notes.create clears the draft and shows no error', async () => {
+    mockApi.notes.get.mockResolvedValue(PLAIN_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([])
+    mockApi.notes.create.mockResolvedValue({ ...CHILD_ONE, body: 'yes' })
+
+    renderWithProviders(<ThreadView noteId="n1" onClose={() => {}} />)
+    await screen.findByText(/root body/)
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'yes' } })
+    fireEvent.keyDown(ta, { key: 'Enter' })
+
+    await waitFor(() => expect(mockApi.notes.create).toHaveBeenCalledOnce())
+    await waitFor(() => expect(ta.value).toBe(''))
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 })
