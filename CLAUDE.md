@@ -62,6 +62,8 @@ note: A task is simple only if ALL four hold:
 
 **Tiebreaker** when capability gates are borderline: file the issue. Issue-cost is cheap; milestone-scope blur is not. **LoC and file-count are not primary gates.**
 
+**Retirement (the other half of the gate):** every milestone closes or explicitly re-affirms the open issues in the area it touched — filing without a closing rule is how a backlog reaches 156 open / 24 closed. Closing on "this is already fixed" requires a `file:line` that proves it; without one, leave it open and say why.
+
 ## Subagent briefing (paste verbatim into every Task prompt)
 > **Tools (in priority order):** `mcp__codebase-memory-mcp__*` before Grep/Glob/find; `context7` MCP (`mcp__plugin_context7_context7__*`) for any library/framework/SDK doc — training data is stale, verify even well-known APIs. **deepwiki is NOT installed** — use `gh` CLI or WebFetch for GitHub repos. WebSearch / WebFetch for anything else uncertain. Do not guess API shapes. **Read `CLAUDE.md` first.** Outputs must be falsifiable: cite file:line, link sources.
 
@@ -88,7 +90,7 @@ Cover both library choice AND named-API correctness. Don't reflex-audit.
 **NEVER** gate on self-rated confidence — verbalised probabilities are uncalibrated (Xiong ICLR 2024).
 
 ## Stack
-pnpm · Electron 30+ via electron-vite · React 19 + TypeScript strict · better-sqlite3 (raw SQL migrations via Vite `import.meta.glob('./migrations/*.sql', { query: '?raw', eager: true })`; no Drizzle at v0.1) · FTS5 with `bm25()`+`snippet()` · `@tanstack/react-virtual` (MIT) for the rolling feed — see ADR 0005; `react-virtuoso` was used through v0.1.2 and replaced after the OSS package's chat-stability limit (petyosi/react-virtuoso#1240) burned through nine fix attempts · cmdk · react-markdown + remark-gfm/math + rehype-katex + a custom `remark-wikilinks` plugin · lucide-react · react-hotkeys-hook · @tanstack/react-query · uuidv7 · js-yaml · Zod at IPC boundaries · @electron/rebuild (NOT deprecated `electron-rebuild`) · Vitest + RTL + happy-dom (jsdom dropped for ~2× faster suite — see ADR 0014; node-env tests pin `// @vitest-environment node`) · Biome · knip · lefthook. Tauri ruled out (YouTube iframe + screenshot-at-timestamp). No Tailwind at v0.1 — inline `style` with v21 CSS-variable tokens.
+pnpm · Electron 42 via electron-vite — bumped 39 → 42 at v0.6.1 to realign the V8 baseline with pdf.js's modern build, see ADR 0044 · React 19 + TypeScript strict · React Compiler (`babel-plugin-react-compiler` run through `@rolldown/plugin-babel` + `reactCompilerPreset`, since `@vitejs/plugin-react` v6 dropped the classic-Babel pipeline — see ADR 0006) · better-sqlite3 (raw SQL migrations via Vite `import.meta.glob('./migrations/*.sql', { query: '?raw', eager: true })`; no Drizzle at v0.1) · FTS5 with `bm25()`+`snippet()` · `@tanstack/react-virtual` (MIT) for the rolling feed — see ADR 0005; `react-virtuoso` was used through v0.1.2 and replaced after the OSS package's chat-stability limit (petyosi/react-virtuoso#1240) burned through nine fix attempts · zustand for client state — command palette (ADR 0040), dock panes (ADR 0045), app settings (ADR 0042) · motion for animation (ADR 0019) · pdfjs-dist for the PDF reader (ADR 0043) · perfect-freehand for ink strokes (ADR 0025; confined to `src/renderer/src/ink/` per ADR 0027) · rbush R-tree for canvas culling (ADR 0032) · cmdk · react-markdown + remark-gfm/math + rehype-katex + a custom `remark-wikilinks` plugin · lucide-react · react-hotkeys-hook · @tanstack/react-query · uuidv7 · js-yaml · Zod at IPC boundaries · @electron/rebuild (NOT deprecated `electron-rebuild`) · Vitest + RTL + happy-dom (jsdom dropped for ~2× faster suite — see ADR 0014; node-env tests pin `// @vitest-environment node`) · Biome · knip · lefthook. Tauri ruled out (YouTube iframe + screenshot-at-timestamp). No Tailwind at v0.1 — inline `style` with v21 CSS-variable tokens.
 
 ## Precommit (lefthook · `parallel: true`)
 Independent checks run concurrently; the heavy ones (typecheck / rebuild+test / knip) skip on docs-only commits via `scripts/staged-has-code.sh`.
@@ -106,9 +108,9 @@ Any step fails → commit blocked. **Never** `--no-verify`. The full test suite 
 - **Unit (Vitest)** for pure logic (parsers, query wrappers, resolvers, normalizers, atomic-write) — node-env tests pin `// @vitest-environment node`; the rest inherit the global happy-dom env.
 - **Component (Vitest + React Testing Library)** via `tests/setup.tsx`'s `renderWithProviders` (wraps in `QueryClientProvider`) + `installMockApi` (mocks `window.api`).
 - **Integration (Vitest, real disk + real SQLite file in `mkdtempSync` tmpdirs)** for file↔DB round-trip, reconciler malformed-skip behavior, and external-edit-between-sessions.
-- **Visual regression — Playwright `toHaveScreenshot()`** against a fixed-viewport Electron window with seed data — starts at **v0.2**, deliberately deferred from v0.1.
+- **Visual regression — `@playwright/test` `toHaveScreenshot()`** against a fixed-viewport Electron window with deterministic seed data. This was mandated from v0.2 and never built; the harness is landing in **v0.8.1** (#191) as `pnpm test:visual` over `tests/visual/*.spec.ts`. `toHaveScreenshot()` is a test-runner assertion, so it needs `@playwright/test` — the bare `playwright` library the `.mjs` smokes use cannot do it. Baselines are **Linux-only**: `snapshotPathTemplate` keeps the `{platform}` token, so a run on another OS finds no baseline and writes its own rather than comparing.
 
-`better-sqlite3` native binding requires ABI alignment. Both `pnpm dev` and the precommit hook probe-then-rebuild only when needed (`scripts/ensure-electron-abi.mjs` / `scripts/ensure-node-abi.mjs`); the manual `pnpm rebuild:electron` (before `pnpm dev`) / `pnpm rebuild:node` (before `pnpm test`) still work directly. CI runs `rebuild:node` first.
+`better-sqlite3` native binding requires ABI alignment. Both `pnpm dev` and the precommit hook probe-then-rebuild only when needed (`scripts/ensure-electron-abi.mjs` / `scripts/ensure-node-abi.mjs`); the manual `pnpm rebuild:electron` (before `pnpm dev`) / `pnpm rebuild:node` (before `pnpm test`) still work directly.
 
 
 ## Documentation-for-trust (vibe-code rigor)
@@ -117,10 +119,13 @@ Every exported function/class **must** carry TSDoc with one of: `@see <url|file>
 ## ADR convention
 - Path: `adrs/NNNN-kebab-title.md` (sequential, never reused). Current sequence starts at `adrs/0001-enter-key-sends.md`.
 - Trigger: any decision that future-you or an agent might reverse, or any choice between viable options. Each milestone plan ends with "ADRs to write".
-- Skeleton: Context · Decision · Alternatives · Consequences · Sources (URLs).
+- Skeleton: **Status** · Context · Decision · Alternatives · Consequences · Sources (URLs).
+- `Status:` is `accepted (v0.x)`, or `superseded by [NNNN](NNNN-kebab-title.md) (v0.x)` when a later ADR reverses it — the milestone in parens is the one that settled it, not the one that wrote the file.
 
 ## Branching & merge
-Each milestone = its own branch named `v0.x/feature` (e.g. `v0.2/youtube-annotation`); patch-level work uses `v0.x.y/feature` (e.g. `v0.1.3/polish`). The version prefix keeps branches sorted alongside the matching `v0.x` git tags and the `docs/specs/v0.x-*.md` / `docs/plans/v0.x-*.md` filenames. All batches in that milestone land on the branch. When the milestone is done: open PR → CI green → **merge commit into `main` (NOT squash, NOT rebase)** to preserve per-task TDD history. Tag `v0.x` on the merge commit.
+Each milestone = its own branch named `v0.x/feature` (e.g. `v0.2/youtube-annotation`); patch-level work uses `v0.x.y/feature` (e.g. `v0.1.3/polish`). The version prefix keeps branches sorted alongside the matching `v0.x` git tags and the `docs/specs/v0.x-*.md` / `docs/plans/v0.x-*.md` filenames. All batches in that milestone land on the branch. When the milestone is done: open PR → confirm the branch's last commit passed lefthook → **merge commit into `main` (NOT squash, NOT rebase)** to preserve per-task TDD history. Tag `v0.x` on the merge commit.
+
+**There is no CI, by decision (user, 2026-08-01):** single developer, and lefthook is the authoritative gate — it already runs biome, both typechecks, the full vitest suite, knip, and the design-token check on every code commit, so a hosted re-run buys nothing but latency. `gh pr checks` reporting "no checks reported" is expected, not a misconfiguration. Don't re-propose CI without a reason that postdates this line.
 
 **Commit messages follow Conventional Commits** (`feat:` / `fix:`, and others; optional scope `feat(scope)`). The plan's literal `git commit -m "…"` examples predate this rule — apply a conventional prefix when executing them.
 
