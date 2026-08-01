@@ -19,13 +19,20 @@ import { usePdfOpenId } from './usePdfOpenId'
 import { estimateHeight, type PageDims, usePdfPageDims } from './usePdfPageDims'
 
 /**
- * Debounce for the per-document zoom write. A ctrl/cmd+wheel gesture fires many
- * wheel events per second; 200 ms coalesces one gesture into a single disk write
- * while committing promptly once the user stops (between the 250 ms scroll and
- * 400 ms draft debounces used elsewhere in v0.7).
- * @see src/renderer/src/App.tsx (feed.scroll.v1 / composer draft debounces)
+ * Trailing THROTTLE (not a debounce) for the per-document view write.
+ *
+ * Why a throttle: from v0.8 this write carries the reader POSITION as well as the
+ * zoom, and position changes arrive as an unbroken stream of `scroll` events. A
+ * debounce re-arms on every event, so a sustained scroll would commit nothing at
+ * all until the user came to rest — and a quit mid-gesture would lose the position
+ * outright. A trailing throttle commits the live triple every 200 ms of continuous
+ * input instead. 200 ms still coalesces one ctrl/cmd+wheel zoom gesture into a
+ * single disk write, and sits between the 250 ms scroll and 400 ms draft debounces
+ * used elsewhere in v0.7.
+ * @see src/renderer/src/thread/ThreadView.tsx (`onGenericScroll` — the same ref-held trailing throttle)
+ * @see docs/plans/v0.8-multipage-pdf.md §Task 5.1 (M7)
  */
-const ZOOM_PERSIST_DEBOUNCE_MS = 200
+const VIEW_PERSIST_THROTTLE_MS = 200
 
 /**
  * Gutter between pages, px. Folded into item `start` by the virtualizer's `gap`
@@ -93,6 +100,44 @@ function readAnchorItem(
 }
 
 /**
+ * Clamp a live anchor into the range `PdfViewV1Schema` accepts, dropping either
+ * field rather than emitting one the schema would reject.
+ *
+ * Why this is not paranoia about arithmetic we control: the WRITE path is
+ * unvalidated (`SettingsSetInputSchema.value` is `z.unknown()`,
+ * `src/shared/zod-schemas.ts:408`) while the READ path fails WHOLE-RECORD —
+ * `PdfViewV1Schema` is a `z.record` read through `safeParseOr(…, {})`
+ * (`useSessionSnapshot.ts:35`). So one out-of-range field for one document silently
+ * writes fine and then discards EVERY document's view state at the next boot. The
+ * `numPages` cap is the reachable case: `measurementsCache` can still describe the
+ * outgoing document for a frame after a swap to a shorter one.
+ *
+ * @see src/shared/zod-schemas.ts (`PdfViewV1Schema` — `page` `.int().positive()`, `pageFraction` `0..1`)
+ * @see docs/plans/v0.8-multipage-pdf.md §Task 5.1
+ */
+function clampPersistedAnchor(
+  anchor: PageAnchor,
+  numPages: number | undefined,
+): { page?: number; pageFraction?: number } {
+  const rounded = Math.round(anchor.page)
+  const atLeastOne = Math.max(1, rounded)
+  const page = Number.isFinite(rounded)
+    ? numPages && numPages > 0
+      ? Math.min(numPages, atLeastOne)
+      : atLeastOne
+    : undefined
+  const pageFraction = Number.isFinite(anchor.fraction)
+    ? Math.min(1, Math.max(0, anchor.fraction))
+    : undefined
+  // Conditional spread, not `{ page, pageFraction }`: `exactOptionalPropertyTypes`
+  // (tsconfig.web.json:16) rejects an explicit `undefined` for an optional field.
+  return {
+    ...(page !== undefined ? { page } : {}),
+    ...(pageFraction !== undefined ? { pageFraction } : {}),
+  }
+}
+
+/**
  * The right-dock content pane body: a continuous-scroll, virtualized list of
  * every page in the open document.
  *
@@ -144,12 +189,6 @@ export function PdfReader(): React.JSX.Element {
   // the session snapshot, but kept LIVE below via setQueryData so an in-session
   // A→B→A swap restores the current zoom, not the stale boot value.
   const view = useSessionSnapshot().data?.pdfView
-  // v0.7: the latest debounced-but-unwritten `pdf.view.v1` payload. The debounced
-  // persist writer only commits after ZOOM_PERSIST_DEBOUNCE_MS; a doc-swap or a quit
-  // (visibilitychange→hidden) within that window would otherwise drop the write. The
-  // two flush effects below persist this ref immediately; the persist timer + both
-  // flush sites all null it so nothing double-writes. @see spec §Write-through
-  const pendingPdfWriteRef = useRef<SessionSnapshot['pdfView'] | null>(null)
   const pending = useExcerptStore((s) => s.pending)
   const arm = useExcerptStore((s) => s.arm)
 
@@ -202,6 +241,43 @@ export function PdfReader(): React.JSX.Element {
   // by the re-anchor effect below (and, from Batch 5, the persist writer) at event
   // time; as state it would re-render the whole pane on every scroll frame.
   const anchorRef = useRef<PageAnchor | null>(null)
+  // The single live persist timer (v0.8). A REF, not state, and ONE for both the
+  // zoom and the position path: the two must coalesce into one write, and the timer
+  // must survive the renders that `setQueryData` triggers.
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // The trailing read. Kept pointing at the LATEST render's `commitView` (effect
+  // below) so a timer armed at the start of a gesture commits the values at the END
+  // of it — the "trailing read of the live value" half of the throttle.
+  const commitRef = useRef<() => void>(() => {})
+
+  /**
+   * Arm the trailing throttle. `if (…) return` — NOT `clearTimeout` + re-arm — is
+   * the whole difference between a throttle and a debounce: re-arming on every
+   * `scroll` event is exactly the M7 bug (a sustained scroll never commits).
+   * @see src/renderer/src/thread/ThreadView.tsx (`onGenericScroll`)
+   */
+  const schedulePersist = useCallback(() => {
+    if (persistTimerRef.current) return
+    persistTimerRef.current = setTimeout(() => {
+      persistTimerRef.current = undefined
+      commitRef.current()
+    }, VIEW_PERSIST_THROTTLE_MS)
+  }, [])
+
+  /**
+   * Commit a throttled-but-unfired write NOW — quit (visibilitychange→hidden), doc
+   * swap, or unmount. Stable (`[]` deps, refs only) so the mount-once quit listener
+   * below never rebinds. Reads `commitRef.current`, which at a passive-cleanup is
+   * still the OUTGOING document's closure (React runs every cleanup in a commit
+   * before any setup), so a swap flush persists the document being left.
+   */
+  const flushPersist = useCallback(() => {
+    if (!persistTimerRef.current) return
+    clearTimeout(persistTimerRef.current)
+    persistTimerRef.current = undefined
+    commitRef.current()
+  }, [])
+
   // Wired as React's `onScroll` prop, NOT a native listener. `scroll` is one of
   // React's non-delegated events (`react-dom-client.development.js:27450-27454`), so
   // React attaches it directly to THIS element rather than to the root — it fires for
@@ -216,8 +292,13 @@ export function PdfReader(): React.JSX.Element {
       const offset = e.currentTarget.scrollTop
       const item = virtualizer.getVirtualItemForOffset(offset)
       if (item) anchorRef.current = anchorFromOffset(offset, item)
+      // v0.8/M7: the position write is driven from HERE, not from a `useEffect` dep.
+      // `anchorRef` is deliberately a ref (a scroll must not re-render the pane), so
+      // there is no render for a dep array to observe — the scroll event itself is
+      // the only trigger that exists. Same shape as `ThreadView.onGenericScroll`.
+      schedulePersist()
     },
-    [ready, virtualizer],
+    [ready, virtualizer, schedulePersist],
   )
 
   /**
@@ -325,66 +406,96 @@ export function PdfReader(): React.JSX.Element {
   // biome-ignore lint/correctness/useExhaustiveDependencies: doc is the restore-on-swap trigger; view/pdfId are read but excluded so only a doc swap (not our own live-cache write) re-restores
   useEffect(() => {
     setZoom(view?.[pdfId ?? '']?.zoom ?? 1)
+    // v0.8: the anchor describes the OUTGOING document. Left in place it would be
+    // written back under the INCOMING document's id on its first persist (before the
+    // user has scrolled it), i.e. doc B silently inheriting doc A's page. The swap
+    // flush runs in the cleanup phase, ahead of this setup, so A's own last write
+    // still sees A's anchor.
+    anchorRef.current = null
   }, [doc])
 
-  // v0.7: persist the per-document zoom to `pdf.view.v1` (debounced disk I/O).
-  // The boot snapshot cache is boot-initial only and never reflects our own
-  // writes, so we ALSO update it live via setQueryData — otherwise the restore
-  // effect above would read a stale boot zoom after an in-session A→B→A swap.
-  // setQueryData is a synchronous cache write (no refetch under staleTime:∞), so
-  // the swap always reads the current value. Skip the no-op echo when zoom already
-  // equals the stored (just-restored) value. `view` is read from the latest
-  // render's closure (NOT a dep: a view change from our own setQueryData must not
-  // reschedule/cancel the pending write); `qc`/`api` are stable.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: view is read from closure by design (see above); qc is stable from useQueryClient
-  useEffect(() => {
+  /**
+   * THE writer — the single place `pdf.view.v1` is produced (v0.7 zoom, v0.8
+   * position). Called only on the throttle's trailing edge or from a flush.
+   *
+   * Re-created every render on purpose: it is reached through `commitRef`, so what
+   * it closes over IS the trailing read — the live `zoom`/`view`/`doc` at fire time,
+   * not the values that happened to be current when the timer was armed.
+   *
+   * Three things it must keep doing, all of them v0.7 behaviour:
+   * - **Live cache write.** The boot snapshot never reflects our own writes, so the
+   *   restore effect above would read a stale boot zoom after an A→B→A swap without
+   *   `setQueryData` (a synchronous write; no refetch under `staleTime: ∞`).
+   * - **Merge, never clobber.** `{...view}` keeps every other document's entry.
+   * - **Echo suppression.** A just-restored value must not be written back. The
+   *   guard now covers the whole triple, not just zoom (a scroll at constant zoom is
+   *   the one write v0.8 exists for — M7); `?? 1` keeps an unseen document at fit
+   *   from writing on mount, exactly as the v0.7 `storedZoom` default did.
+   *
+   * `{...stored}` before the overrides is what preserves a persisted `page` while
+   * the anchor is still null (the boot window before the user scrolls) — without it
+   * the first zoom of a session would erase the restored position.
+   */
+  const commitView = () => {
     if (!pdfId) return
-    const storedZoom = view?.[pdfId]?.zoom ?? 1
-    if (storedZoom === zoom) return // restore echo or unchanged — nothing to write
-    const nextView = { ...view, [pdfId]: { ...view?.[pdfId], zoom } } // spread preserves any `page`
+    const stored = view?.[pdfId]
+    const anchor = anchorRef.current
+    const pos = anchor ? clampPersistedAnchor(anchor, doc?.numPages) : {}
+    // Conditional spread — `exactOptionalPropertyTypes` (tsconfig.web.json:16)
+    // rejects an explicit `undefined`; the repo idiom (useExcerptCapture.ts:88-89).
+    const next = {
+      ...stored,
+      zoom,
+      ...(pos.page !== undefined ? { page: pos.page } : {}),
+      ...(pos.pageFraction !== undefined ? { pageFraction: pos.pageFraction } : {}),
+    }
+    if (
+      (stored?.zoom ?? 1) === next.zoom &&
+      stored?.page === next.page &&
+      stored?.pageFraction === next.pageFraction
+    )
+      return
+    const nextView = { ...view, [pdfId]: next }
     qc.setQueryData<SessionSnapshot>(['session-snapshot'], (old) =>
       old ? { ...old, pdfView: nextView } : old,
     )
-    // Hold the pending write so a flush (swap/quit) can commit it; the timer reads
-    // the ref so a prior flush that nulled it turns the timer into a no-op (no double
-    // write). Only ONE timer is live at a time (this effect's cleanup clears the prior).
-    pendingPdfWriteRef.current = nextView
-    const id = setTimeout(() => {
-      const flushView = pendingPdfWriteRef.current
-      if (flushView == null) return
-      pendingPdfWriteRef.current = null
-      void api.settings.set('pdf.view.v1', flushView)
-    }, ZOOM_PERSIST_DEBOUNCE_MS)
-    return () => clearTimeout(id)
-  }, [zoom, pdfId])
+    void api.settings.set('pdf.view.v1', nextView)
+  }
 
-  // v0.7 quit flush: a still-pending debounced zoom must survive Cmd-Q. Mirrors the
-  // spec's visibilitychange→hidden last-chance (usePersistedWrite / subscribeDockPersist);
-  // the persist timer above may not have fired yet. Mount-once; reads the ref (always live).
+  // Point the trailing read at this render's closure. NO dep array by design: every
+  // render must refresh it. React runs every passive cleanup in a commit before any
+  // setup, so the swap flush below still sees the OUTGOING document's closure.
+  useEffect(() => {
+    commitRef.current = commitView
+  })
+
+  // Zoom path into the same throttle. A ctrl/cmd+wheel zoom `preventDefault()`s and
+  // therefore fires no `scroll`, so it cannot ride `onScroll` — but it must share the
+  // ONE timer, or a zoom-then-scroll would produce two writes for one gesture.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: zoom/pdfId are the TRIGGER, not values the body reads — the trailing read happens later, through commitRef. Dropping them (biome's "unnecessary" fix) would arm the throttle once at mount and never again on a zoom
+  useEffect(() => {
+    schedulePersist()
+  }, [zoom, pdfId, schedulePersist])
+
+  // v0.7 quit flush: a still-pending write must survive Cmd-Q. Mirrors the spec's
+  // visibilitychange→hidden last-chance (usePersistedWrite / subscribeDockPersist);
+  // the throttle timer may not have fired yet. `flushPersist` is stable, so this
+  // listener binds once.
   useEffect(() => {
     const flush = () => {
-      const flushView = pendingPdfWriteRef.current
-      if (!document.hidden || flushView == null) return
-      pendingPdfWriteRef.current = null
-      void api.settings.set('pdf.view.v1', flushView)
+      if (document.hidden) flushPersist()
     }
     document.addEventListener('visibilitychange', flush)
     return () => document.removeEventListener('visibilitychange', flush)
-  }, [])
+  }, [flushPersist])
 
-  // v0.7 swap flush: on a document swap (or unmount) the persist effect's [zoom,pdfId]
-  // cleanup clears the still-pending debounce timer — flush the pending write here first
-  // (keyed on pdfId, so this cleanup fires per swap) so a zoom made just before the swap
-  // persists instead of dropping.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: pdfId is the swap trigger; the ref/api are stable and read at cleanup time
+  // v0.7 swap flush: on a document swap (or unmount) a still-armed timer would be
+  // left describing a document that is no longer open — commit it first, keyed on
+  // pdfId so this cleanup fires per swap.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pdfId is the swap TRIGGER — the cleanup is the whole point, so removing it would reduce this to an unmount-only flush and drop every pre-swap write
   useEffect(() => {
-    return () => {
-      const flushView = pendingPdfWriteRef.current
-      if (flushView == null) return
-      pendingPdfWriteRef.current = null
-      void api.settings.set('pdf.view.v1', flushView)
-    }
-  }, [pdfId])
+    return () => flushPersist()
+  }, [pdfId, flushPersist])
 
   // B18: ctrl/cmd + wheel zooms; plain wheel scrolls as normal. A NATIVE,
   // non-passive listener is required — React registers `onWheel` as a passive

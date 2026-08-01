@@ -3,9 +3,10 @@ import { act, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { installPdfLayout, installScrollHeight } from '../../../../tests/pdf-layout'
 import { installMockApi, type MockApi } from '../../../../tests/setup'
+import { PdfViewV1Schema } from '../../../shared/zod-schemas'
 import type { SessionSnapshot } from '../persistence/keys'
 import { computePdfRender } from './computePdfRender'
-import { anchorFromOffset, type PageAnchor } from './page-anchor'
+import { type AnchorItem, anchorFromOffset, type PageAnchor } from './page-anchor'
 
 // --- Mocks -----------------------------------------------------------------
 // pdfjs-dist is only reachable from here through `PdfPage` (stubbed below) and
@@ -31,6 +32,27 @@ const NUM_PAGES = 500
 
 /** Page whose `getPage(1)` rejects — the #183 blank-pane path. */
 let docAFailsPageOne = false
+
+/**
+ * Substitute anchor for the CLAMP tests, `null` = the real implementation.
+ *
+ * Why a mock is the only honest way in: `anchorFromOffset` already clamps `fraction`
+ * to `[0,1]` (`page-anchor.ts:43,51-52`) and derives `page` from a virtual index, so
+ * a schema-invalid anchor is UNREACHABLE through it today. The writer's clamp is
+ * defence against the anchor source changing — a stale `measurementsCache` after a
+ * swap, a future jump-to-page — and defence that cannot be exercised is defence that
+ * silently rots. Reading the flag at call time (not factory time) is the same shape
+ * as `currentPdfId` above.
+ */
+let anchorOverride: PageAnchor | null = null
+vi.mock('./page-anchor', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./page-anchor')>()
+  return {
+    ...actual,
+    anchorFromOffset: (offset: number, item: AnchorItem): PageAnchor =>
+      anchorOverride ?? actual.anchorFromOffset(offset, item),
+  }
+})
 
 interface DocMock {
   id: string
@@ -105,8 +127,9 @@ vi.mock('./PdfPage', () => ({
 
 import { PdfReader } from './PdfReader'
 
-// The persist effect debounces the disk write; wait a hair past it before asserting.
-const DEBOUNCE_WAIT_MS = 320
+// The persist writer trailing-throttles the disk write (VIEW_PERSIST_THROTTLE_MS =
+// 200); wait a hair past one window before asserting.
+const THROTTLE_WAIT_MS = 320
 
 /** Matches `PAGE_GAP_PX` in PdfReader.tsx — the gutter folded into item `start`. */
 const PAGE_GAP_PX = 12
@@ -151,20 +174,20 @@ function ctrlWheelIn(): WheelEvent {
   return e
 }
 
-const flushDebounce = () =>
+const flushThrottle = () =>
   act(async () => {
-    await new Promise((r) => setTimeout(r, DEBOUNCE_WAIT_MS))
+    await new Promise((r) => setTimeout(r, THROTTLE_WAIT_MS))
   })
 
 /** The outer scroll container (ref={setPageEl}) — where the native wheel listener binds. */
 const pageEl = (container: HTMLElement): HTMLElement => container.firstElementChild as HTMLElement
 
-/** Zoom in once and let the debounced persist write flush. */
+/** Zoom in once and let the throttled persist write flush. */
 async function zoomInOnce(container: HTMLElement): Promise<void> {
   await act(async () => {
     pageEl(container).dispatchEvent(ctrlWheelIn())
   })
-  await flushDebounce()
+  await flushThrottle()
 }
 
 /** The most recent `window.api.settings.set({ key, value })` payload. */
@@ -239,6 +262,7 @@ let restoreScrollHeight: (() => void) | null = null
 beforeEach(() => {
   currentPdfId = 'A'
   docAFailsPageOne = false
+  anchorOverride = null
   docs = { A: makeDoc('A'), B: makeDoc('B') }
   pageProps.length = 0
   registryRefs.clear()
@@ -443,18 +467,19 @@ describe('PdfReader zoom persistence (pdf.view.v1)', () => {
   })
 
   /**
-   * Quit flush (spec §Write-through): a zoom made within the 200ms debounce window then a
+   * Quit flush (spec §Write-through): a zoom made within the 200ms throttle window then a
    * Cmd-Q must not be lost. `visibilitychange`→hidden flushes the pending write immediately.
-   * Without the flush the debounced timer never fires (the window quit first) → write dropped.
+   * Without the flush the throttle's trailing timer never fires (the window quit first) →
+   * write dropped.
    */
-  it('flushes a pending zoom on visibilitychange→hidden (before the debounce elapses)', async () => {
+  it('flushes a pending zoom on visibilitychange→hidden (before the throttle elapses)', async () => {
     const qc = seededClient({ A: { zoom: 1.8 } })
     const { container } = renderReader(qc)
-    // Zoom A but do NOT wait for the 200ms debounce — the disk write is still pending.
+    // Zoom A but do NOT wait for the 200ms throttle — the disk write is still pending.
     await act(async () => {
       pageEl(container).dispatchEvent(ctrlWheelIn())
     })
-    expect(mockApi.settings.set).not.toHaveBeenCalled() // still debounced, nothing written yet
+    expect(mockApi.settings.set).not.toHaveBeenCalled() // still throttled, nothing written yet
 
     // Simulate quit: document hidden + visibilitychange → flush immediately.
     await act(async () => {
@@ -467,20 +492,22 @@ describe('PdfReader zoom persistence (pdf.view.v1)', () => {
   })
 
   /**
-   * Swap flush: a zoom on doc A, then a swap to B BEFORE the debounce fires. The persist
-   * effect's [zoom,pdfId] cleanup clears the pending timer; the [pdfId] swap-flush must
-   * commit A's zoom first so it isn't dropped by the swap (carry-forward from finding #3).
+   * Swap flush: a zoom on doc A, then a swap to B BEFORE the throttle fires. Once swapped,
+   * a still-armed timer would commit under the WRONG document id; the [pdfId] swap-flush
+   * must commit A's zoom first so it isn't dropped (carry-forward from finding #3). It is
+   * also what pins the ordering the writer depends on — React runs every passive cleanup
+   * in a commit before any setup, so the flush still sees the OUTGOING doc's closure.
    */
-  it('persists a pending zoom on doc-swap before the debounce (not dropped)', async () => {
+  it('persists a pending zoom on doc-swap before the throttle fires (not dropped)', async () => {
     const qc = seededClient({ A: { zoom: 1.8 } })
     const { container, rerender } = renderReader(qc)
-    // Zoom A but do NOT wait for the debounce — the write is pending.
+    // Zoom A but do NOT wait for the throttle — the write is pending.
     await act(async () => {
       pageEl(container).dispatchEvent(ctrlWheelIn())
     })
     expect(mockApi.settings.set).not.toHaveBeenCalled()
 
-    // Swap to B before the 200ms debounce elapses.
+    // Swap to B before the 200ms throttle elapses.
     currentPdfId = 'B'
     await act(async () => {
       rerender(
@@ -492,6 +519,155 @@ describe('PdfReader zoom persistence (pdf.view.v1)', () => {
     const set = lastSet(mockApi)
     expect(set.key).toBe('pdf.view.v1')
     expect(set.value.A?.zoom).toBeCloseTo(1.98, 2) // A's pending zoom flushed on the swap
+  })
+})
+
+describe('PdfReader position persistence (pdf.view.v1 · M7)', () => {
+  /**
+   * Boot the reader with a real layout AND a real `scrollHeight` — the latter is not
+   * optional here: happy-dom hardcodes `scrollHeight` to 0 and virtual-core clamps
+   * every programmatic scroll to `scrollHeight - clientHeight`, i.e. -1000 under the
+   * layout harness (`tests/pdf-layout.ts:67-89`).
+   */
+  async function bootReader(pdfView: SessionSnapshot['pdfView'] = {}): Promise<{
+    container: HTMLElement
+    swapTo: (id: string) => Promise<void>
+  }> {
+    restoreLayout = installPdfLayout({ width: VIEW_W, height: VIEW_H })
+    restoreScrollHeight = installScrollHeight()
+    const qc = seededClient(pdfView)
+    const { container, rerender } = renderReader(qc)
+    await waitFor(() => expect(pageNumbers(container).length).toBeGreaterThan(0))
+    return {
+      container,
+      swapTo: async (id: string) => {
+        currentPdfId = id
+        await act(async () => {
+          rerender(
+            <QueryClientProvider client={qc}>
+              <PdfReader />
+            </QueryClientProvider>,
+          )
+        })
+      },
+    }
+  }
+
+  /**
+   * THE M7 regression. Both halves of the v0.7 writer skipped this write: the echo
+   * guard was `storedZoom === zoom` (zoom is unchanged here, so it returned early)
+   * and the deps were `[zoom, pdfId]` (neither changes on a scroll, so the effect
+   * never re-ran at all). Success criterion 7.
+   *
+   * The offset is DERIVED (`strideAt(1)` = `computePdfRender(…).cssH + PAGE_GAP_PX`),
+   * not the plan's hardcoded `6 * 1030`: the real gap-inclusive stride at this
+   * viewport is 1176, so 6180 lands on page 6 — the sketch's own assertion would
+   * have failed.
+   */
+  it('persists position on a SCROLL AT CONSTANT ZOOM', async () => {
+    const { container } = await bootReader()
+
+    await scrollToPage(container, 7)
+    await flushThrottle()
+
+    const set = lastSet(mockApi)
+    expect(set.key).toBe('pdf.view.v1')
+    expect(set.value).toMatchObject({ A: { page: 7 } })
+    expect(set.value.A?.zoom).toBe(1) // zoom unchanged — the point of the test
+    expect(set.value.A?.pageFraction).toBe(0) // parked on page 7's top edge
+  })
+
+  /**
+   * The throttle-vs-debounce distinction, made falsifiable. A scroll gesture is an
+   * unbroken event stream: a debounced writer (clear + re-arm per event) commits
+   * NOTHING for its whole duration, so a quit mid-gesture loses the position — the
+   * M7 bug in its second form. Every gap here is shorter than the 200 ms window, so
+   * only a trailing throttle can produce a write before the loop ends.
+   */
+  it('commits DURING a sustained scroll (throttle, not debounce)', async () => {
+    const { container } = await bootReader()
+
+    for (let page = 2; page <= 11; page++) {
+      await act(async () => {
+        pageEl(container).scrollTop = (page - 1) * strideAt(1)
+        pageEl(container).dispatchEvent(new Event('scroll'))
+        await new Promise((r) => setTimeout(r, 60))
+      })
+    }
+
+    // ~600 ms of continuous input at a 200 ms window ⇒ at least two trailing commits.
+    // A debounce yields exactly zero.
+    expect(mockApi.settings.set.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(lastSet(mockApi).value.A?.page).toBeGreaterThan(1)
+  })
+
+  /**
+   * THE assertion that actually protects the user, per the schema review. The write
+   * path is unvalidated (`SettingsSetInputSchema.value` is `z.unknown()`,
+   * `zod-schemas.ts:408`) and the read path fails WHOLE-RECORD (`PdfViewV1Schema` is
+   * a `z.record` read through `safeParseOr(…, {})`, `useSessionSnapshot.ts:35`), so
+   * ONE out-of-range field silently discards EVERY document's view state at the next
+   * boot. Parsed through `JSON.parse(JSON.stringify(…))` because that is literally
+   * what the store does (`settings.ts:27`) — it is where a `NaN` turns into `null`.
+   */
+  it('clamps an out-of-range anchor to a payload PdfViewV1Schema accepts', async () => {
+    const { container } = await bootReader()
+
+    // page 0.4 → schema wants `.int().positive()`; fraction > 1 → schema wants `0..1`.
+    anchorOverride = { page: 0.4, fraction: 1.000000002 }
+    await scrollToPage(container, 3)
+    await flushThrottle()
+
+    const { value } = lastSet(mockApi)
+    expect(value.A).toEqual({ zoom: 1, page: 1, pageFraction: 1 })
+    expect(PdfViewV1Schema.safeParse(JSON.parse(JSON.stringify(value))).success).toBe(true)
+  })
+
+  it('caps a past-the-end anchor at the document length', async () => {
+    const { container } = await bootReader()
+
+    anchorOverride = { page: 9999, fraction: 0.5 } // NUM_PAGES is 500
+    await scrollToPage(container, 3)
+    await flushThrottle()
+
+    const { value } = lastSet(mockApi)
+    expect(value.A).toEqual({ zoom: 1, page: NUM_PAGES, pageFraction: 0.5 })
+    expect(PdfViewV1Schema.safeParse(JSON.parse(JSON.stringify(value))).success).toBe(true)
+  })
+
+  /**
+   * A non-finite anchor must be DROPPED, not written: `JSON.stringify(NaN)` is
+   * `null`, which the schema rejects — and rejects the whole record with it. Seeded
+   * with a stored position so a bad write would also be visible as a clobber.
+   */
+  it('drops a non-finite anchor rather than writing NaN', async () => {
+    const { container } = await bootReader({ A: { zoom: 1, page: 4, pageFraction: 0.25 } })
+
+    anchorOverride = { page: Number.NaN, fraction: Number.NaN }
+    await scrollToPage(container, 3)
+    await flushThrottle()
+
+    // Nothing to write: both fields dropped ⇒ the payload equals what is stored ⇒ echo.
+    expect(mockApi.settings.set).not.toHaveBeenCalled()
+  })
+
+  /**
+   * `anchorRef` is not reset by anything the virtualizer does, so on an A→B swap it
+   * still describes A. Persisted under B's id that is doc B silently opening at doc
+   * A's page — a v0.8-only hazard (v0.7 persisted zoom alone, which IS re-derived on
+   * swap by the restore effect).
+   */
+  it('does not carry doc A position into doc B on a swap', async () => {
+    const { container, swapTo } = await bootReader()
+    await scrollToPage(container, 7)
+    await flushThrottle()
+    expect(lastSet(mockApi).value.A?.page).toBe(7) // guard the guard
+
+    await swapTo('B')
+    await flushThrottle()
+
+    // B is untouched: no entry at all, rather than one inheriting A's page.
+    expect(lastSet(mockApi).value.B).toBeUndefined()
   })
 })
 
