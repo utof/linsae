@@ -5,6 +5,7 @@
   "main": "./out/main/index.js",
   "author": "utof",
   "homepage": "https://github.com/utof/linsae",
+  "license": "MIT",
   "scripts": {
     "prepare": "lefthook install",
     "dev": "node scripts/ensure-electron-abi.mjs && electron-vite dev",

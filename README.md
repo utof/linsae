@@ -125,5 +125,4 @@ This is the same path Canonical, the Electron maintainers, and shipping Electron
 
 ## License
 
-Not yet chosen. Until a license is added, no permission to use, copy, modify, or distribute this
-code is granted.
+MIT — see [LICENSE](LICENSE).
