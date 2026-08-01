@@ -1,8 +1,15 @@
 # ADR 0004 — Memoize all `<Virtuoso>` prop callbacks for React 19 ref-identity stability
 
 **Date:** 2026-05-28.
-**Status:** accepted (v0.1.2).
+**Status:** superseded by [0005](0005-tanstack-virtual.md) (v0.1.2).
 **Reassessment trigger:** when react-virtuoso publishes a 4.19+ release whose changelog references React 19 ref-callback semantics, OR if a React 19.x minor release softens the ref-identity churn behavior, OR if we migrate off OSS Virtuoso.
+
+> **Superseded:** the reassessment trigger's last clause ("if we migrate off OSS Virtuoso") fired
+> in the same milestone — ADR 0005 replaced `react-virtuoso` with `@tanstack/react-virtual`, so the
+> `<Virtuoso>` mount this ADR memoizes no longer exists anywhere in the renderer. ADR 0005 §Decision
+> is explicit that this ADR "is retained as historical record. Its lesson generalizes — the scroller
+> ref callback in the new Feed is `useCallback`-memoized for the same React 19 reason." That lesson
+> is live and cited at `src/renderer/src/feed/Feed.tsx:266`; the prop-by-prop prescription below is not.
 
 ## Context
 

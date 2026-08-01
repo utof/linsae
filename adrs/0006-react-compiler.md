@@ -1,5 +1,7 @@
 # 0006 — Adopt the React Compiler for the renderer
 
+Status: accepted (v0.1.3)
+
 ## Context
 
 The rolling feed (`@tanstack/react-virtual`, ADR 0005) dropped frames during

@@ -1,5 +1,7 @@
 # 0012 — Player interface with one implementation
 
+Status: accepted (v0.2)
+
 ## Context
 v0.2 embeds YouTube via `youtube-player@5.6.0` (a Promise-wrapped IFrame API
 thin wrapper). The schema already has `source_kind TEXT` on `notes`

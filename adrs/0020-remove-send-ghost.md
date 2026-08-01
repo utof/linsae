@@ -1,6 +1,6 @@
 # 0020 — Remove the send "ghost"; the note's own scroll-glide entrance IS the send animation
 
-Status: accepted · Supersedes: [0018](0018-send-ghost-portal-clone.md)
+Status: accepted · Supersedes: [0018](0018-send-ghost-clone.md)
 
 ## Context
 

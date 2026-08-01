@@ -1,5 +1,7 @@
 # 0008 — Loopback HTTP shell for the renderer (YouTube-embed origin)
 
+Status: accepted (v0.2)
+
 ## Context
 v0.2 embeds YouTube via the IFrame Player API. Plan 2 served the production
 renderer over an `app://bundle` custom scheme (privileged: `standard + secure +

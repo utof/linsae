@@ -23,6 +23,11 @@ scripts/.morph-shots/
 scripts/.send-shots/
 scripts/.reveal-shots/
 scripts/.wave-shots/
+# @playwright/test run artifacts (#191). The BASELINES under
+# tests/visual/__screenshots__/ are the expectations and ARE committed; these two
+# are the per-run actual/diff output and the HTML report.
+test-results/
+playwright-report/
 
 # Editor settings are personal — kept local, not shared via the repo.
 .vscode/

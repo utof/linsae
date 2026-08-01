@@ -1,6 +1,6 @@
 # 0015 — YouTube embed/playback via Vidstack (vanilla `VidstackPlayer.create`) behind the player singleton
 
-- **Status:** Accepted
+- **Status:** Superseded by [0016](0016-webview-youtube-player.md) (v0.2.1)
 - **Date:** 2026-06-01
 - **Amends:** ADR 0012 (Player interface with one implementation). The singleton architecture and the `Player` interface from 0012 are kept unchanged. The *engine* changes from `youtube-player` (sister.js IFrame wrapper) to Vidstack.
 - **Applies to:** `src/renderer/src/yt/playerSingleton.ts` (engine swapped), `src/renderer/index.html` (CSP `frame-src`). `usePlayer.ts` and `ThreadView.tsx` are unchanged.

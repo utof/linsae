@@ -1,14 +1,28 @@
-appId: com.electron.app
+appId: com.utof.linsae
 productName: linsae
 directories:
   buildResources: build
+# ALLOW-LIST, deliberately. The previous deny-list only excluded src/ and the
+# tsconfigs, so every other repo-root path shipped inside app.asar: adrs/, docs/,
+# scripts/, tests/, memory/, v21-design-system/, the agent-config dotdirs, and
+# local_files/ — which contains a YouTube cookies file, i.e. live session
+# credentials. A deny-list cannot be safe here: anything added to the repo root
+# later ships by default. Only these three paths are needed at runtime.
+#
+# `main` is ./out/main/index.js; the renderer and preload bundles are under out/
+# too. resources/ holds icon.png and is referenced by asarUnpack below.
+# node_modules is NOT governed by this list — electron-builder builds that from
+# the production `dependencies` graph, independently of `files`. See
+# docs/specs/v0.8.1-housekeeping.md §3.1.
+#
+# NOTE on local_files/: src/main/yt-cookies.ts:24 resolves the cookies path from
+# `process.cwd()` with a YT_COOKIES_FILE env override — cwd in a packaged app is
+# the launch directory, never the asar — so excluding it here does not break the
+# dev cookie path.
 files:
-  - '!**/.vscode/*'
-  - '!src/*'
-  - '!electron.vite.config.{js,ts,mjs,cjs}'
-  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
-  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
-  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - out/**
+  - resources/**
+  - package.json
 asarUnpack:
   - resources/**
 win:
@@ -33,11 +47,8 @@ linux:
     - AppImage
     - snap
     - deb
-  maintainer: electronjs.org
+  maintainer: utof
   category: Utility
 appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
-publish:
-  provider: generic
-  url: https://example.com/auto-updates
