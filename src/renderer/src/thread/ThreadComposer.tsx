@@ -16,20 +16,16 @@
  *
  * NO auto-pause on focus — spec §289.
  *
- * **Clear-on-success contract.** This composer NEVER clears its own state
- * optimistically: `submit()` awaits `onPost` and defers all five post-submit
- * updates (draft, `onDraftClear`, `manuallyFrozen`, `anchorless`, `focused`) to
- * the resolve branch. On rejection nothing is cleared, so the user's text — on
- * screen and in the durable `composer.draft.thread.v1` entry — survives a
- * failed post, and the anchor survives with it. `notes.create` is a real throw
- * site: two short identical replies collide on the body-derived slug and
- * `save-note.ts:164` rejects.
+ * **Clear-on-success contract (ADR 0063).** This composer NEVER clears its own
+ * state optimistically: `submit()` awaits `onPost` and defers all five
+ * post-submit updates (draft, `onDraftClear`, `manuallyFrozen`, `anchorless`,
+ * `focused`) to the resolve branch.
  *
  * Visual source: v21-design-system/v21-youtube-view-handoff/ThreadView.jsx
  * Composer region (lines 221–234).
  *
  * @issue utof/linsae#176
- * @see docs/plans/v0.8.2-composer-dataloss.md §2.2 (the contract)
+ * @see adrs/0063-composer-clears-on-success.md (the contract, and why)
  * @see src/renderer/src/thread/SimpleComposer.tsx (the same contract, plain threads)
  * @see src/renderer/src/thread/composer-chip.ts
  * @see src/renderer/src/composer/Composer.tsx (auto-grow + Enter-sends pattern)
@@ -78,6 +74,7 @@ export interface ThreadComposerProps {
    * user adding a manual time (v0.7: only draft text is persisted, never the
    * chip's frozenAt, so the original timestamp is unrecoverable). A numeric `t`
    * is the anchored second (live/frozen chip time, manual entry, or frame).
+   * @see adrs/0063-composer-clears-on-success.md
    * @see docs/plans/v0.7-session-persistence.md §Task 4.2
    */
   onPost: (args: { body: string; t: number | null }) => void | Promise<void>
@@ -96,11 +93,13 @@ export interface ThreadComposerProps {
    * set, the card border turns red and the message renders below. The draft IS
    * preserved so the user can edit + retry — enforced by the clear-on-success
    * contract in `submit()`, not merely intended: before v0.8.2 this sentence
-   * was false, which is what #176 reported. Mirrors the feed Composer's UX.
+   * was false, which is what #176 reported. Mirrors the feed Composer's ERROR
+   * UX only — its clearing mechanism is a `key` remount, not an await (ADR 0063).
    *
    * PARENT-OWNED, deliberately: ThreadView holds `postError` and a second,
    * composer-local copy is two owners that can disagree — which is how this bug
    * class recurs.
+   * @see adrs/0063-composer-clears-on-success.md
    */
   error?: string | null
   /** Called on the next keystroke when `error` is set, so the parent clears it. */
@@ -127,6 +126,7 @@ export interface ThreadComposerProps {
    * draft map. Never fires on a no-op submit, on a rejected post, or when the
    * textarea still holds live text the user typed mid-flight — the persisted
    * entry and the on-screen draft are cleared together or not at all.
+   * @see adrs/0063-composer-clears-on-success.md
    */
   onDraftClear?: (() => void) | undefined
 }
@@ -234,14 +234,18 @@ export function ThreadComposer({
   }, [focused, hasDraft, manuallyFrozen]) // livePlayhead deliberately excluded
 
   // ── submit ────────────────────────────────────────────────────────────────
-  // Clear-on-success (#176): every post-submit update below sits AFTER the
-  // await, on the resolve path only. Deferring all five together is what makes
-  // a retry safe — `chipTime` returns `frozenAt` unless `!focused && !hasDraft`
-  // (composer-chip.ts:40) and the freeze effect's deps are
-  // `[focused, hasDraft, manuallyFrozen]`, so with nothing cleared the draft
-  // stays → `hasDraft` stays true → no dep moves → `frozenAt` is preserved →
-  // the RETRY POSTS THE SAME `t`. Re-anchoring a retry to a different second is
-  // a second, subtler data-loss bug. `pendingFrame` needs no handling here:
+  // Clear-on-success (#176, ADR 0063): every post-submit update below sits
+  // AFTER the await, on the resolve path only — so a failed post leaves the
+  // draft intact and THE RETRY POSTS THE SAME `t`.
+  //
+  // Do NOT hoist any of the five above the await. Two of them carry the anchor:
+  // keeping `draft` keeps `hasDraft` true, which pins `frozenAt` (nextFrozenAt
+  // returns `prev` in both hasDraft branches), and keeping `anchorless` stops a
+  // restored draft inventing an anchor on retry. `focused` is deferred for a
+  // DIFFERENT reason — NOT to protect the anchor, which it cannot affect while
+  // `hasDraft` is true: on the failure path the textarea still holds DOM focus,
+  // so `setFocused(false)` would make React state lie about the DOM with no
+  // `focus` event coming to correct it. `pendingFrame` needs no handling here:
   // ThreadView clears it in the mutation's `onSuccess`.
   const submit = async () => {
     // FIX 4: allow an empty-caption post when a pending frame is present —
@@ -270,7 +274,9 @@ export function ThreadComposer({
     } catch {
       // A failed post clears NOTHING. The error surface is the parent's `error`
       // prop, fed by ThreadView's `postError`; catching here only stops the
-      // rejection from going unhandled.
+      // rejection from going unhandled. The `catch` is deliberately narrow — it
+      // wraps ONLY `onPost`, so a throw from `onDraftClear?.()` below is not
+      // silently swallowed too. Same shape as `SimpleComposer.submit`.
       return
     } finally {
       inFlight.current = false

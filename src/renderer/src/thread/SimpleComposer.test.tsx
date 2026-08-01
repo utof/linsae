@@ -123,7 +123,7 @@ it('does NOT call onDraftClear on a whitespace-only no-op submit', async () => {
 // A composer never clears its own draft optimistically. It awaits `onSubmit`
 // and clears ONLY on resolve; on rejection the textarea, the persisted draft
 // entry, and the user's keystrokes all survive untouched.
-// @issue utof/linsae#161 · @see docs/plans/v0.8.2-composer-dataloss.md §2.2
+// @issue utof/linsae#161 · @see adrs/0063-composer-clears-on-success.md
 
 /**
  * An `onSubmit` the test settles by hand, so assertions can run WHILE the post

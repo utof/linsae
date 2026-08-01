@@ -528,16 +528,10 @@ describe('ThreadComposer pendingFrame behavior', () => {
 // A composer never clears its own draft optimistically. `submit()` awaits
 // `onPost` and defers ALL FIVE post-submit updates — `setDraft('')`,
 // `onDraftClear()`, `setManuallyFrozen(false)`, `setAnchorless(false)` and
-// `setFocused(false)` — to the resolve branch.
+// `setFocused(false)` — to the resolve branch. The tests below pin one deferral
+// each.
 //
-// Deferring every one of them is what makes a retry safe. `chipTime` returns
-// `frozenAt` unless `!focused && !hasDraft` (composer-chip.ts:40) and the freeze
-// effect's deps are `[focused, hasDraft, manuallyFrozen]`, so on failure with
-// everything deferred the draft stays → `hasDraft` stays true → no dep moves →
-// `frozenAt` is preserved → the retry posts the SAME `t`. A retry that silently
-// re-anchors to a different second is a second, subtler data-loss bug.
-//
-// @issue utof/linsae#176 · @see docs/plans/v0.8.2-composer-dataloss.md §2.3 A4
+// @issue utof/linsae#176 · @see adrs/0063-composer-clears-on-success.md
 
 /**
  * An `onPost` the test settles by hand, so assertions can run WHILE the post is
@@ -643,13 +637,12 @@ describe('ThreadComposer clear-on-success (A4)', () => {
     fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
     await flushMicrotasks()
 
-    // `focused` only becomes observable once `hasDraft` goes false — chipTime
-    // live-tracks exactly when `!focused && !hasDraft` (composer-chip.ts:40). So
-    // the user gives up on the text and deletes it WITHOUT blurring. A stray
-    // `setFocused(false)` on the failure path would have stranded the component
-    // in `!focused && hasDraft` ("should not occur in normal UX",
-    // composer-chip.ts:54-55) and the chip would start tracking the playhead
-    // again, silently re-anchoring whatever the user types next.
+    // `focused` only becomes observable once `hasDraft` goes false — `chipTime`
+    // live-tracks exactly when `!focused && !hasDraft`. So the user gives up on
+    // the text and deletes it WITHOUT blurring. With `focused` preserved the
+    // chip re-freezes ONCE, at the moment the user cleared the text; a stray
+    // `setFocused(false)` on the failure path would leave it free-running with
+    // the playhead, silently re-anchoring whatever the user types next.
     fireEvent.change(ta, { target: { value: '' } })
     rerender(<ThreadComposer {...makeProps({ livePlayhead: 90, onPost })} />)
     expect(screen.getByTestId('composer-chip')).toHaveTextContent('0:50')

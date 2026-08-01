@@ -14,11 +14,9 @@ import { act } from '@testing-library/react'
  *
  * This is one more copy of an idiom the codebase already hand-rolls, added so
  * new sites import it instead of writing yet another. It did NOT replace the
- * existing ones. Both composer test files now import it; three inline copies
- * remain and stay that way: `PdfReader.test.tsx:312-314` (a drop-in, but out of
- * this milestone's scope), `useExcerptCapture.test.ts:167-170` (dispatches an
- * event inside the same `act()`, so it is not a drop-in) and
- * `QuickSwitcher.test.tsx:162` (no `act()` wrapper at all).
+ * existing ones — three inline copies remain and stay that way, notably
+ * `src/renderer/src/pdf/useExcerptCapture.test.ts`, which dispatches an event
+ * inside the same `act()` and so is not a drop-in.
  *
  * Kept OUT of `tests/setup.tsx` deliberately — that file is a `setupFiles` entry
  * with ~47 importers, and CLAUDE.md's inline-fix gate forbids non-trivial edits

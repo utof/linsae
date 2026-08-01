@@ -580,12 +580,14 @@ export function ThreadView({
    *  - `notes.create` rejecting, e.g. a duplicate body-derived slug.
    * Query invalidation stays on the success path only.
    *
-   * Why useCallback (not useMutation): the plain branch needs no pending state,
-   * and `postError` is already owned here for the youtube branch — the two
-   * composers render in mutually exclusive branches, so one piece of state
-   * serves both. A useCallback keeps the wiring thin.
+   * Why `useCallback` (not `useMutation`): neither branch consumes `isPending`,
+   * and the four invalidations plus the error reset are three statements — a
+   * mutation object would add ceremony without removing any. The error surface
+   * is shared deliberately: the two composers render in mutually exclusive
+   * branches, so one `postError` serves both.
    *
    * @issue utof/linsae#161
+   * @see adrs/0063-composer-clears-on-success.md
    * @see src/renderer/src/lib/api.ts (notes.create signature)
    * @see src/renderer/src/thread/useThreadNotes.ts (queryKey: ['thread', noteId])
    */
@@ -809,13 +811,10 @@ export function ThreadView({
             onCapture={() => {
               void onCapture()
             }}
-            // `mutateAsync`, NOT `mutate`: TanStack Query v5's `mutate` returns
-            // `void` and never rejects, so the composer's `await onPost(...)`
-            // would resolve on the next microtask and clear the draft even when
-            // nothing was created — A4 would look done and do nothing. `onError`
-            // above still fires and sets `postError`; the composer's `catch`
-            // exists only to keep this rejection from going unhandled.
+            // `mutateAsync`, NOT `mutate`: v5's `mutate` returns `void` and
+            // never rejects, so the composer would clear on a failed post.
             // @issue utof/linsae#176
+            // @see adrs/0063-composer-clears-on-success.md
             onPost={async ({ body, t }) => {
               await post.mutateAsync({ body, t })
             }}

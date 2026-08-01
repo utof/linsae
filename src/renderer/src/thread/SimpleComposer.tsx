@@ -9,13 +9,9 @@ import { useAutoGrowTextarea } from '../composer/useAutoGrowTextarea'
  * blank posts. No media chrome — this is the minimal case; the only chrome
  * beyond textarea + send is the parent-owned error line (see `error`).
  *
- * **Clear-on-success contract.** This composer NEVER clears its own draft
- * optimistically: `submit()` awaits `onSubmit` and clears the textarea (and
- * signals `onDraftClear`) only when it resolves. On rejection nothing is
- * cleared, so the user's text — on screen and in the durable
- * `composer.draft.thread.v1` entry — survives a failed post and can be retried.
- * `notes.create` is a real throw site: two short identical replies collide on
- * the body-derived slug and `save-note.ts:164` rejects.
+ * **Clear-on-success contract (ADR 0063).** This composer NEVER clears its own
+ * draft optimistically: `submit()` awaits `onSubmit` and clears the textarea
+ * (and signals `onDraftClear`) only when it resolves.
  *
  * Why the shared pieces: this composer adopts the same `useAutoGrowTextarea`
  * hook and `SendButton` as the feed `Composer` and the YouTube `ThreadComposer`
@@ -27,7 +23,7 @@ import { useAutoGrowTextarea } from '../composer/useAutoGrowTextarea'
  * same bottom-right send arrow. No hardcoded colors.
  *
  * @issue utof/linsae#161
- * @see docs/plans/v0.8.2-composer-dataloss.md §2.2 (the contract)
+ * @see adrs/0063-composer-clears-on-success.md (the contract, and why)
  * @see docs/specs/v0.6.4-notes-as-threads.md
  * @see adrs/0001-enter-key-sends.md
  * @see src/renderer/src/composer/useAutoGrowTextarea.ts (shared auto-grow)
@@ -46,6 +42,7 @@ export function SimpleComposer({
    * REJECTION as "nothing was posted" — the draft is left exactly as typed.
    * A resolving `onSubmit` therefore means "the note exists"; a parent that
    * swallows its own failure re-introduces #161 one layer up.
+   * @see adrs/0063-composer-clears-on-success.md
    */
   onSubmit: (body: string) => void | Promise<void>
   /**
@@ -56,6 +53,7 @@ export function SimpleComposer({
    * PARENT-OWNED, deliberately: `ThreadView` already holds `postError` for the
    * YouTube branch, and a second, composer-local copy is two owners that can
    * disagree — which is how this bug class recurs.
+   * @see adrs/0063-composer-clears-on-success.md
    */
   error?: string | null
   /** Called on the next keystroke when `error` is set, so the parent clears it. */
@@ -81,6 +79,7 @@ export function SimpleComposer({
    * the draft map. Never fires on a trimmed-empty no-op, on a rejected post, or
    * when the textarea still holds live text the user typed mid-flight — the
    * persisted entry and the on-screen draft are cleared together or not at all.
+   * @see adrs/0063-composer-clears-on-success.md
    */
   onDraftClear?: (() => void) | undefined
 }) {
@@ -194,9 +193,9 @@ export function SimpleComposer({
         />
       </div>
 
-      {/* Parent-owned failure line, mirroring ThreadComposer.tsx:450-462. Without
-          it, fixing the clear only converts silent data-loss into silent
-          nothing-happening. @see docs/plans/v0.8.2-composer-dataloss.md §9 */}
+      {/* Parent-owned failure line, mirroring ThreadComposer's error block.
+          Without it, fixing the clear only converts silent data-loss into silent
+          nothing-happening. @see adrs/0063-composer-clears-on-success.md */}
       {error && (
         <div
           role="alert"
