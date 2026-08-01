@@ -6,7 +6,8 @@
     "src/shared/**/*",
     "tests/integration/**/*",
     "electron.vite.config.*",
-    "vitest.config.*"
+    "vitest.config.*",
+    "playwright.config.*"
   ],
   "compilerOptions": {
     "composite": true,

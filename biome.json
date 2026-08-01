@@ -10,7 +10,9 @@
       "!!v21-design-system",
       "!!.vite",
       "!!src/renderer/src/styles/colors_and_type.css",
-      "!!local_files"
+      "!!local_files",
+      "!!test-results",
+      "!!playwright-report"
     ]
   },
   "formatter": {
