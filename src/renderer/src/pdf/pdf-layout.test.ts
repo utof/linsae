@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { installPdfLayout, stubPageRects } from '../../../../tests/pdf-layout'
+import { installPdfLayout, installScrollHeight, stubPageRects } from '../../../../tests/pdf-layout'
 
 /**
  * Tests for the test harness itself.
@@ -62,6 +62,23 @@ describe('installPdfLayout', () => {
     undo()
     expect(document.createElement('div').clientWidth).toBe(0)
     expect(globalThis.ResizeObserver).toBe(originalRO)
+  })
+})
+
+describe('installScrollHeight', () => {
+  it('reports the first childs styled height, and 0 with no child', () => {
+    // Without this, happy-dom's hardcoded scrollHeight of 0 makes virtual-core's
+    // scroll clamp negative, so every scrollToOffset lands at 0 and downstream
+    // assertions measure nothing while still passing.
+    const undo = installScrollHeight()
+    const scroller = document.createElement('div')
+    expect(scroller.scrollHeight).toBe(0)
+    const spacer = document.createElement('div')
+    spacer.style.height = '580000px'
+    scroller.appendChild(spacer)
+    expect(scroller.scrollHeight).toBe(580000)
+    undo()
+    expect(scroller.scrollHeight).toBe(0)
   })
 })
 

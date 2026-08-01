@@ -65,6 +65,43 @@ export function installPdfLayout(opts: { width?: number; height?: number } = {})
 }
 
 /**
+ * Report a scroll container's `scrollHeight` as its first child's styled height.
+ *
+ * Why this is required for ANY test that scrolls the virtualized reader: happy-dom
+ * hardcodes `scrollHeight` to 0 (`Element.js:133-135`), and virtual-core clamps every
+ * programmatic scroll to `getMaxScrollOffset() = scrollHeight - clientHeight`. Under
+ * `installPdfLayout`'s `clientHeight` of 1000 that maximum is **-1000**, so
+ * `scrollToOffset(anything)` silently lands at 0 and every assertion downstream
+ * measures nothing while still looking green.
+ *
+ * Reading the first child is not arbitrary: the reader's spacer is that child and its
+ * styled height IS `virtualizer.getTotalSize()`, so the clamp stays truthful and
+ * tracks zoom automatically.
+ *
+ * Defined on `Element.prototype`, unlike `installPdfLayout`'s `clientWidth`/
+ * `clientHeight` which happy-dom puts on `HTMLElement.prototype` — the asymmetry is
+ * happy-dom's, not ours.
+ *
+ * Returns a restore fn; call it in `afterEach`.
+ *
+ * @see docs/plans/v0.8-multipage-pdf.md §Task 2.2b
+ * @issue utof/linsae#154
+ */
+export function installScrollHeight(): () => void {
+  const orig = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight')
+  Object.defineProperty(Element.prototype, 'scrollHeight', {
+    configurable: true,
+    get(this: Element) {
+      const child = this.firstElementChild as HTMLElement | null
+      return child ? Number.parseFloat(child.style.height || '0') : 0
+    },
+  })
+  return () => {
+    if (orig) Object.defineProperty(Element.prototype, 'scrollHeight', orig)
+  }
+}
+
+/**
  * Give every `[data-page-number]` element a non-zero rect, so excerpt-capture's
  * page resolution and rect filtering have real geometry to work against.
  * `pageHeight` must match what `estimateHeight` yields for the mocked dims.

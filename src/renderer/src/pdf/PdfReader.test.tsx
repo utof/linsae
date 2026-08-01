@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { installPdfLayout } from '../../../../tests/pdf-layout'
+import { installPdfLayout, installScrollHeight } from '../../../../tests/pdf-layout'
 import { installMockApi, type MockApi } from '../../../../tests/setup'
 import type { SessionSnapshot } from '../persistence/keys'
 import { computePdfRender } from './computePdfRender'
@@ -192,41 +192,6 @@ const wrapperFor = (container: HTMLElement, page: number): HTMLElement =>
 /** The spacer whose height is `virtualizer.getTotalSize()`. */
 const spacer = (container: HTMLElement): HTMLElement =>
   pageEl(container).firstElementChild as HTMLElement
-
-/**
- * Teach happy-dom a truthful `scrollHeight`, because virtual-core CLAMPS every
- * programmatic scroll against it.
- *
- * happy-dom's `scrollHeight` is a hardcoded 0 (`happy-dom/lib/nodes/element/Element.js:37,133-135`
- * — a symbol-backed field nothing ever writes), and `getOffsetForAlignment` returns
- * `Math.max(Math.min(getMaxScrollOffset(), toOffset), 0)` where `getMaxScrollOffset()`
- * is `scrollHeight - clientHeight` (`virtual-core/dist/esm/index.js:915-922, 936-950`).
- * With `installPdfLayout`'s clientHeight of 1000 that max is **-1000**, so
- * `scrollToOffset(anything)` lands at 0 and any re-anchor assertion is vacuous.
- *
- * Reporting the spacer's height is not a fudge: the spacer's inline height IS
- * `virtualizer.getTotalSize()` (`PdfReader.tsx`), which is exactly what a browser
- * would lay out as the scroller's content height — so the clamp stays real and
- * tracks the zoom. Kept local to this file rather than folded into
- * `tests/pdf-layout.ts` only because this task's file set is two files; Batch 5/6
- * will need it too (see the report).
- */
-function installScrollHeight(): () => void {
-  // Element.prototype, NOT HTMLElement.prototype: happy-dom defines scrollHeight on
-  // Element (Element.js:133) while clientWidth/clientHeight live on HTMLElement
-  // (HTMLElement.js:460-470) — the asymmetry `tests/pdf-layout.ts` also documents.
-  const orig = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight')
-  Object.defineProperty(Element.prototype, 'scrollHeight', {
-    configurable: true,
-    get(this: Element) {
-      const child = this.firstElementChild as HTMLElement | null
-      return child ? Number.parseFloat(child.style.height || '0') : 0
-    },
-  })
-  return () => {
-    if (orig) Object.defineProperty(Element.prototype, 'scrollHeight', orig)
-  }
-}
 
 /** Matches `ZOOM_STEP` inside PdfReader's wheel handler. */
 const ZOOM_STEP = 1.1
