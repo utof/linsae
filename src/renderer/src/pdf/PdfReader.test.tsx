@@ -5,6 +5,7 @@ import { installPdfLayout } from '../../../../tests/pdf-layout'
 import { installMockApi, type MockApi } from '../../../../tests/setup'
 import type { SessionSnapshot } from '../persistence/keys'
 import { computePdfRender } from './computePdfRender'
+import { anchorFromOffset, type PageAnchor } from './page-anchor'
 
 // --- Mocks -----------------------------------------------------------------
 // pdfjs-dist is only reachable from here through `PdfPage` (stubbed below) and
@@ -192,8 +193,84 @@ const wrapperFor = (container: HTMLElement, page: number): HTMLElement =>
 const spacer = (container: HTMLElement): HTMLElement =>
   pageEl(container).firstElementChild as HTMLElement
 
+/**
+ * Teach happy-dom a truthful `scrollHeight`, because virtual-core CLAMPS every
+ * programmatic scroll against it.
+ *
+ * happy-dom's `scrollHeight` is a hardcoded 0 (`happy-dom/lib/nodes/element/Element.js:37,133-135`
+ * — a symbol-backed field nothing ever writes), and `getOffsetForAlignment` returns
+ * `Math.max(Math.min(getMaxScrollOffset(), toOffset), 0)` where `getMaxScrollOffset()`
+ * is `scrollHeight - clientHeight` (`virtual-core/dist/esm/index.js:915-922, 936-950`).
+ * With `installPdfLayout`'s clientHeight of 1000 that max is **-1000**, so
+ * `scrollToOffset(anything)` lands at 0 and any re-anchor assertion is vacuous.
+ *
+ * Reporting the spacer's height is not a fudge: the spacer's inline height IS
+ * `virtualizer.getTotalSize()` (`PdfReader.tsx`), which is exactly what a browser
+ * would lay out as the scroller's content height — so the clamp stays real and
+ * tracks the zoom. Kept local to this file rather than folded into
+ * `tests/pdf-layout.ts` only because this task's file set is two files; Batch 5/6
+ * will need it too (see the report).
+ */
+function installScrollHeight(): () => void {
+  // Element.prototype, NOT HTMLElement.prototype: happy-dom defines scrollHeight on
+  // Element (Element.js:133) while clientWidth/clientHeight live on HTMLElement
+  // (HTMLElement.js:460-470) — the asymmetry `tests/pdf-layout.ts` also documents.
+  const orig = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight')
+  Object.defineProperty(Element.prototype, 'scrollHeight', {
+    configurable: true,
+    get(this: Element) {
+      const child = this.firstElementChild as HTMLElement | null
+      return child ? Number.parseFloat(child.style.height || '0') : 0
+    },
+  })
+  return () => {
+    if (orig) Object.defineProperty(Element.prototype, 'scrollHeight', orig)
+  }
+}
+
+/** Matches `ZOOM_STEP` inside PdfReader's wheel handler. */
+const ZOOM_STEP = 1.1
+
+/**
+ * Rendered page height at a given zoom. Every page in the fixture is portrait
+ * except `LANDSCAPE_PAGE`, which the re-anchor test never windows — so its dims are
+ * never fetched and its estimate is the portrait fallback too. That makes the whole
+ * 500-page document a UNIFORM stride at any zoom, which is what lets these helpers
+ * reconstruct the virtualizer's geometry without reaching into the instance.
+ */
+const pageHeightAt = (zoom: number): number =>
+  computePdfRender(VIEW_W, PORTRAIT.width, PORTRAIT.height, 1, zoom).cssH
+
+/** Distance from one page's top to the next: height + the `gap` folded into `start`. */
+const strideAt = (zoom: number): number => pageHeightAt(zoom) + PAGE_GAP_PX
+
+/** Park the scroller at the top edge of `page` and let the virtualizer see it. */
+async function scrollToPage(container: HTMLElement, page: number): Promise<void> {
+  await act(async () => {
+    pageEl(container).scrollTop = (page - 1) * strideAt(1)
+    // happy-dom does not fire `scroll` for a scrollTop assignment; dispatch it so
+    // BOTH virtual-core's own listener and the reader's onScroll run.
+    pageEl(container).dispatchEvent(new Event('scroll'))
+  })
+}
+
+/**
+ * Where the reader is actually parked, as a page anchor — derived from the live DOM
+ * `scrollTop` through the real `anchorFromOffset`, with the item reconstructed from
+ * the uniform stride above. Deliberately NOT read off the virtualizer instance: the
+ * offset is the thing under test, and a stale-cache bug produces an offset in the
+ * OLD scale, which only a fresh-scale reading exposes.
+ */
+function anchorAt(container: HTMLElement, zoom: number): PageAnchor {
+  const size = pageHeightAt(zoom)
+  const offset = pageEl(container).scrollTop
+  const index = Math.floor(offset / strideAt(zoom))
+  return anchorFromOffset(offset, { index, start: index * strideAt(zoom), size })
+}
+
 let mockApi: MockApi
 let restoreLayout: (() => void) | null = null
+let restoreScrollHeight: (() => void) | null = null
 beforeEach(() => {
   currentPdfId = 'A'
   docAFailsPageOne = false
@@ -207,6 +284,8 @@ beforeEach(() => {
 afterEach(() => {
   restoreLayout?.()
   restoreLayout = null
+  restoreScrollHeight?.()
+  restoreScrollHeight = null
 })
 
 describe('PdfReader virtualized page list', () => {
@@ -448,5 +527,75 @@ describe('PdfReader zoom persistence (pdf.view.v1)', () => {
     const set = lastSet(mockApi)
     expect(set.key).toBe('pdf.view.v1')
     expect(set.value.A?.zoom).toBeCloseTo(1.98, 2) // A's pending zoom flushed on the swap
+  })
+})
+
+describe('PdfReader anchor tracking (spec §4.5, §4.6)', () => {
+  /**
+   * The one test that pins Task 2.2b. It fails for THREE distinct regressions, each
+   * of which was mutation-verified (see the task report):
+   *
+   * 1. `onScroll` not wired → `anchorRef` stays null → the zoom effect early-returns
+   *    → scrollTop keeps its zoom-1 value, which reads as page ~273 at zoom 1.1.
+   * 2. `virtualizer.measure()` dropped → `getMeasurements` is memoized on
+   *    `[getMeasurementOptions(), itemSizeCacheVersion]` and `estimateSize` is in
+   *    NEITHER (`virtual-core/dist/esm/index.js:560-588, 589-590`), so the new
+   *    zoom's heights never reach the cache → same old-scale offset.
+   * 3. `readAnchorItem` without its `getTotalSize()` → the B2 stale-cache bug.
+   *
+   * Asserting the RESULTING offset, not that `measure`/`scrollToOffset` were called:
+   * every one of the three above still "calls measure".
+   */
+  it('re-anchors to the SAME page after a zoom step (not merely "measure was called")', async () => {
+    restoreLayout = installPdfLayout({ width: VIEW_W, height: VIEW_H })
+    restoreScrollHeight = installScrollHeight()
+    const { container } = renderReader(seededClient({}))
+    await waitFor(() => expect(pageNumbers(container).length).toBeGreaterThan(0))
+
+    await scrollToPage(container, 300)
+    // Guard the guard: without a real scrollHeight the clamp above would have
+    // pinned this at 0 and everything below would be measuring nothing.
+    expect(anchorAt(container, 1)).toEqual({ page: 300, fraction: 0 })
+
+    await act(async () => {
+      pageEl(container).dispatchEvent(ctrlWheelIn())
+    })
+
+    const after = anchorAt(container, ZOOM_STEP)
+    expect(after.page).toBeGreaterThan(295)
+    expect(after.page).toBeLessThan(305)
+    // Tighter than the plan's ±5 window, and not brittle: every quantity here is an
+    // integer (`cssH` is floored, `gap` is 12), so the arithmetic is exact. The exact
+    // form is also the ONLY one that catches a dropped `align: 'start'` — the
+    // `'auto'` default subtracts one viewport height (`index.js:941-945`), ~0.8 of a
+    // page at this zoom, which hides inside the ±5 window. Spec §4.6.
+    expect(after).toEqual({ page: 300, fraction: 0 })
+  })
+
+  /**
+   * Corroboration at the DOM level: after the re-anchor the WINDOW follows, not just
+   * `scrollTop`. Split from the test above because it needs an extra `scroll`
+   * dispatch — happy-dom's `scrollTo` sets `scrollTop` and stops
+   * (`Element.js:993-1011`), where a real browser fires `scroll`, and virtual-core's
+   * range is computed from the offset that listener records, never from the DOM.
+   */
+  it('renders the re-anchored page after the browser echoes the programmatic scroll', async () => {
+    restoreLayout = installPdfLayout({ width: VIEW_W, height: VIEW_H })
+    restoreScrollHeight = installScrollHeight()
+    const { container } = renderReader(seededClient({}))
+    await waitFor(() => expect(pageNumbers(container).length).toBeGreaterThan(0))
+
+    await scrollToPage(container, 300)
+    expect(pageNumbers(container)).toContain(300) // pre-zoom window — guard the guard
+    await act(async () => {
+      pageEl(container).dispatchEvent(ctrlWheelIn())
+    })
+    await act(async () => {
+      pageEl(container).dispatchEvent(new Event('scroll'))
+    })
+
+    expect(pageNumbers(container)).toContain(300)
+    // overscan drops to 0 above fit (spec §4.4), so the zoomed window is page 300 alone.
+    expect(pageNumbers(container)).toEqual([300])
   })
 })

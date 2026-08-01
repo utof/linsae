@@ -1,11 +1,12 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { useVirtualizer } from '@tanstack/react-virtual'
-import { useEffect, useRef, useState } from 'react'
+import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import type { SessionSnapshot } from '../persistence/keys'
 import { useSessionSnapshot } from '../persistence/useSessionSnapshot'
 import { clampZoom } from './computePdfRender'
 import { useExcerptStore } from './excerptState'
+import { type AnchorItem, anchorFromOffset, offsetFromAnchor, type PageAnchor } from './page-anchor'
 // B7: re-enable a visible drag-selection highlight in the text layer (pdf.js's
 // bundled CSS sets `.textLayer ::selection { background: transparent }`). Imported
 // HERE and not in `PdfPage` so the stylesheet is loaded once for the pane, not
@@ -42,6 +43,54 @@ const PAGE_GAP_PX = 12
  * is the divisor in `fitScale` (`usePdfPageDims.ts:54-58`).
  */
 const UNMEASURED_DIMS: PageDims = { w: 1, h: 1 }
+
+/**
+ * The virtualizer's `getItemKey`: key by PAGE NUMBER, not index.
+ *
+ * Why keyed at all: `PdfPage`'s unmount effect captures `pageNumber` at mount and
+ * deregisters with it, which is only correct if an instance can never be recycled
+ * for a different page — the React `key` below is `item.key`, so this pins that.
+ *
+ * Why hoisted to module scope rather than inlined in the options object: it is a
+ * dependency of the `getMeasurementOptions` memo, compared by IDENTITY
+ * (`virtual-core/dist/esm/index.js:560-568` + `utils.js`'s `memo`, `deps[i] !== dep`).
+ * An inline arrow is a fresh identity on every render, which invalidates
+ * `getMeasurements` and rebuilds all N measurements on every render — O(500) per
+ * scroll frame for a 500-page book, and it silently masks the stale-cache hazard
+ * `readAnchorItem` guards.
+ */
+const pageNumberKey = (index: number): number => index + 1
+
+/**
+ * Read a page's CURRENT measurement, forcing a recompute first.
+ *
+ * Why the `getTotalSize()` call: `virtualizer.measure()` only clears
+ * `itemSizeCache`, bumps `itemSizeCacheVersion` and notifies
+ * (`virtual-core/dist/esm/index.js:1093-1099`) — it does NOT reassign
+ * `measurementsCache`, which is rebuilt only inside the memoized `getMeasurements`
+ * (`:589-590`, assignment at `:659` on the `lanes === 1` path). Reading the cache
+ * straight after `measure()` therefore returns PRE-CHANGE `start`/`size`, and an
+ * offset computed from it is in the old scale — the "throws the reader hundreds of
+ * pages away" failure spec §4.5 exists to prevent. `getTotalSize()` calls
+ * `getMeasurements()` (`:1037-1039`), which reassigns the cache.
+ *
+ * Numeric indexing is the ONLY safe way to read that cache: at `lanes === 1` it is a
+ * lazy `Proxy` over a sparse array that materializes an item on numeric-index access
+ * (`virtual-core/dist/esm/lazy-measurements.js`). Never `.slice()`/spread it.
+ *
+ * ALL four jumps go through here — zoom re-anchor, boot restore, read-back drain,
+ * jump-to-page. Do not inline `measurementsCache[...]` at any call site.
+ *
+ * @see docs/specs/v0.8-multipage-pdf.md §4.5, §4.6
+ */
+function readAnchorItem(
+  v: Virtualizer<HTMLDivElement, HTMLDivElement>,
+  page: number,
+): AnchorItem | null {
+  v.getTotalSize()
+  const m = v.measurementsCache[page - 1]
+  return m ? { index: m.index, start: m.start, size: m.size } : null
+}
 
 /**
  * The right-dock content pane body: a continuous-scroll, virtualized list of
@@ -117,11 +166,13 @@ export function PdfReader(): React.JSX.Element {
     getScrollElement: () => pageEl,
     estimateSize: (i) =>
       estimateHeight(i + 1, dimsRef.current, fallback ?? UNMEASURED_DIMS, containerWidth, zoom),
-    // Key by PAGE NUMBER, not index. `PdfPage`'s unmount effect captures
-    // `pageNumber` at mount and deregisters with it, which is only correct if an
-    // instance can never be recycled for a different page — the React `key` below
-    // is `item.key`, so this option is what pins that invariant.
-    getItemKey: (index) => index + 1,
+    // Key by PAGE NUMBER, not index — see `pageNumberKey`. MUST stay the hoisted
+    // constant, never an inline arrow: it is a `getMeasurementOptions` memo dep
+    // compared by IDENTITY (`virtual-core/dist/esm/index.js:560-568`, `utils.js`
+    // `memo`), so an inline closure invalidates it every render and rebuilds all
+    // 500 measurements on every scroll frame — and masks the stale-`measurementsCache`
+    // hazard `readAnchorItem` exists to defend against.
+    getItemKey: pageNumberKey,
     // Backing-store area scales with zoom², so a resident page at ZOOM_MAX costs
     // ~25× a page at fit. Trade a page of lookahead for the memory. Spec §4.4.
     overscan: zoom > 1 ? 0 : 1,
@@ -146,6 +197,63 @@ export function PdfReader(): React.JSX.Element {
   // effect's trigger — re-running it per scroll frame would defeat the coalescing.
   const items = virtualizer.getVirtualItems()
   const windowKey = items.length > 0 ? `${items[0]?.index}:${items[items.length - 1]?.index}` : ''
+
+  // Live reader position (spec §4.6), updated on scroll. A REF, not state: it is read
+  // by the re-anchor effect below (and, from Batch 5, the persist writer) at event
+  // time; as state it would re-render the whole pane on every scroll frame.
+  const anchorRef = useRef<PageAnchor | null>(null)
+  // Wired as React's `onScroll` prop, NOT a native listener. `scroll` is one of
+  // React's non-delegated events (`react-dom-client.development.js:27450-27454`), so
+  // React attaches it directly to THIS element rather than to the root — it fires for
+  // exactly this scroller and needs no effect/cleanup/null-pageEl dance. The wheel
+  // listener below is native for a reason that does not carry over: React registers
+  // `wheel` passively so its `preventDefault()` is a no-op, whereas `scroll` is not
+  // cancelable and nothing here calls `preventDefault`. `e.currentTarget` (not the
+  // nullable `pageEl` state) is what makes the element non-null under `strict`.
+  const onScroll = useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      if (!ready) return
+      const offset = e.currentTarget.scrollTop
+      const item = virtualizer.getVirtualItemForOffset(offset)
+      if (item) anchorRef.current = anchorFromOffset(offset, item)
+    },
+    [ready, virtualizer],
+  )
+
+  /**
+   * Zoom / dock-width change: capture BEFORE, measure, re-scroll (spec §4.5).
+   *
+   * `measure()` is unconditional and precedes the null-anchor bail because it is
+   * load-bearing for the LIST, not just the anchor: `getMeasurements` is memoized on
+   * `[getMeasurementOptions(), itemSizeCacheVersion]` and `estimateSize` is in
+   * neither (`virtual-core/dist/esm/index.js:560-588`), so without the version bump
+   * every page keeps its old-zoom `start`.
+   *
+   * `useLayoutEffect`, not `useEffect`: the re-scroll must land in the same commit as
+   * the new item positions, or the user sees one frame at the old offset in the new
+   * scale.
+   *
+   * It runs on mount too, and the mount path was probe-verified rather than assumed:
+   * the runs are `{ready: false, w: 0}`, `{ready: false, w: 900}`, then the scale
+   * change itself. Gate-open never triggers a run, because `ready` flips on
+   * `fallback` resolving and `fallback` is not a dep. So the `!anchor` bail is NOT
+   * for the boot path; it is for the case that genuinely reaches it — a dock resize
+   * before the user has scrolled at all, where `measure()` must still run but there
+   * is no position to restore.
+   *
+   * `align: 'start'` is always explicit — the `'auto'` default silently rewrites the
+   * offset to an `'end'` alignment once the target is past the viewport (`:941-945`).
+   */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: zoom/containerWidth are the SCALE-CHANGE trigger — `ready` is read only as an early-out (adding it would fire a pointless measure+bail at gate-open) and `virtualizer` is a stable instance from useState (`react-virtual/dist/esm/index.js:79`); `anchorRef` is a ref, read at effect time by design
+  useLayoutEffect(() => {
+    if (!ready) return
+    const anchor = anchorRef.current
+    virtualizer.measure()
+    if (!anchor) return
+    const item = readAnchorItem(virtualizer, anchor.page)
+    if (item)
+      virtualizer.scrollToOffset(offsetFromAnchor(anchor.fraction, item), { align: 'start' })
+  }, [zoom, containerWidth])
 
   // Measure the scroll container and re-measure on resize (B9, fit-to-width).
   // `clientWidth` excludes the border and the reserved scrollbar gutter, so the
@@ -318,6 +426,7 @@ export function PdfReader(): React.JSX.Element {
   return (
     <div
       ref={setPageEl}
+      onScroll={onScroll}
       style={{
         position: 'relative',
         width: '100%',
