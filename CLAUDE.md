@@ -1,7 +1,7 @@
 # linsae - a note-taking app
 
 ## Models
-- Implementer: Sonnet default unless difficult complex task. Reviewer / hard decisions: Fable or whatever the orchestrator is currently.
+- Implementer: **Opus minimum, always** — never Sonnet, regardless of how simple the task looks (user, 2026-08-01). Reviewer / hard decisions: Fable or whatever the orchestrator is currently.
 note: A task is simple only if ALL four hold:
 
 1. Transcription, not design — the plan contains the complete code verbatim; the implementer makes no design decisions.
@@ -36,7 +36,7 @@ note: A task is simple only if ALL four hold:
 4. Plan at `docs/plans/v0.x-name.md`.
 5. **Fresh Opus subagent reviews plan.**
 6. Revise → green.
-7. Execute via `/subagent-driven-development` (Sonnet workers).
+7. Execute via `/subagent-driven-development` (Opus workers).
 8. Update `memory/progress.md`; trim stale pointers.
 
 **Review-round cap (per artifact):** spec reviews = **1**, plan reviews = **1**. After the cap, accept residual nits, queue them for `gh issue create -l nit`, and proceed. (Numbers literal — bump to 2 if drift is observed.)
