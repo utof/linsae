@@ -809,8 +809,15 @@ export function ThreadView({
             onCapture={() => {
               void onCapture()
             }}
-            onPost={({ body, t }) => {
-              post.mutate({ body, t })
+            // `mutateAsync`, NOT `mutate`: TanStack Query v5's `mutate` returns
+            // `void` and never rejects, so the composer's `await onPost(...)`
+            // would resolve on the next microtask and clear the draft even when
+            // nothing was created — A4 would look done and do nothing. `onError`
+            // above still fires and sets `postError`; the composer's `catch`
+            // exists only to keep this rejection from going unhandled.
+            // @issue utof/linsae#176
+            onPost={async ({ body, t }) => {
+              await post.mutateAsync({ body, t })
             }}
             onManualSeekEntry={(s) => {
               void player.seekTo(s)

@@ -1,10 +1,12 @@
 /**
- * The circular accent "send" button shared by the feed {@link Composer} and the
- * {@link ThreadComposer}. Extracted so the two composers (which are separate
- * components — they share patterns, not code) don't each re-style the same affordance.
+ * The circular accent "send" button shared by the feed {@link Composer}, the
+ * YouTube {@link ThreadComposer} and the plain/PDF {@link SimpleComposer}.
+ * Extracted so the three composers (which are separate components — they share
+ * patterns, not code) don't each re-style the same affordance.
  *
  * @see src/renderer/src/composer/Composer.tsx
  * @see src/renderer/src/thread/ThreadComposer.tsx
+ * @see src/renderer/src/thread/SimpleComposer.tsx
  */
 import { Send } from 'lucide-react'
 

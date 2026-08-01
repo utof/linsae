@@ -12,12 +12,17 @@ import { act } from '@testing-library/react'
  * later. `setTimeout(…, 0)` runs only after the entire microtask queue has
  * drained, so a wrongly-deferred call would already have fired by the assertion.
  *
- * Extracted from the four copies of this idiom that the clear-on-success work
- * needed; the original sites are `src/renderer/src/pdf/PdfReader.test.tsx:311`
- * and `src/renderer/src/pdf/useExcerptCapture.test.ts:166`. Kept OUT of
- * `tests/setup.tsx` deliberately — that file is a `setupFiles` entry with ~47
- * importers, and CLAUDE.md's inline-fix gate forbids non-trivial edits to files
- * with rg-fan-in > 20.
+ * This is one more copy of an idiom the codebase already hand-rolls, added so
+ * new sites import it instead of writing yet another. It did NOT replace the
+ * existing ones. Both composer test files now import it; three inline copies
+ * remain and stay that way: `PdfReader.test.tsx:312-314` (a drop-in, but out of
+ * this milestone's scope), `useExcerptCapture.test.ts:167-170` (dispatches an
+ * event inside the same `act()`, so it is not a drop-in) and
+ * `QuickSwitcher.test.tsx:162` (no `act()` wrapper at all).
+ *
+ * Kept OUT of `tests/setup.tsx` deliberately — that file is a `setupFiles` entry
+ * with ~47 importers, and CLAUDE.md's inline-fix gate forbids non-trivial edits
+ * to files with rg-fan-in > 20.
  *
  * @see docs/plans/v0.8.2-composer-dataloss.md §2.3 A0
  * @see tests/pdf-layout.ts (the sibling test-helper-module precedent)

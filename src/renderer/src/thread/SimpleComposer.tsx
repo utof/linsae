@@ -20,7 +20,7 @@ import { useAutoGrowTextarea } from '../composer/useAutoGrowTextarea'
  * Why the shared pieces: this composer adopts the same `useAutoGrowTextarea`
  * hook and `SendButton` as the feed `Composer` and the YouTube `ThreadComposer`
  * (the unified base). Each context still owns its own chrome — this one is the
- * bare text-in case, so it stops at textarea + send.
+ * bare text-in case, so it stops at textarea + send + the error line.
  *
  * Styling mirrors `src/renderer/src/thread/ThreadComposer.tsx`: same v21 tokens
  * (--font-sans, --fg-0, --border-1, --r-4, --shadow-2), same 13px / 1.5 text,
@@ -114,27 +114,29 @@ export function SimpleComposer({
   // whitespace-only draft is a no-op. On a RESOLVED post — and only then —
   // clear the draft AND signal App to drop the persisted entry.
   const submit = async () => {
-    const t = body.trim()
-    if (!t || inFlight.current) return
+    const trimmed = body.trim()
+    if (!trimmed || inFlight.current) return
     inFlight.current = true
     try {
-      await onSubmit(t)
-      // Clobber guard: the post took a real IPC round-trip, so the user may have
-      // typed since. Clear only if the textarea still holds exactly what was
-      // sent — otherwise both the visible draft and the persisted entry keep the
-      // newer text, and they stay in agreement.
-      if (bodyRef.current.trim() === t) {
-        bodyRef.current = ''
-        setBody('')
-        onDraftClear?.()
-      }
+      await onSubmit(trimmed)
     } catch {
-      // Clear-on-success (#161): a failed post clears NOTHING. The error surface
-      // is the parent's `error` prop, fed by ThreadView's `postError`; catching
-      // here only stops the rejection from going unhandled.
+      // A failed post clears NOTHING. The error surface is the parent's `error`
+      // prop, fed by ThreadView's `postError`; catching here only stops the
+      // rejection from going unhandled. The `catch` is deliberately narrow — it
+      // wraps ONLY `onSubmit`, so a throw from `onDraftClear?.()` below is not
+      // silently swallowed too. Same shape as `ThreadComposer.submit`.
+      return
     } finally {
       inFlight.current = false
     }
+    // Clobber guard: the post took a real IPC round-trip, so the user may have
+    // typed since. Clear only if the textarea still trims to what was sent —
+    // otherwise both the visible draft and the persisted entry keep the newer
+    // text, and they stay in agreement.
+    if (bodyRef.current.trim() !== trimmed) return
+    bodyRef.current = ''
+    setBody('')
+    onDraftClear?.()
   }
 
   return (

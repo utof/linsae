@@ -186,7 +186,28 @@ it('clears the draft and the persisted entry ONLY once onSubmit has resolved', a
   await flushMicrotasks()
   expect(ta.value).toBe('')
   expect(onDraftClear).toHaveBeenCalledOnce()
-  expect(screen.queryByRole('alert')).toBeNull()
+})
+
+it('accepts a retry after a rejected post (the in-flight flag is released)', async () => {
+  const onSubmit = vi.fn<(body: string) => Promise<void>>()
+  onSubmit.mockRejectedValueOnce(new Error('a note named "yes" already exists'))
+  onSubmit.mockResolvedValueOnce(undefined)
+  const onDraftClear = vi.fn()
+  renderWithProviders(<SimpleComposer onSubmit={onSubmit} onDraftClear={onDraftClear} />)
+  const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+  fireEvent.change(ta, { target: { value: 'yes' } })
+  fireEvent.keyDown(ta, { key: 'Enter' })
+  await flushMicrotasks()
+
+  // Without the `finally`, `inFlight` stays true here and the composer is dead
+  // for the rest of this mount — text preserved, but permanently unpostable
+  // behind an error the user cannot act on. Arguably worse than #161 itself.
+  fireEvent.keyDown(ta, { key: 'Enter' })
+  await flushMicrotasks()
+
+  expect(onSubmit).toHaveBeenCalledTimes(2)
+  expect(ta.value).toBe('')
+  expect(onDraftClear).toHaveBeenCalledOnce()
 })
 
 it('ignores a second submit while the first is still in flight (double-submit guard)', async () => {

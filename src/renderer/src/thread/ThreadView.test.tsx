@@ -1023,3 +1023,34 @@ describe('ThreadView plain post failure (A3 — postPlain propagates)', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 })
+
+// ---------------------------------------------------------------------------
+// v0.8.2 A4a — `onPost` must actually be AWAITABLE.
+// TanStack Query v5's `mutate` returns `void`; only `mutateAsync` returns a
+// promise that rejects. With `post.mutate` the composer's `await onPost(...)`
+// awaits `undefined`, resolves on the next microtask and runs its success
+// branch unconditionally — A4 would look done and clear the draft anyway.
+// @issue utof/linsae#176 · @see docs/plans/v0.8.2-composer-dataloss.md §2.3 A4a
+// ---------------------------------------------------------------------------
+
+describe('ThreadView youtube post failure (A4a — onPost is awaited)', () => {
+  it('a rejected notes.create keeps the typed caption and surfaces the error', async () => {
+    mockApi.notes.create.mockRejectedValue(new Error('a note named "yes" already exists'))
+
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.focus(ta)
+    fireEvent.change(ta, { target: { value: 'yes' } })
+    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+
+    await waitFor(() => expect(mockApi.notes.create).toHaveBeenCalledOnce())
+    // The rejection must reach the user, not just the console.
+    expect(await screen.findByRole('alert')).toHaveTextContent('a note named "yes" already exists')
+    // …and the caption is still there to retry with. Hard negative — flush, not
+    // waitFor: `mutate` would have cleared it exactly one microtask later.
+    await flushMicrotasks()
+    expect(ta.value).toBe('yes')
+  })
+})
