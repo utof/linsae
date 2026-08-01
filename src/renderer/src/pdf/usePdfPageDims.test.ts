@@ -130,6 +130,38 @@ describe('usePdfPageDims (hook)', () => {
     await waitFor(() => expect(result.current.fallback).not.toBeNull()) // re-seeds from B
   })
 
+  it('surfaces a page-1 failure as `error` WITHOUT reopening the gate', async () => {
+    // #183: getDocument() resolves before pdf.js validates the page tree, so a corrupt
+    // page 1 opens fine and fails only here. `fallback` must stay null (it is the only
+    // thing that resets virtual-core's itemSizeCache across a swap — see the hook's
+    // note), which means the pane can never render; without `error` the user gets a
+    // permanently blank pane and only a console line explains it.
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const doc = { getPage: vi.fn(async () => Promise.reject(new Error('bad page tree'))) }
+    const { result } = renderHook(() => usePdfPageDims(doc as never))
+
+    await waitFor(() => expect(result.current.error).toBe('bad page tree'))
+    expect(result.current.fallback).toBeNull() // gate stays CLOSED
+    err.mockRestore()
+  })
+
+  it('clears a previous documents error on swap, and does not paint it over the next doc', async () => {
+    // The catch needs the same generation guard as the success path: doc A's rejection
+    // settling after the swap would otherwise mark a perfectly good doc B as broken.
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let rejectA!: (e: Error) => void
+    const docA = { getPage: vi.fn(() => new Promise<never>((_, rej) => (rejectA = rej))) }
+    const { result, rerender } = renderHook(({ d }) => usePdfPageDims(d as never), {
+      initialProps: { d: docA as object },
+    })
+
+    rerender({ d: mkDoc('B') })
+    rejectA(new Error('bad page tree')) // A's rejection lands AFTER the swap
+    await waitFor(() => expect(result.current.fallback).not.toBeNull()) // B seeded fine
+    expect(result.current.error).toBeNull()
+    err.mockRestore()
+  })
+
   it('does not clear the NEXT documents in-flight marker when a stale request settles', async () => {
     // The finally must delete from the set it added to. Re-reading inFlightRef.current
     // would clear doc B's marker for a page still airborne, letting a duplicate

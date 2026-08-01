@@ -1,20 +1,21 @@
 import { useQueryClient } from '@tanstack/react-query'
-import type { PageViewport, PDFPageProxy, RenderTask } from 'pdfjs-dist'
-// Modern build (restored): Electron 42's V8 has Map.getOrInsertComputed, so the
-// legacy/core-js polyfill build is no longer needed. @see adrs/0044-electron-42-bump.md #152.
-import { TextLayer } from 'pdfjs-dist'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import type { SessionSnapshot } from '../persistence/keys'
 import { useSessionSnapshot } from '../persistence/useSessionSnapshot'
-import { clampZoom, computePdfRender } from './computePdfRender'
+import { clampZoom } from './computePdfRender'
 import { useExcerptStore } from './excerptState'
 // B7: re-enable a visible drag-selection highlight in the text layer (pdf.js's
-// bundled CSS sets `.textLayer ::selection { background: transparent }`).
+// bundled CSS sets `.textLayer ::selection { background: transparent }`). Imported
+// HERE and not in `PdfPage` so the stylesheet is loaded once for the pane, not
+// re-evaluated per page component.
 import './pdf-text-layer.css'
+import { type PageRegistryEntry, PdfPage } from './PdfPage'
 import { useExcerptCapture } from './useExcerptCapture'
 import { usePdfDocument } from './usePdfDocument'
 import { usePdfOpenId } from './usePdfOpenId'
+import { estimateHeight, type PageDims, usePdfPageDims } from './usePdfPageDims'
 
 /**
  * Debounce for the per-document zoom write. A ctrl/cmd+wheel gesture fires many
@@ -26,36 +27,69 @@ import { usePdfOpenId } from './usePdfOpenId'
 const ZOOM_PERSIST_DEBOUNCE_MS = 200
 
 /**
- * The right-dock content pane body: renders the current page's canvas + the
- * pdf.js text layer (a DOM overlay of selection-able text — WITHOUT it,
- * `getSelection()` returns empty and excerpt-drag cannot work). Wires
- * selection→excerpt capture; an explicit "Excerpt →" affordance arms placement.
+ * Gutter between pages, px. Folded into item `start` by the virtualizer's `gap`
+ * option, never into `size` — so `estimateSize` stays == the rendered `cssH`
+ * (`virtual-core/dist/esm/index.js:648,682-685`). Equivalently: the page wrapper
+ * carries no border, padding or shadow.
+ * @see docs/specs/v0.8-multipage-pdf.md §4.2
+ */
+const PAGE_GAP_PX = 12
+
+/**
+ * Stand-in dims for the window in which `fallback` is still null. The boot gate
+ * keeps the virtualizer disabled then, so `estimateSize` is never consulted for
+ * real; `w: 1` (not 0) is what keeps a stray call from returning NaN, since `w`
+ * is the divisor in `fitScale` (`usePdfPageDims.ts:54-58`).
+ */
+const UNMEASURED_DIMS: PageDims = { w: 1, h: 1 }
+
+/**
+ * The right-dock content pane body: a continuous-scroll, virtualized list of
+ * every page in the open document.
+ *
+ * The shell owns three things and delegates the rest to `PdfPage`:
+ *
+ * 1. **The virtualizer.** `estimateSize` reads the scale-free dims cache
+ *    (`usePdfPageDims`) so a 500-page book costs exactly one `getPage` at open;
+ *    heights become exact page-by-page as dims resolve, routed through
+ *    `resizeItem` because mutating the dims Map does NOT invalidate anything
+ *    (spec §4.2.1).
+ * 2. **The boot gate.** `containerWidth` is 0 until the `ResizeObserver` fires,
+ *    which makes every `estimateSize` return 0 and `getTotalSize()` 0 with
+ *    nothing to recompute it afterwards. `enabled: ready` also doubles as the
+ *    document-swap reset: `enabled: false` is the only thing that clears
+ *    virtual-core's `itemSizeCache` (`index.js:601-605`), so doc A's pixel
+ *    heights cannot leak into doc B.
+ * 3. **The page registry** — a ref, so N mounted pages mutating it never
+ *    re-renders the pane or re-binds the excerpt listener (spec §4.7).
+ *
  * Reads the open-pdf id from the persisted `pdf.openDocId` setting so the
  * `PANES` registration stays static (no prop threading).
+ *
+ * @see docs/specs/v0.8-multipage-pdf.md §4.1, §4.2.1
  * @see docs/specs/v0.6-pdf-slim-slice.md §4, §7
+ * @issue utof/linsae#154
  */
 export function PdfReader(): React.JSX.Element {
   const pdfId = usePdfOpenId()
   const { data: doc } = usePdfDocument(pdfId)
-  const [page, setPage] = useState<PDFPageProxy | null>(null)
-  const [viewport, setViewport] = useState<PageViewport | null>(null)
   // State-backed callback ref (NOT useRef): a ref's `.current` is null on first
-  // render and mutating it never re-runs the capture effect, so the mouseup
-  // listener would bind to null and never arm (round-2 review C2). State
-  // re-renders when the element mounts, so `useExcerptCapture` re-binds.
+  // render and mutating it never re-runs the effects below, so the wheel listener
+  // and the virtualizer's `getScrollElement` would bind to null and never recover.
+  // State re-renders when the element mounts. (Round-2 review C2, v0.6.)
   const [pageEl, setPageEl] = useState<HTMLDivElement | null>(null)
-  // The page-content wrapper (canvas + text layer). Its rect is the true page
-  // origin for excerpt coordinates (correct under scroll/zoom). Callback-ref
-  // state so the capture effect re-binds once it mounts (mirrors `pageEl`).
-  const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const textLayerRef = useRef<HTMLDivElement>(null)
   // B9: the PDF pane is now one tab of a variable-width right dock, so the fit
   // scale is derived from the live container width (NOT a hardcoded 1.2×). The
   // ResizeObserver below keeps this in sync and re-fits on dock resize.
   const [containerWidth, setContainerWidth] = useState(0)
   // B18: user zoom multiplier over fit-to-width (1 = fit; ctrl/cmd + wheel).
   const [zoom, setZoom] = useState(1)
+  // v0.8: what each mounted page publishes for excerpt capture. A REF, not state:
+  // N children write to it on every raster, and a state map would re-render the
+  // whole pane (and re-bind the capture listener) on every scroll. Read via
+  // `.current` at event time. @see docs/specs/v0.8-multipage-pdf.md §4.7
+  const registryRef = useRef<Map<number, PageRegistryEntry>>(new Map())
+  const { dimsRef, fallback, error: dimsError, ensureDims } = usePdfPageDims(doc)
   const qc = useQueryClient()
   // v0.7: the persisted per-document view map (`pdf.view.v1`). Boot-initial from
   // the session snapshot, but kept LIVE below via setQueryData so an in-session
@@ -70,6 +104,49 @@ export function PdfReader(): React.JSX.Element {
   const pending = useExcerptStore((s) => s.pending)
   const arm = useExcerptStore((s) => s.arm)
 
+  /**
+   * BOOT GATE (spec §4.2.1). Both halves are load-bearing:
+   * `containerWidth > 0` because a 0 width makes every estimate 0, and
+   * `fallback != null` because it is what re-closes the gate across a document
+   * swap so the previous document's measurements are dropped.
+   */
+  const ready = containerWidth > 0 && fallback != null
+
+  const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: doc?.numPages ?? 0,
+    getScrollElement: () => pageEl,
+    estimateSize: (i) =>
+      estimateHeight(i + 1, dimsRef.current, fallback ?? UNMEASURED_DIMS, containerWidth, zoom),
+    // Key by PAGE NUMBER, not index. `PdfPage`'s unmount effect captures
+    // `pageNumber` at mount and deregisters with it, which is only correct if an
+    // instance can never be recycled for a different page — the React `key` below
+    // is `item.key`, so this option is what pins that invariant.
+    getItemKey: (index) => index + 1,
+    // Backing-store area scales with zoom², so a resident page at ZOOM_MAX costs
+    // ~25× a page at fit. Trade a page of lookahead for the memory. Spec §4.4.
+    overscan: zoom > 1 ? 0 : 1,
+    gap: PAGE_GAP_PX,
+    // `estimateSize` is byte-identical to the rendered `cssH` by construction
+    // (both go through `computePdfRender`) and the page wrapper carries no box
+    // model, so there is nothing for a DOM measurement to correct — while there
+    // IS something for it to break: `PdfPage`'s wrapper is height-auto between
+    // mount and first raster (its `css` state is null until dims resolve), so a
+    // plain `measureElement` writes that transient height into `itemSizeCache`
+    // and collapses the item. This option makes the default `measureElement`
+    // return `itemSizeCache.get(key) ?? estimateSize(index)` instead of reading
+    // the DOM (`virtual-core/dist/esm/index.js:127-132`), i.e. a provable no-op —
+    // which is what spec §4.2.1 means by "measureElement … is not load-bearing".
+    // The ref is still passed so `elementsCache` / `indexFromElement` stay wired.
+    useCachedMeasurements: true,
+    enabled: ready,
+  })
+
+  // Identity of the current window. Contiguous by construction (the default
+  // `rangeExtractor`), so first:last names it exactly. Used ONLY as the prefetch
+  // effect's trigger — re-running it per scroll frame would defeat the coalescing.
+  const items = virtualizer.getVirtualItems()
+  const windowKey = items.length > 0 ? `${items[0]?.index}:${items[items.length - 1]?.index}` : ''
+
   // Measure the scroll container and re-measure on resize (B9, fit-to-width).
   // `clientWidth` excludes the border and the reserved scrollbar gutter, so the
   // fit width is stable whether or not the vertical bar shows (B17).
@@ -81,6 +158,57 @@ export function PdfReader(): React.JSX.Element {
     ro.observe(pageEl)
     return () => ro.disconnect()
   }, [pageEl])
+
+  /**
+   * Resolve real dims for the pages currently in the window, then correct their
+   * heights. All three of spec §4.2's rules are here, not just the coalescing:
+   *
+   * - **Skip while flinging** (`isScrolling`) — a fast scroll through 500 pages
+   *   must not issue hundreds of `getPage` worker round-trips.
+   * - **Coalesce** — `ensureDims` returns dims only when NEWLY learned, so an
+   *   already-known page produces no second request and no redundant resize.
+   * - **Drop stale results** — a page that scrolled out of the window while its
+   *   `getPage` was in flight is no longer ours to resize.
+   *
+   * `resizeItem` (not a dims-Map mutation) is the invalidation path: `getMeasurements`
+   * is memoized on `[getMeasurementOptions(), itemSizeCacheVersion]` and `estimateSize`
+   * is not among its deps, so a new closure alone changes nothing (spec §4.2.1).
+   */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `windowKey` is the window-identity TRIGGER (the effect reads the live `getVirtualItems()`); `virtualizer` is a stable instance from useState
+  useEffect(() => {
+    if (!ready || virtualizer.isScrolling) return
+    let cancelled = false
+    for (const item of items) {
+      const index = item.index
+      void ensureDims(index + 1).then((d) => {
+        if (cancelled || !d) return
+        if (!virtualizer.getVirtualItems().some((v) => v.index === index)) return
+        virtualizer.resizeItem(
+          index,
+          estimateHeight(
+            index + 1,
+            dimsRef.current,
+            fallback ?? UNMEASURED_DIMS,
+            containerWidth,
+            zoom,
+          ),
+        )
+      })
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [
+    ready,
+    virtualizer,
+    virtualizer.isScrolling,
+    windowKey,
+    ensureDims,
+    dimsRef,
+    fallback,
+    containerWidth,
+    zoom,
+  ])
 
   // B18/v0.7: on a document swap, RESTORE that document's persisted zoom (fit=1
   // when unseen). `doc` is the swap TRIGGER; `view`/`pdfId` are read to pick the
@@ -167,76 +295,25 @@ export function PdfReader(): React.JSX.Element {
     return () => pageEl.removeEventListener('wheel', onWheel)
   }, [pageEl])
 
-  // Render page 1 (v0.6: single-page; multi-page nav is a queued nit).
-  useEffect(() => {
-    if (!doc || !canvasRef.current || !textLayerRef.current || containerWidth === 0) return
-    let renderTask: RenderTask | null = null
-    let cancelled = false
-    doc
-      .getPage(1)
-      .then(async (p) => {
-        if (cancelled) return
-        // B8/B9/B18: `fitScale × zoom` sizes the CSS display box; `dpr` scales
-        // only the backing store for crisp HiDPI output. See computePdfRender.ts
-        // for the geometry; the three scales must NOT be conflated.
-        const dpr = window.devicePixelRatio || 1
-        const unscaled = p.getViewport({ scale: 1 })
-        const dims = computePdfRender(containerWidth, unscaled.width, unscaled.height, dpr, zoom)
-        const vp = p.getViewport({ scale: dims.scale })
-        const canvas = canvasRef.current!
-        // Backing store = CSS size × dpr (the actual rendered bitmap)…
-        canvas.width = dims.bitmapW
-        canvas.height = dims.bitmapH
-        // …CSS size stays at the fit-to-width viewport dims (no upscaled blur).
-        canvas.style.width = `${dims.cssW}px`
-        canvas.style.height = `${dims.cssH}px`
-        // pdf.js v6 `RenderParameters` requires `canvas` (the element); the old
-        // `canvasContext` field is now an optional backwards-compat alias — see
-        // node_modules/pdfjs-dist/types/src/display/api.d.ts (`canvas:
-        // HTMLCanvasElement | null`). Passing the element lets pdf.js own the 2D
-        // context internally (build/pdf.mjs falls back to `canvas.getContext`).
-        // `transform` (the HiDPI dpr matrix, undefined at dpr 1) is the canonical
-        // pdf.js HiDPI approach — verified via context7 against the upstream
-        // helloworld example (RenderParameters.transform?: any[]).
-        renderTask = p.render({ canvas, viewport: vp, transform: dims.transform })
-        await renderTask.promise
-        const textLayerDiv = textLayerRef.current!
-        textLayerDiv.replaceChildren() // idempotent guard against double-invoke
-        // The text layer sizes its glyphs from the `--total-scale-factor` CSS var
-        // (pdf_viewer.css). pdf.js only auto-derives that var under a
-        // `.pdfViewer .page` ancestor, which this slim single-page markup omits —
-        // so set it explicitly (user-unit is 1 for normal PDFs). Without it the
-        // transparent text spans inherit the app font size and the selectable
-        // overlay drifts out of alignment with the rendered canvas.
-        textLayerDiv.style.setProperty('--scale-factor', String(vp.scale))
-        textLayerDiv.style.setProperty('--total-scale-factor', String(vp.scale))
-        const textLayer = new TextLayer({
-          textContentSource: p.streamTextContent(),
-          container: textLayerDiv,
-          viewport: vp,
-        })
-        await textLayer.render()
-        if (cancelled) return
-        setPage(p)
-        setViewport(vp)
-      })
-      .catch((err) => {
-        // renderTask.cancel() (StrictMode double-invoke/unmount) rejects the
-        // awaited render promise with RenderingCancelledException — expected, so
-        // swallow it; surface any real render failure instead of a blank canvas.
-        if ((err as { name?: string })?.name !== 'RenderingCancelledException')
-          console.error('[PdfReader] page render failed', err)
-      })
-    return () => {
-      cancelled = true
-      renderTask?.cancel()
-    }
-  }, [doc, containerWidth, zoom])
-
-  useExcerptCapture({ pdfId: pdfId ?? '', page, viewport, pageEl, contentEl })
+  // TODO(Batch 3): replaced by registry-based capture (#154). Until then capture is
+  // deliberately inert — the v0.6 hook resolves ONE page from reader-held state, which
+  // a page list cannot supply. Passing the live scroll element with null page/viewport
+  // would bind a listener that can never fire; passing nulls makes that explicit.
+  useExcerptCapture({ pdfId: pdfId ?? '', page: null, viewport: null, pageEl, contentEl: null })
 
   if (!pdfId)
     return <div style={{ padding: 'var(--space-4)', color: 'var(--fg-2)' }}>No PDF open.</div>
+
+  // #183: pdf.js resolves `getDocument()` before validating the page tree, so a
+  // document whose page 1 is corrupt opens "successfully" and only fails when its
+  // dims are probed. The gate stays shut on that path BY DESIGN (`fallback` must
+  // stay null), so without this the user gets a blank pane forever.
+  if (dimsError)
+    return (
+      <div style={{ padding: 'var(--space-4)', color: 'var(--fg-2)' }}>
+        This PDF could not be read. {dimsError}
+      </div>
+    )
 
   return (
     <div
@@ -255,17 +332,36 @@ export function PdfReader(): React.JSX.Element {
         background: 'var(--bg-0)',
       }}
     >
-      <div
-        ref={setContentEl}
-        style={{ position: 'relative', margin: '0 auto', display: 'inline-block' }}
-      >
-        <canvas ref={canvasRef} style={{ display: 'block' }} />
-        <div
-          ref={textLayerRef}
-          className="textLayer"
-          style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}
-        />
-      </div>
+      {ready && doc && (
+        // Spacer: its height is the exact total content size, so the scroller's
+        // native `scrollHeight` matches the virtual document. Mirrors `Feed.tsx:973-981`.
+        <div style={{ height: virtualizer.getTotalSize(), width: '100%', position: 'relative' }}>
+          {items.map((item) => (
+            // The positioned wrapper is OUTSIDE `PdfPage`: the page owns
+            // `data-index` / `data-page-number` / `measureRef` / its own height, and
+            // must stay free of box model so `gap` is the only inter-page space.
+            <div
+              key={item.key}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                transform: `translateY(${item.start}px)`,
+              }}
+            >
+              <PdfPage
+                doc={doc}
+                pageNumber={item.index + 1}
+                containerWidth={containerWidth}
+                zoom={zoom}
+                registryRef={registryRef}
+                measureRef={virtualizer.measureElement}
+              />
+            </div>
+          ))}
+        </div>
+      )}
       {pending && (
         <div
           style={{

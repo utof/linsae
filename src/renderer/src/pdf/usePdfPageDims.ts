@@ -84,10 +84,18 @@ export function usePdfPageDims(doc: PageDimsSource | null | undefined): {
   /** Read-only by contract: callers read it in `estimateSize`; only this hook writes. */
   dimsRef: RefObject<ReadonlyMap<number, PageDims>>
   fallback: PageDims | null
+  /**
+   * Why the page-1 probe failed, or `null` when it has not. Non-null means the
+   * boot gate will NEVER open for this document (`fallback` stays null by
+   * design), so the reader must render an error state instead of a pane that is
+   * blank forever with only a console line to explain it. @issue utof/linsae#183
+   */
+  error: string | null
   ensureDims: (pageNumber: number) => Promise<PageDims | null>
 } {
   const dimsRef = useRef<Map<number, PageDims>>(new Map())
   const [fallback, setFallback] = useState<PageDims | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const inFlightRef = useRef<Set<number>>(new Set())
   // Bumped on every document change. `ensureDims` captures it before awaiting and
   // discards its result if it changed — otherwise a getPage still in flight against
@@ -101,6 +109,7 @@ export function usePdfPageDims(doc: PageDimsSource | null | undefined): {
     dimsRef.current = new Map()
     inFlightRef.current = new Set()
     setFallback(null)
+    setError(null)
     if (!doc) return
     void doc
       .getPage(1)
@@ -115,9 +124,15 @@ export function usePdfPageDims(doc: PageDimsSource | null | undefined): {
       // heights from leaking into doc B (see the swap note above). But do not swallow
       // the reason either: pdf.js resolves getDocument() before validating the page
       // tree, so a corrupt page-1 object opens fine and fails only here, leaving a
-      // permanently blank pane. Without this line there is nothing in the console to
-      // explain it. Surfacing it in the UI is tracked separately.
-      .catch((err) => console.error('[usePdfPageDims] page 1 dims failed', err))
+      // permanently blank pane. The console line is for us; `error` is what the reader
+      // renders so the user is not left staring at an empty pane. @issue utof/linsae#183
+      .catch((err: unknown) => {
+        console.error('[usePdfPageDims] page 1 dims failed', err)
+        // Same generation guard as the success path: a rejection from doc A must not
+        // paint an error over doc B, which may be loading perfectly well.
+        if (genRef.current !== gen) return
+        setError(err instanceof Error ? err.message : String(err))
+      })
   }, [doc])
 
   /**
@@ -155,5 +170,5 @@ export function usePdfPageDims(doc: PageDimsSource | null | undefined): {
     [doc],
   )
 
-  return { dimsRef, fallback, ensureDims }
+  return { dimsRef, fallback, error, ensureDims }
 }
