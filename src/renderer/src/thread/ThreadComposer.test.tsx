@@ -18,7 +18,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Attachment } from '../../../shared/types'
@@ -107,7 +107,7 @@ describe('ThreadComposer', () => {
     expect(onPost).not.toHaveBeenCalled()
   })
 
-  it('(c) submitting clears draft and chip resumes live-tracking', () => {
+  it('(c) submitting clears draft and chip resumes live-tracking', async () => {
     const onPost = vi.fn()
     const { rerender } = render(<ThreadComposer {...makeProps({ livePlayhead: 50, onPost })} />)
 
@@ -118,8 +118,11 @@ describe('ThreadComposer', () => {
 
     // After submit the textarea should be empty and chip should resume live-tracking.
     // Re-render with a new livePlayhead; chip should update.
+    // waitFor because `submit()` awaits onPost before releasing the freeze state
+    // (clear-on-success), so the chip resumes tracking ≥1 microtask after keydown.
+    // @see docs/plans/v0.8.2-composer-dataloss.md §2.3 A0
     rerender(<ThreadComposer {...makeProps({ livePlayhead: 90, onPost })} />)
-    expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:30')
+    await waitFor(() => expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:30'))
   })
 
   it('(d) Camera button calls onCapture when provided', () => {
@@ -303,7 +306,7 @@ describe('ThreadComposer', () => {
     expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:15')
   })
 
-  it('(f) manual chip value resets to live tracking after submit', () => {
+  it('(f) manual chip value resets to live tracking after submit', async () => {
     const onPost = vi.fn()
     const { rerender } = render(<ThreadComposer {...makeProps({ livePlayhead: 30, onPost })} />)
 
@@ -318,9 +321,10 @@ describe('ThreadComposer', () => {
     fireEvent.change(textarea, { target: { value: 'a note' } })
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
 
-    // After submit, re-render with a new livePlayhead — chip must resume live tracking
+    // After submit, re-render with a new livePlayhead — chip must resume live tracking.
+    // Post-await, like the (c) submit test above.
     rerender(<ThreadComposer {...makeProps({ livePlayhead: 99, onPost })} />)
-    expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:39')
+    await waitFor(() => expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:39'))
   })
 
   // ── v0.7 Task 4.2: per-thread draft persistence ──────────────────────────
@@ -340,22 +344,31 @@ describe('ThreadComposer', () => {
     expect(onDraftChange).toHaveBeenCalledWith('hi there')
   })
 
-  it('(t4.2) calls onDraftClear when a note is posted via Enter (clear-and-cancel)', () => {
+  it('(t4.2) calls onDraftClear when a note is posted via Enter (clear-and-cancel)', async () => {
     const onDraftClear = vi.fn()
     render(<ThreadComposer {...makeProps({ livePlayhead: 50, onDraftClear })} />)
     const textarea = screen.getByRole('textbox')
     fireEvent.focus(textarea)
     fireEvent.change(textarea, { target: { value: 'note text' } })
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
-    expect(onDraftClear).toHaveBeenCalledOnce()
+    // Fires on the success branch, after `submit()` awaits onPost — post-await.
+    await waitFor(() => expect(onDraftClear).toHaveBeenCalledOnce())
   })
 
-  it('(t4.2) does NOT call onDraftClear on a truly-empty no-op submit', () => {
+  it('(t4.2) does NOT call onDraftClear on a truly-empty no-op submit', async () => {
     const onDraftClear = vi.fn()
     render(<ThreadComposer {...makeProps({ livePlayhead: 50, onDraftClear })} />)
     const textarea = screen.getByRole('textbox')
     // No draft, no pending frame → submit is a no-op.
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+    // A NEGATIVE must not use waitFor — it resolves on its first passing tick and
+    // can only prove "eventually true", never "never happens". Yield a full
+    // macrotask turn so the whole microtask queue drains first; a wrongly-deferred
+    // onDraftClear would then already have run.
+    // @see docs/plans/v0.8.2-composer-dataloss.md §2.3 A0
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
     expect(onDraftClear).not.toHaveBeenCalled()
   })
 

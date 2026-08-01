@@ -1,20 +1,24 @@
 // @vitest-environment happy-dom
-import { fireEvent, screen } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../../../tests/setup'
 import { SimpleComposer } from './SimpleComposer'
 
-it('calls onSubmit with the typed body on Enter and clears', () => {
+it('calls onSubmit with the typed body on Enter and clears', async () => {
   const onSubmit = vi.fn()
   renderWithProviders(<SimpleComposer onSubmit={onSubmit} />)
   const ta = screen.getByRole('textbox')
   fireEvent.change(ta, { target: { value: 'a reply' } })
   fireEvent.keyDown(ta, { key: 'Enter' }) // Enter sends (ADR 0001)
+  // onSubmit is invoked on the same stack as the keydown, so it stays a plain
+  // assertion. The CLEAR does not: `submit()` awaits onSubmit before clearing
+  // (clear-on-success), which defers it by ≥1 microtask.
+  // @see docs/plans/v0.8.2-composer-dataloss.md §2.3 A0
   expect(onSubmit).toHaveBeenCalledWith('a reply')
-  expect((ta as HTMLTextAreaElement).value).toBe('')
+  await waitFor(() => expect((ta as HTMLTextAreaElement).value).toBe(''))
 })
 
-it('renders a send button that submits the trimmed draft and clears (Task 4)', () => {
+it('renders a send button that submits the trimmed draft and clears (Task 4)', async () => {
   const onSubmit = vi.fn()
   renderWithProviders(<SimpleComposer onSubmit={onSubmit} />)
   const ta = screen.getByRole('textbox')
@@ -23,7 +27,8 @@ it('renders a send button that submits the trimmed draft and clears (Task 4)', (
   fireEvent.change(ta, { target: { value: '  via button  ' } })
   fireEvent.click(send)
   expect(onSubmit).toHaveBeenCalledWith('via button')
-  expect((ta as HTMLTextAreaElement).value).toBe('')
+  // Post-await clear — see the Enter test above.
+  await waitFor(() => expect((ta as HTMLTextAreaElement).value).toBe(''))
 })
 
 it('the send button does not submit a whitespace-only draft (trim-empty guard)', () => {
@@ -80,28 +85,39 @@ it('reports the full text via onDraftChange, but NOT on mount (skip-first)', () 
   expect(onDraftChange).toHaveBeenCalledWith('hi there')
 })
 
-it('calls onDraftClear when a note is sent via Enter (clear-and-cancel)', () => {
+it('calls onDraftClear when a note is sent via Enter (clear-and-cancel)', async () => {
   const onDraftClear = vi.fn()
   renderWithProviders(<SimpleComposer onSubmit={vi.fn()} onDraftClear={onDraftClear} />)
   const ta = screen.getByRole('textbox')
   fireEvent.change(ta, { target: { value: 'a reply' } })
   fireEvent.keyDown(ta, { key: 'Enter' })
-  expect(onDraftClear).toHaveBeenCalledOnce()
+  // Fires on the success branch, after `submit()` awaits onSubmit — post-await.
+  await waitFor(() => expect(onDraftClear).toHaveBeenCalledOnce())
 })
 
-it('calls onDraftClear when a note is sent via the send button', () => {
+it('calls onDraftClear when a note is sent via the send button', async () => {
   const onDraftClear = vi.fn()
   renderWithProviders(<SimpleComposer onSubmit={vi.fn()} onDraftClear={onDraftClear} />)
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'via button' } })
   fireEvent.click(screen.getByRole('button', { name: /add note/i }))
-  expect(onDraftClear).toHaveBeenCalledOnce()
+  await waitFor(() => expect(onDraftClear).toHaveBeenCalledOnce())
 })
 
-it('does NOT call onDraftClear on a whitespace-only no-op submit', () => {
+it('does NOT call onDraftClear on a whitespace-only no-op submit', async () => {
   const onDraftClear = vi.fn()
   renderWithProviders(<SimpleComposer onSubmit={vi.fn()} onDraftClear={onDraftClear} />)
   const ta = screen.getByRole('textbox')
   fireEvent.change(ta, { target: { value: '   ' } })
   fireEvent.keyDown(ta, { key: 'Enter' })
+  // A NEGATIVE must not use waitFor: waitFor resolves on its first passing tick,
+  // so it would pass vacuously against a call that lands a microtask later — it
+  // can only prove "eventually true", never "never happens". Yield a full
+  // macrotask turn instead; a setTimeout(0) runs only after the entire microtask
+  // queue (and anything it enqueues) has drained, so once `submit()` awaits, a
+  // wrongly-deferred onDraftClear would already have run by the assertion.
+  // @see docs/plans/v0.8.2-composer-dataloss.md §2.3 A0
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0))
+  })
   expect(onDraftClear).not.toHaveBeenCalled()
 })
