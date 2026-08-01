@@ -251,3 +251,29 @@ Resequencing = edit this section, nothing else.
 > narrow:** this is single-window session *restore* only. Named/multiple workspaces and switchable
 > presets remain DEFERRED under the same bar — they are not yet demonstrably painful to reconstruct.
 > Next up: **semantic zoom**.
+
+> **Amendment (2026-08-01, v0.8):** the **PDF reading + excerpt half of §PDFs** — continuous
+> multi-page scroll, cross-page excerpt capture, read-back (reopen a note at its captured rect), and
+> per-document position persistence — ships on branch `v0.8/multipage-pdf` (ADRs 0056–0059).
+> **Semantic zoom moves behind it**; it had been "next up" in the three amendments above.
+>
+> **Why the binding constraint at line 220 is met.** *"PDFs only after the node/edge/tab/pane workflow
+> is nailed"* is user-stated and binding, so this is the amendment that must clear it rather than
+> trade it away — and the dock-shell run v0.6.2–v0.6.5 is what clears it:
+> - **node** — manual-placement canvas cards, v0.4 (`docs/specs/v0.4-canvas-mvp.md`).
+> - **edge** — typed edge creation, selection and deletion, v0.4.1
+>   (`docs/specs/v0.4.1-canvas-edges.md`).
+> - **pane** — the dock grammar, v0.6.2 (`docs/specs/v0.6.2-dock-shell.md`, ADR 0045): a dock is an
+>   ordered pane list + active id in `dockStore`, every pane has a home dock, and the
+>   content/utility split is real — ADR 0049 then made the PDF reader and YouTube player peer
+>   detachable content panes.
+> - **tab** — tab strips render at ≥2 panes (`DockTabs`, v0.6.2); v0.6.3 and v0.6.5 finished the dock
+>   width model and tab chrome that made them usable in practice (ADR 0047;
+>   `v0.6.5/dock-thread-fixes`).
+> - …and v0.7 made the whole arrangement **survive a restart** (ADR 0053) — what turns "the panes
+>   work" into "the workspace persists".
+>
+> **What v0.8 does NOT ship, so §PDFs above stays accurate:** annotation (**Stage 2**), image-region
+> excerpts, multi-document tabs. Annotation stays sequenced after canvas-ink Stage 3. **Layers remain
+> after PDFs** — untouched, and v0.8 is not the §PDFs item completing. Still deferred from §Dock
+> shell: cross-dock tab dragging, left multi-pane, AI-chat pane. Next up the queue: **semantic zoom**.

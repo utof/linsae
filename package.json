@@ -23,6 +23,7 @@
     "smoke:feed": "node scripts/feed-scroll-smoke.mjs",
     "smoke:feed-restore": "node scripts/feed-scroll-restore-smoke.mjs",
     "smoke:pdf": "node scripts/pdf-render-smoke.mjs",
+    "smoke:pdf-multipage": "node scripts/pdf-multipage-smoke.mjs",
     "spike:canvas": "node scripts/spike-canvas/run.mjs",
     "harness:send": "xvfb-run -a node scripts/send-harness.mjs",
     "harness:reveal": "xvfb-run -a node scripts/reveal-stress.mjs",

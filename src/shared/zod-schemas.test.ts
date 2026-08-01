@@ -335,4 +335,29 @@ describe('v0.7 persisted session schemas — smoke tests', () => {
     expect(v['pdf-1']?.zoom).toBe(1.5)
     expect(v['pdf-2']?.page).toBeUndefined()
   })
+  // v0.8 adds `pageFraction`; v0.7 shipped `{zoom, page?}` and real settings on disk
+  // already hold that shape — parsing it must keep working. @see docs/specs/v0.8-multipage-pdf.md §6
+  it('PdfViewV1Schema still accepts a v0.7-shaped payload (no pageFraction)', () => {
+    const v = PdfViewV1Schema.parse({ docA: { zoom: 1.5, page: 3 } })
+    expect(v.docA?.pageFraction).toBeUndefined()
+    expect(v.docA?.page).toBe(3)
+  })
+  it('PdfViewV1Schema round-trips the full v0.8 shape', () => {
+    const v = PdfViewV1Schema.parse({ docA: { zoom: 2, page: 7, pageFraction: 0.42 } })
+    expect(v.docA).toEqual({ zoom: 2, page: 7, pageFraction: 0.42 })
+  })
+  it('PdfViewV1Schema accepts pageFraction at both bounds (page top / page bottom)', () => {
+    expect(PdfViewV1Schema.parse({ a: { zoom: 1, pageFraction: 0 } }).a?.pageFraction).toBe(0)
+    expect(PdfViewV1Schema.parse({ a: { zoom: 1, pageFraction: 1 } }).a?.pageFraction).toBe(1)
+  })
+  it('PdfViewV1Schema rejects pageFraction outside 0..1', () => {
+    expect(() => PdfViewV1Schema.parse({ a: { zoom: 1, pageFraction: -0.01 } })).toThrow()
+    expect(() => PdfViewV1Schema.parse({ a: { zoom: 1, pageFraction: 1.01 } })).toThrow()
+  })
+  // pdf.js page numbers are 1-based integers, so 0 / negatives / floats are not positions.
+  it('PdfViewV1Schema rejects non-integer and non-positive page', () => {
+    expect(() => PdfViewV1Schema.parse({ a: { zoom: 1, page: 3.5 } })).toThrow()
+    expect(() => PdfViewV1Schema.parse({ a: { zoom: 1, page: 0 } })).toThrow()
+    expect(() => PdfViewV1Schema.parse({ a: { zoom: 1, page: -1 } })).toThrow()
+  })
 })

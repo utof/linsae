@@ -532,10 +532,16 @@ export const ComposerDraftFeedV1Schema = z.object({
   mode: z.enum(['claim', 'question']),
 })
 export const ComposerDraftThreadV1Schema = z.record(z.string(), z.string())
+// v0.8: `pageFraction` is a NORMALIZED (0..1) offset within `page`, so a restored position
+// survives a zoom step or a dock resize that a pixel offset would not; 0 = page top, 1 = page
+// bottom, both legal. `page` is pdf.js's 1-based page number, hence `.int().positive()`. Both
+// stay optional — v0.7 shipped `{zoom, page?}` and settings already on disk parse unchanged.
+// @see docs/specs/v0.8-multipage-pdf.md §6
 export const PdfViewV1Schema = z.record(
   z.string(),
   z.object({
     zoom: z.number(),
-    page: z.number().optional(),
+    page: z.number().int().positive().optional(),
+    pageFraction: z.number().min(0).max(1).optional(),
   }),
 )

@@ -1,7 +1,9 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { installMockApi, renderWithProviders as render } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
+import { useDockStore } from '../panes/dockStore'
+import { usePendingJumpStore } from '../pdf/pendingJumpState'
 import { NoteBubble } from './NoteBubble'
 
 // Shared no-op for the new required expand props.
@@ -988,5 +990,118 @@ describe('NoteBubble pdf-doc branch (page-absent discriminator)', () => {
     render(<NoteBubble note={pdfExcerpt} {...props} />)
     expect(screen.queryByRole('button', { name: /open notes/i })).toBeNull()
     expect(screen.getByText('a quote')).toBeInTheDocument()
+  })
+})
+
+// ── PDF read-back affordance (spec §5.1/§5.2, Task 5.3) ──────────────────────
+describe('NoteBubble pdf read-back affordance', () => {
+  /** The shape App's excerpt bridge actually writes (`App.tsx:381-385`): a
+   *  `type:'claim'` comment-on child, NOT a source note. */
+  const excerptLocator = {
+    media: 'pdf' as const,
+    pdf_id: 'p1',
+    page: 42,
+    rect: [10, 20, 30, 40] as [number, number, number, number],
+    quote: 'a quote',
+  }
+  const excerpt: Note = {
+    id: 'e1',
+    slug: 'e1',
+    body: 'a quote',
+    type: 'claim',
+    source_kind: 'pdf',
+    source_locator: excerptLocator,
+    created_at: 2,
+    updated_at: 2,
+    deleted_at: null,
+  }
+  /** A page-LESS pdf note that still renders as a bubble (type:'claim' misses the
+   *  `isPdfDoc` early return). This is the fixture that makes the `page != null`
+   *  half of the predicate load-bearing — see the doc-level test's own comment. */
+  const pagelessComment: Note = {
+    ...excerpt,
+    id: 'c1',
+    slug: 'c1',
+    body: 'a comment',
+    source_locator: { media: 'pdf', pdf_id: 'p1' },
+  }
+  const pdfDoc: Note = {
+    id: 'd1',
+    slug: 'd1',
+    body: '',
+    type: 'source',
+    source_kind: 'pdf',
+    source_locator: { media: 'pdf', pdf_id: 'p1' },
+    created_at: 1,
+    updated_at: 1,
+    deleted_at: null,
+  }
+  // No `onOpenReader` and no `onOpenThread`: this is the THREAD call-site's prop
+  // set verbatim (`thread/ThreadView.tsx:937-949`), which is the whole reason the
+  // affordance is store-driven rather than prop-driven (spec §5.1).
+  const props = {
+    focused: false,
+    expanded: false,
+    onToggleExpand: noop,
+    onFocus: noop,
+    onWikilinkClick: noop,
+    onEdit: noop,
+    onDelete: noop,
+    onCopyLink: noop,
+  }
+
+  let mockApi: ReturnType<typeof installMockApi>
+  beforeEach(() => {
+    mockApi = installMockApi()
+    usePendingJumpStore.setState({ pending: null })
+    useDockStore.getState().reset()
+  })
+
+  it('shows the affordance for a pdf excerpt (page != null)', () => {
+    render(<NoteBubble note={excerpt} {...props} />)
+    expect(screen.getByRole('button', { name: 'open source' })).toBeInTheDocument()
+  })
+
+  it('does NOT show it for a page-less pdf note (the `page != null` clause)', () => {
+    render(<NoteBubble note={pagelessComment} {...props} />)
+    expect(screen.queryByRole('button', { name: 'open source' })).toBeNull()
+    expect(screen.getByText('a comment')).toBeInTheDocument()
+  })
+
+  it('does NOT show it for the document-level pdf source note', () => {
+    // Weaker than it looks, and deliberately kept anyway: `pdfDoc` early-returns
+    // into PdfFeedNoteContainer (`NoteBubble.tsx:259-269`) before the bubble body
+    // renders, so this stays green even if the predicate loses `page != null`.
+    // Its job is to catch a later refactor that hoists the affordance ABOVE that
+    // early return; the page-less test above is what pins the predicate itself.
+    render(<NoteBubble note={pdfDoc} {...props} />)
+    expect(screen.queryByRole('button', { name: 'open source' })).toBeNull()
+    expect(screen.getByRole('button', { name: /open notes/i })).toBeInTheDocument()
+  })
+
+  it('clicking queues the jump AT THE NOTE’S LOCATOR and opens the pdf pane', async () => {
+    render(<NoteBubble note={excerpt} {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: 'open source' }))
+
+    // The locator — not merely the id — is what the reader drains into a scroll +
+    // flash. Passing only the pdfId would leave `pending` null and read back to
+    // wherever the document was last left.
+    expect(usePendingJumpStore.getState().pending).toEqual({
+      pdfId: 'p1',
+      locator: excerptLocator,
+    })
+    // Store-driven, with no onOpenReader prop in sight: the pane opens and the
+    // open-doc setting is written through the one existing path (useOpenPdfAt).
+    expect(useDockStore.getState().right.openPaneIds).toContain('pdf')
+    await waitFor(() =>
+      expect(mockApi.settings.set).toHaveBeenCalledWith({ key: 'pdf.openDocId', value: 'p1' }),
+    )
+  })
+
+  it('clicking the affordance does not also focus the bubble', () => {
+    const onFocus = vi.fn()
+    render(<NoteBubble note={excerpt} {...props} onFocus={onFocus} />)
+    fireEvent.click(screen.getByRole('button', { name: 'open source' }))
+    expect(onFocus).not.toHaveBeenCalled()
   })
 })
