@@ -3,10 +3,12 @@ import { act, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { installPdfLayout, installScrollHeight } from '../../../../tests/pdf-layout'
 import { installMockApi, type MockApi } from '../../../../tests/setup'
+import type { PdfLocator } from '../../../shared/types'
 import { PdfViewV1Schema } from '../../../shared/zod-schemas'
 import type { SessionSnapshot } from '../persistence/keys'
 import { computePdfRender } from './computePdfRender'
 import { type AnchorItem, anchorFromOffset, type PageAnchor } from './page-anchor'
+import { usePendingJumpStore } from './pendingJumpState'
 
 // --- Mocks -----------------------------------------------------------------
 // pdfjs-dist is only reachable from here through `PdfPage` (stubbed below) and
@@ -69,7 +71,16 @@ function makeDoc(id: string): DocMock {
       const v = n === LANDSCAPE_PAGE ? LANDSCAPE : PORTRAIT
       return {
         pageNumber: n,
-        getViewport: () => ({ ...v, scale: 1 }),
+        getViewport: () => ({
+          ...v,
+          scale: 1,
+          // A rotation-0 `PageViewport` at scale 1 reduces to exactly this: x passes
+          // through, y flips, because PDF user space is y-UP and `PageViewport` sets
+          // `rotateD = -1` for rotation 0 (`build/pdf.mjs:838-841`). The read-back
+          // drain converts the stored rect through this, so a mock without it would
+          // make every flash/fraction assertion below untestable.
+          convertToViewportPoint: (x: number, y: number) => [x, v.height - y],
+        }),
         render: () => ({ promise: Promise.resolve(), cancel: () => {} }),
         streamTextContent: () => ({}),
         cleanup: () => {},
@@ -266,6 +277,9 @@ beforeEach(() => {
   docs = { A: makeDoc('A'), B: makeDoc('B') }
   pageProps.length = 0
   registryRefs.clear()
+  // Module-scoped zustand + `isolate: false` (vitest.config.ts) ⇒ an undrained jump
+  // would leak into the next test file, not just the next test.
+  usePendingJumpStore.setState({ pending: null })
   mockApi = installMockApi()
   // Each test starts foreground; the quit-flush test flips this and resets it.
   Object.defineProperty(document, 'hidden', { value: false, configurable: true })
@@ -738,5 +752,281 @@ describe('PdfReader anchor tracking (spec §4.5, §4.6)', () => {
     expect(pageNumbers(container)).toContain(300)
     // overscan drops to 0 above fit (spec §4.4), so the zoomed window is page 300 alone.
     expect(pageNumbers(container)).toEqual([300])
+  })
+})
+
+// ─── Read-back drain + boot restore (spec §5.2, §5.3, §5.4, §6) ──────────────
+
+/**
+ * Boot the reader with a real layout AND a real `scrollHeight`. The latter is not
+ * optional for anything below: virtual-core clamps every `scrollToOffset` to
+ * `scrollHeight - clientHeight`, which under happy-dom's hardcoded 0 is **-1000** —
+ * every landing assertion would silently measure offset 0 and still pass
+ * (`tests/pdf-layout.ts:67-89`).
+ */
+async function bootAt(pdfView: SessionSnapshot['pdfView'] = {}): Promise<{
+  container: HTMLElement
+  swapTo: (id: string) => Promise<void>
+}> {
+  restoreLayout = installPdfLayout({ width: VIEW_W, height: VIEW_H })
+  restoreScrollHeight = installScrollHeight()
+  const qc = seededClient(pdfView)
+  const { container, rerender } = renderReader(qc)
+  await waitFor(() => expect(pageNumbers(container).length).toBeGreaterThan(0))
+  return {
+    container,
+    swapTo: async (id: string) => {
+      currentPdfId = id
+      await act(async () => {
+        rerender(
+          <QueryClientProvider client={qc}>
+            <PdfReader />
+          </QueryClientProvider>,
+        )
+      })
+    },
+  }
+}
+
+/** A pdf excerpt locator: page + the PDF user-space rect capture stored. */
+const jumpLocator = (page: number, rect?: [number, number, number, number]): PdfLocator => ({
+  media: 'pdf',
+  pdf_id: 'A',
+  page,
+  ...(rect ? { rect } : {}),
+  quote: 'the selected text',
+})
+
+/** The flash overlay's inner box, or null when no flash is up. */
+const flashBox = (container: HTMLElement): HTMLElement | null =>
+  container.querySelector('[data-testid="pdf-readback-flash"] > div > div')
+
+const px = (v: string): number => Number.parseFloat(v)
+
+/** Wait until the async drain has moved the scroller off its boot position. */
+const landedOn = async (container: HTMLElement, page: number): Promise<void> => {
+  await waitFor(() => expect(anchorAt(container, 1).page).toBe(page))
+}
+
+describe('PdfReader boot restore (spec §6)', () => {
+  it('scrolls to the persisted page on open', async () => {
+    // This is the test the smoke gate's restore-across-restart step mirrors. It also
+    // catches a `readAnchorItem` without its `getTotalSize()`: `measure()` clears
+    // `itemSizeCache` without reassigning `measurementsCache`, so a raw read returns
+    // the PRE-measure item and the landing lands nowhere near page 40.
+    const { container } = await bootAt({ A: { zoom: 1, page: 40, pageFraction: 0 } })
+
+    await landedOn(container, 40)
+    expect(anchorAt(container, 1)).toEqual({ page: 40, fraction: 0 })
+  })
+
+  it('restores the WITHIN-page fraction, not just the page', async () => {
+    // `page` alone would land at 0 here; the assertion is what makes `pageFraction`
+    // load-bearing rather than decorative.
+    const { container } = await bootAt({ A: { zoom: 1, page: 12, pageFraction: 0.5 } })
+
+    await landedOn(container, 12)
+    expect(anchorAt(container, 1).fraction).toBeCloseTo(0.5, 3)
+    expect(pageEl(container).scrollTop).toBeCloseTo(11 * strideAt(1) + 0.5 * pageHeightAt(1), 0)
+  })
+
+  it('does NOT re-write the position it just restored (no echo write)', async () => {
+    // The restore adopts the landed anchor, so the writer's whole-triple echo guard
+    // sees a byte-equal payload and suppresses the write.
+    //
+    // What this bites on, precisely (mutation-checked): an adoption that DIFFERS from
+    // what was restored — which would silently move the user's saved place a little
+    // further on every boot. Adopting nothing at all still passes here, because the
+    // writer's `{...stored}` spread is an echo too; that half is pinned by "persists
+    // where the jump landed" instead.
+    const { container } = await bootAt({ A: { zoom: 1, page: 40, pageFraction: 0 } })
+    await landedOn(container, 40)
+
+    await flushThrottle()
+
+    expect(mockApi.settings.set).not.toHaveBeenCalled()
+  })
+
+  it('sizes the fraction against the TARGET page, not the page-1 estimate', async () => {
+    // The `getTotalSize()`-before-read rule, made falsifiable for THIS path. Page 7
+    // is the fixture's landscape page: its real height (695) is far off the portrait
+    // estimate (1164) every other page carries, and the restore resolves its dims
+    // itself (it is not windowed at boot, so the prefetch never touched it).
+    //
+    // `measure()` bumps `itemSizeCacheVersion` but does NOT reassign
+    // `measurementsCache` — that Proxy still reads the `Float64Array` written by the
+    // LAST `getMeasurements` pass (`virtual-core/dist/esm/lazy-measurements.js`).
+    // Drop `readAnchorItem`'s `getTotalSize()` and `size` here is the stale 1164, so
+    // the landing is `+582` instead of `+347.5`: half a page too low.
+    const { container } = await bootAt({ A: { zoom: 1, page: LANDSCAPE_PAGE, pageFraction: 0.5 } })
+
+    await landedOn(container, LANDSCAPE_PAGE)
+    expect(LANDSCAPE_H).toBeLessThan(PORTRAIT_H) // guard the guard
+    expect(pageEl(container).scrollTop).toBeCloseTo(
+      (LANDSCAPE_PAGE - 1) * strideAt(1) + 0.5 * LANDSCAPE_H,
+      1,
+    )
+  })
+
+  it('restores a v0.7-shaped entry (page, no pageFraction) to that page top', async () => {
+    const { container } = await bootAt({ A: { zoom: 1, page: 12 } })
+
+    await landedOn(container, 12)
+    expect(anchorAt(container, 1)).toEqual({ page: 12, fraction: 0 })
+  })
+
+  it('leaves an unseen document at page 1 and writes nothing', async () => {
+    const { container } = await bootAt({})
+    await flushThrottle()
+
+    expect(pageEl(container).scrollTop).toBe(0)
+    // No stored entry ⇒ nothing to clobber; the mount-time throttle arm must still
+    // resolve to an echo rather than seeding `{zoom: 1}` over an absent record.
+    expect(mockApi.settings.set).not.toHaveBeenCalled()
+  })
+
+  it('restores each document independently across a swap', async () => {
+    const { container, swapTo } = await bootAt({
+      A: { zoom: 1, page: 40, pageFraction: 0 },
+      B: { zoom: 1, page: 7 },
+    })
+    await landedOn(container, 40)
+
+    await swapTo('B')
+
+    await landedOn(container, 7)
+  })
+})
+
+describe('PdfReader read-back drain (spec §5.2–§5.4)', () => {
+  it('drains a pending jump and lands on the locator page', async () => {
+    usePendingJumpStore.getState().setPendingJump('A', jumpLocator(120))
+
+    const { container } = await bootAt({})
+
+    await landedOn(container, 120)
+    // Consumed-once: the store is empty, so a later render cannot re-fire it.
+    expect(usePendingJumpStore.getState().pending).toBeNull()
+  })
+
+  it('A PENDING JUMP BEATS THE PERSISTED RESTORE (spec §5.2)', async () => {
+    // Both are armed for the same open. Only one may run — and it must be the jump,
+    // or the reader restores to the last-read page and then fights the jump.
+    usePendingJumpStore.getState().setPendingJump('A', jumpLocator(200))
+
+    const { container } = await bootAt({ A: { zoom: 1, page: 40, pageFraction: 0 } })
+
+    await landedOn(container, 200)
+    // Asserted separately from the landing: a restore that ran FIRST and was then
+    // overwritten would still end on 200, so pin that page 40 was never visited.
+    expect(anchorAt(container, 1).page).toBe(200)
+  })
+
+  it('scrolls to the rect VISUAL TOP within the page, not its PDF-space y', async () => {
+    // rect [x=100, y=200, w=50, h=20] on a 612×792 page. PDF space is y-up, so the
+    // visual top is y+h=220 ⇒ viewport y 792-220 = 572 ⇒ fraction 572/792. Mapping
+    // (x, y) instead would give 592/792 — the one-rect-height-too-low bug §5.4 names.
+    usePendingJumpStore.getState().setPendingJump('A', jumpLocator(3, [100, 200, 50, 20]))
+
+    const { container } = await bootAt({})
+
+    await landedOn(container, 3)
+    expect(anchorAt(container, 1).fraction).toBeCloseTo(572 / 792, 4)
+  })
+
+  it('flashes the captured rect, positioned in the page content box', async () => {
+    usePendingJumpStore.getState().setPendingJump('A', jumpLocator(3, [100, 200, 50, 20]))
+    const { container } = await bootAt({})
+    await landedOn(container, 3)
+    // The window follows only once the browser echoes the programmatic scroll —
+    // happy-dom's `scrollTo` sets scrollTop and stops (`Element.js:993-1011`).
+    await act(async () => {
+      pageEl(container).dispatchEvent(new Event('scroll'))
+    })
+
+    const box = flashBox(container)
+    expect(box).not.toBeNull()
+    // scale = 900/612; the stored box is scale-1 and scaled at render time.
+    const scale = computePdfRender(VIEW_W, PORTRAIT.width, PORTRAIT.height, 1, 1).scale
+    expect(px(box!.style.left)).toBeCloseTo(100 * scale, 3)
+    expect(px(box!.style.top)).toBeCloseTo(572 * scale, 3)
+    expect(px(box!.style.width)).toBeCloseTo(50 * scale, 3)
+    expect(px(box!.style.height)).toBeCloseTo(20 * scale, 3)
+  })
+
+  it('a DEGENERATE [0,0,0,0] rect scrolls to the page WITHOUT flashing (spec §5.3)', async () => {
+    // `clientRectsToPdfRect.ts:16` returns this for an empty rect list and capture
+    // writes it unconditionally (`useExcerptCapture.ts:79-84`), so it is a real
+    // stored value. Note the box is NOT all-zero after the y-flip — its `top` is the
+    // page height — which is why the guard must test the AREA.
+    usePendingJumpStore.getState().setPendingJump('A', jumpLocator(9, [0, 0, 0, 0]))
+
+    const { container } = await bootAt({})
+
+    await landedOn(container, 9)
+    // Page top, not the page BOTTOM a `top`-derived fraction would produce.
+    expect(anchorAt(container, 1)).toEqual({ page: 9, fraction: 0 })
+    expect(flashBox(container)).toBeNull()
+  })
+
+  it('a locator with no rect scrolls to the page top without flashing', async () => {
+    usePendingJumpStore.getState().setPendingJump('A', jumpLocator(9))
+
+    const { container } = await bootAt({})
+
+    await landedOn(container, 9)
+    expect(anchorAt(container, 1)).toEqual({ page: 9, fraction: 0 })
+    expect(flashBox(container)).toBeNull()
+  })
+
+  it('clears the flash after FLASH_MS', async () => {
+    usePendingJumpStore.getState().setPendingJump('A', jumpLocator(3, [100, 200, 50, 20]))
+    const { container } = await bootAt({})
+    await landedOn(container, 3)
+    await act(async () => {
+      pageEl(container).dispatchEvent(new Event('scroll'))
+    })
+    expect(flashBox(container)).not.toBeNull() // guard the guard
+
+    await waitFor(() => expect(flashBox(container)).toBeNull(), { timeout: 2000 })
+  })
+
+  it('drains a jump for the ALREADY-OPEN document (no swap to key on)', async () => {
+    // The case a `[doc]`-keyed drain cannot see: reading a note whose source is the
+    // PDF already in the pane changes neither `doc` nor `pdfId`. The store
+    // subscription is the only trigger that exists.
+    const { container } = await bootAt({})
+    expect(pageEl(container).scrollTop).toBe(0)
+
+    await act(async () => {
+      usePendingJumpStore.getState().setPendingJump('A', jumpLocator(77))
+    })
+
+    await landedOn(container, 77)
+  })
+
+  it('ignores a jump aimed at a DIFFERENT document until that document opens', async () => {
+    const { container, swapTo } = await bootAt({})
+
+    await act(async () => {
+      usePendingJumpStore.getState().setPendingJump('B', jumpLocator(50))
+    })
+    // Doc A must not move — and the jump must not be consumed away.
+    expect(pageEl(container).scrollTop).toBe(0)
+    expect(usePendingJumpStore.getState().pending?.pdfId).toBe('B')
+
+    await swapTo('B')
+
+    await landedOn(container, 50)
+  })
+
+  it('persists where the jump landed (the writer follows the read-back)', async () => {
+    usePendingJumpStore.getState().setPendingJump('A', jumpLocator(120))
+    const { container } = await bootAt({ A: { zoom: 1, page: 40, pageFraction: 0 } })
+    await landedOn(container, 120)
+
+    await flushThrottle()
+
+    expect(lastSet(mockApi).value.A).toMatchObject({ page: 120, pageFraction: 0 })
   })
 })

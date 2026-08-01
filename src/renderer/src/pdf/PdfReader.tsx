@@ -1,12 +1,15 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { PdfLocator } from '../../../shared/types'
 import { api } from '../lib/api'
 import type { SessionSnapshot } from '../persistence/keys'
 import { useSessionSnapshot } from '../persistence/useSessionSnapshot'
-import { clampZoom } from './computePdfRender'
+import { clampZoom, computePdfRender } from './computePdfRender'
 import { useExcerptStore } from './excerptState'
 import { type AnchorItem, anchorFromOffset, offsetFromAnchor, type PageAnchor } from './page-anchor'
+import { pdfRectToCssBox } from './pdfRectToCssBox'
+import { usePendingJumpStore } from './pendingJumpState'
 // B7: re-enable a visible drag-selection highlight in the text layer (pdf.js's
 // bundled CSS sets `.textLayer ::selection { background: transparent }`). Imported
 // HERE and not in `PdfPage` so the stylesheet is loaded once for the pane, not
@@ -50,6 +53,93 @@ const PAGE_GAP_PX = 12
  * is the divisor in `fitScale` (`usePdfPageDims.ts:54-58`).
  */
 const UNMEASURED_DIMS: PageDims = { w: 1, h: 1 }
+
+/**
+ * How long the read-back flash stays up, ms.
+ *
+ * Literally the value the thread already flashes for (`thread/ThreadView.tsx:25`),
+ * so the app has ONE "here it is" idiom (spec §5.4). Re-declared rather than
+ * imported because that constant is module-local there, and reaching into
+ * ThreadView from the PDF pane would couple two unrelated surfaces.
+ */
+const FLASH_MS = 600
+
+/**
+ * Where one document open should land, and whether to flash on arrival.
+ *
+ * The SAME shape carries both jumps, which is what makes "a pending jump beats the
+ * §6 restore" expressible as picking one value rather than as two code paths that
+ * must be kept from both running (spec §5.2).
+ */
+interface RestoreTarget {
+  /** 1-based page; clamped to the document length before use. */
+  page: number
+  /** Within-page position, `0` = top edge. Superseded by `rect` when one is given. */
+  fraction: number
+  /** PDF user-space rect to land on and flash, or null to land at `fraction` silently. */
+  rect: readonly [number, number, number, number] | null
+}
+
+/**
+ * A live read-back flash: the rect's CSS box **at scale 1**, plus the page's
+ * unscaled dims.
+ *
+ * Why scale 1 and not the rendered scale: the overlay must survive a zoom step
+ * while it is up, and a viewport at scale `s` is the scale-1 viewport times `s`
+ * (`computePdfRender.ts:82-85`) — so storing the scale-free box and multiplying at
+ * render time is exact, and needs no re-derivation when `zoom` changes.
+ *
+ * It also means the flash does NOT depend on the page registry. A registry entry
+ * appears only after that page's text layer has rendered (`PdfPage.tsx:156-158`),
+ * which is necessarily *after* the scroll that brings the page into the window — so
+ * a registry-sourced viewport would be null exactly when the flash is armed. The
+ * reader gets the viewport from `doc.getPage()` instead (memoized by pdf.js), which
+ * is available before the page mounts at all.
+ */
+interface FlashOverlay {
+  /** 1-based page the box belongs to. */
+  page: number
+  /** `pdfRectToCssBox` against that page's scale-1 viewport. */
+  box: { left: number; top: number; width: number; height: number }
+  /** The page's unscaled dims — what re-derives the live scale. */
+  dims: PageDims
+}
+
+/**
+ * Project a stored flash box onto the page as it is rendered right now.
+ * Returns the page's CSS width too, because the overlay reproduces `PdfPage`'s
+ * `margin: 0 auto` content box to inherit its horizontal centring exactly.
+ * @see FlashOverlay
+ */
+function flashCssBox(
+  flash: FlashOverlay,
+  containerWidth: number,
+  zoom: number,
+): { pageWidth: number; left: number; top: number; width: number; height: number } {
+  const { scale, cssW } = computePdfRender(containerWidth, flash.dims.w, flash.dims.h, 1, zoom)
+  return {
+    pageWidth: cssW,
+    left: flash.box.left * scale,
+    top: flash.box.top * scale,
+    width: flash.box.width * scale,
+    height: flash.box.height * scale,
+  }
+}
+
+/**
+ * A locator → the target this open should land on (spec §5.2, §5.3).
+ *
+ * `page` is optional on `PdfLocator` (`src/shared/types.ts:35`) — a document-level
+ * anchor. Such a locator "scrolls to page 1 and does not flash", so it degrades to
+ * page 1 with no rect rather than being rejected.
+ */
+function targetFromLocator(locator: PdfLocator): RestoreTarget {
+  return {
+    page: locator.page ?? 1,
+    fraction: 0,
+    rect: locator.page != null ? (locator.rect ?? null) : null,
+  }
+}
 
 /**
  * The virtualizer's `getItemKey`: key by PAGE NUMBER, not index.
@@ -191,6 +281,12 @@ export function PdfReader(): React.JSX.Element {
   const view = useSessionSnapshot().data?.pdfView
   const pending = useExcerptStore((s) => s.pending)
   const arm = useExcerptStore((s) => s.arm)
+  // v0.8/#155: SUBSCRIBED, not read through `getState()`. A read-back click on the
+  // ALREADY-OPEN document changes neither `doc` nor `pdfId`, so the store update is
+  // the only trigger that exists for that case.
+  const pendingJump = usePendingJumpStore((s) => s.pending)
+  // The live read-back flash, or null. State (not a ref) because it is rendered.
+  const [flash, setFlash] = useState<FlashOverlay | null>(null)
 
   /**
    * BOOT GATE (spec §4.2.1). Both halves are load-bearing:
@@ -241,6 +337,21 @@ export function PdfReader(): React.JSX.Element {
   // by the re-anchor effect below (and, from Batch 5, the persist writer) at event
   // time; as state it would re-render the whole pane on every scroll frame.
   const anchorRef = useRef<PageAnchor | null>(null)
+  /**
+   * A read-back jump taken out of the store but not yet performed — tagged with the
+   * document it is for, since it is routinely consumed while `pdf.openDocId` is
+   * still being written and the reader is showing something else.
+   */
+  const jumpTargetRef = useRef<{ pdfId: string; target: RestoreTarget } | null>(null)
+  /** This open's persisted position (spec §6). A jump above beats it. */
+  const restoreTargetRef = useRef<RestoreTarget | null>(null)
+  /**
+   * Supersede/abort token for the async restore below. Deliberately NOT the
+   * effect's cleanup: the effect re-runs when `pendingJump` clears itself, and a
+   * cleanup-driven abort would cancel the very jump that clear was caused by.
+   * Bumped only when a restore actually STARTS, and on every document swap.
+   */
+  const restoreRunRef = useRef(0)
   // The single live persist timer (v0.8). A REF, not state, and ONE for both the
   // zoom and the position path: the two must coalesce into one write, and the timer
   // must survive the renders that `setQueryData` triggers.
@@ -405,14 +516,139 @@ export function PdfReader(): React.JSX.Element {
   // (kept live below) changing on our own write must not re-fire this.
   // biome-ignore lint/correctness/useExhaustiveDependencies: doc is the restore-on-swap trigger; view/pdfId are read but excluded so only a doc swap (not our own live-cache write) re-restores
   useEffect(() => {
-    setZoom(view?.[pdfId ?? '']?.zoom ?? 1)
+    const stored = view?.[pdfId ?? '']
+    setZoom(stored?.zoom ?? 1)
     // v0.8: the anchor describes the OUTGOING document. Left in place it would be
     // written back under the INCOMING document's id on its first persist (before the
     // user has scrolled it), i.e. doc B silently inheriting doc A's page. The swap
     // flush runs in the cleanup phase, ahead of this setup, so A's own last write
     // still sees A's anchor.
     anchorRef.current = null
+    // …and abort a restore still in flight for the OUTGOING document, so its
+    // `scrollToOffset` can't land on the incoming one.
+    restoreRunRef.current += 1
+    setFlash(null)
+    // v0.8 §6: arm THIS open's position restore. Only `page` is required —
+    // `pageFraction` was added in v0.8, so a v0.7-written entry restores to the top
+    // of its page rather than being ignored.
+    restoreTargetRef.current =
+      stored?.page !== undefined
+        ? { page: stored.page, fraction: stored.pageFraction ?? 0, rect: null }
+        : null
+    // A jump queued for a DIFFERENT document than the one now open can never be
+    // honoured; drop it rather than let it fire if that document is reopened later.
+    if (jumpTargetRef.current && jumpTargetRef.current.pdfId !== pdfId) jumpTargetRef.current = null
   }, [doc])
+
+  /**
+   * Take a matching read-back jump out of the store (spec §5.2).
+   *
+   * Separate from the restore effect below, and declared AFTER the swap effect, for
+   * two ordering reasons. (1) The swap effect arms the persisted target; this one
+   * runs later in the same commit, so a jump always overwrites — never the reverse.
+   * (2) `consumePendingJump` mutates the store, which re-renders; keeping the
+   * consume out of the effect that owns the async scroll means that re-render cannot
+   * interrupt work already in flight.
+   *
+   * It runs BEFORE the gate opens on purpose: the jump is parked in
+   * `jumpTargetRef` and performed once `ready` is true, so a jump into a
+   * not-yet-loaded document is not lost.
+   */
+  useEffect(() => {
+    if (!pendingJump || pendingJump.pdfId !== pdfId || !pdfId) return
+    const jump = usePendingJumpStore.getState().consumePendingJump()
+    if (jump) jumpTargetRef.current = { pdfId: jump.pdfId, target: targetFromLocator(jump.locator) }
+  }, [pendingJump, pdfId])
+
+  /**
+   * Perform this open's ONE scroll: a read-back jump if one is queued, otherwise the
+   * persisted position (spec §5.2 — "a pending jump wins"; §6 — restore).
+   *
+   * Precedence is a value choice, not a race: both candidates are read here and one
+   * is picked, so the persisted restore cannot run "as well" and then be fought by
+   * the jump.
+   *
+   * The targets are cleared on SUCCESS, not on entry. `ready` is computed at render
+   * time, and on the commit where `doc` changes it still describes the OUTGOING
+   * document — `usePdfPageDims` re-nulls `fallback` in the same commit, one render
+   * too late for this effect to see. So the first attempt after a swap runs against
+   * a virtualizer that is about to be disabled, `readAnchorItem` returns null, and
+   * the target must survive for the attempt that follows once the gate genuinely
+   * reopens. Clearing on entry instead silently drops every swap-time restore.
+   *
+   * Ordering against dims: `ensureDims(page)` first, because `fraction × size` only
+   * means anything once `size` is the TARGET page's height rather than page 1's
+   * estimate. `measure()` then bumps `itemSizeCacheVersion` so those dims actually
+   * reach `getMeasurements` (a dims-Map mutation alone invalidates nothing — spec
+   * §4.2.1), and `readAnchorItem` forces the recompute before reading. This is the
+   * same recompute-then-read discipline as the zoom re-anchor above; a raw
+   * `measurementsCache` read here would be the stale-cache bug in a second place.
+   */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `pendingJump` is a TRIGGER for the same-document case (nothing else changes then), not a value the body reads — the jump is read from `jumpTargetRef`; `virtualizer` is a stable instance from useState
+  useEffect(() => {
+    if (!ready || !doc) return
+    const jump = jumpTargetRef.current?.pdfId === pdfId ? jumpTargetRef.current.target : null
+    const target = jump ?? restoreTargetRef.current
+    if (!target) return
+
+    const run = ++restoreRunRef.current
+    void (async () => {
+      const page = Math.min(Math.max(1, Math.round(target.page)), Math.max(1, doc.numPages))
+      await ensureDims(page)
+      if (restoreRunRef.current !== run) return
+
+      let fraction = target.fraction
+      let overlay: FlashOverlay | null = null
+      if (target.rect) {
+        // `getPage` is memoized by pdf.js, and resolves whether or not the page is
+        // windowed — which is the point: the page the flash targets is BY DEFINITION
+        // not mounted yet at the moment the jump is armed.
+        const p = await doc.getPage(page)
+        if (restoreRunRef.current !== run) return
+        const vp = p.getViewport({ scale: 1 })
+        // pdf.js types `convertToViewportPoint` as `any[]` (`page_viewport.d.ts:127`);
+        // cast to the helper's own param type, the idiom at `useExcerptCapture.ts:96-98`.
+        const box = pdfRectToCssBox(
+          vp as unknown as Parameters<typeof pdfRectToCssBox>[0],
+          target.rect,
+        )
+        // Zero AREA, not "the box is zero": `pdfRectToCssBox` maps a degenerate
+        // `[0,0,0,0]` through the viewport's y-flip, so its `top` is the page HEIGHT,
+        // not 0. Testing the whole box would never fire, and the fraction derived from
+        // that `top` would park the reader at the page's bottom edge. Such a rect
+        // scrolls to the page and skips the flash (spec §5.3) — it is what
+        // `clientRectsToPdfRect.ts:16` returns for an empty rect list, which capture
+        // writes unconditionally (`useExcerptCapture.ts:79-84`).
+        if (box.width > 0 && box.height > 0 && vp.height > 0) {
+          fraction = Math.min(1, Math.max(0, box.top / vp.height))
+          overlay = { page, box, dims: { w: vp.width, h: vp.height } }
+        }
+      }
+
+      virtualizer.measure()
+      const item = readAnchorItem(virtualizer, page)
+      // Superseded, or the gate closed under us — leave the target armed to retry.
+      if (restoreRunRef.current !== run || !item) return
+      if (jump) jumpTargetRef.current = null
+      restoreTargetRef.current = null
+      virtualizer.scrollToOffset(offsetFromAnchor(fraction, item), { align: 'start' })
+      // Adopt the landed position as the live anchor. Both halves of "don't fight the
+      // writer" hang off this line: after a §6 restore the next commit's triple is
+      // byte-equal to what is stored, so the echo guard suppresses the write
+      // entirely; after a jump the writer persists where the user now IS. Leaving it
+      // null instead would keep the pre-jump page as the thing that gets persisted.
+      anchorRef.current = { page, fraction }
+      setFlash(overlay)
+    })()
+  }, [ready, doc, pdfId, pendingJump, ensureDims, virtualizer])
+
+  // Fade the flash after FLASH_MS. Keyed on the overlay object, so a second jump
+  // while one is up restarts the clock instead of inheriting the old timer.
+  useEffect(() => {
+    if (!flash) return
+    const id = setTimeout(() => setFlash(null), FLASH_MS)
+    return () => clearTimeout(id)
+  }, [flash])
 
   /**
    * THE writer — the single place `pdf.view.v1` is produced (v0.7 zoom, v0.8
@@ -519,6 +755,10 @@ export function PdfReader(): React.JSX.Element {
   // serves every windowed page and no page mount/unmount re-binds it (spec §4.7).
   useExcerptCapture({ pdfId: pdfId ?? '', registryRef, scrollEl: pageEl })
 
+  // Re-derived every render rather than stored: the flash must follow a zoom step
+  // taken while it is up, and this is the only place `zoom`/`containerWidth` are live.
+  const flashCss = flash && containerWidth > 0 ? flashCssBox(flash, containerWidth, zoom) : null
+
   if (!pdfId)
     return <div style={{ padding: 'var(--space-4)', color: 'var(--fg-2)' }}>No PDF open.</div>
 
@@ -577,6 +817,43 @@ export function PdfReader(): React.JSX.Element {
                 registryRef={registryRef}
                 measureRef={virtualizer.measureElement}
               />
+              {flashCss && flash?.page === item.index + 1 && (
+                // Read-back flash (spec §5.4). A SIBLING of the page, not a child:
+                // `PdfPage` is outside this task's file set, and the reader can
+                // reproduce the page's content box exactly — the two nested divs
+                // below mirror `PdfPage.tsx:212-218`, so `margin: 0 auto` does the
+                // horizontal centring identically instead of it being re-derived
+                // here (and getting the zoom > 1 overflow case wrong).
+                <div
+                  data-testid="pdf-readback-flash"
+                  style={{ position: 'absolute', top: 0, left: 0, width: '100%' }}
+                >
+                  <div
+                    style={{ position: 'relative', margin: '0 auto', width: flashCss.pageWidth }}
+                  >
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: flashCss.left,
+                        top: flashCss.top,
+                        width: flashCss.width,
+                        height: flashCss.height,
+                        // Highlighter, not a cover: `multiply` over the light tint
+                        // leaves the glyphs underneath legible, where an opaque fill
+                        // would hide the very text the flash is pointing at. Outline
+                        // matches the thread's flash idiom (`thread/Rail.tsx:195`).
+                        background: 'var(--accent-tint)',
+                        mixBlendMode: 'multiply',
+                        outline: '2px solid var(--accent)',
+                        borderRadius: 'var(--r-1)',
+                        // Never intercept a drag: excerpt capture reads the SELECTION,
+                        // and a live overlay across the text would break re-capture.
+                        pointerEvents: 'none',
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           ))}
         </div>

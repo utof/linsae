@@ -31,6 +31,7 @@ import {
 } from './panes/dockStore'
 import { ShelfContext } from './panes/ShelfPane'
 import { useExcerptStore } from './pdf/excerptState'
+import { useOpenPdfAt } from './pdf/useOpenPdfAt'
 import { useOpenPdf, usePdfOpenId } from './pdf/usePdfOpenId'
 import type { SessionSnapshot } from './persistence/keys'
 import { usePersistedWrite } from './persistence/usePersistedWrite'
@@ -260,6 +261,9 @@ export function App() {
   // (pane onClose, via handlePaneClose) clears it.
   const pdfOpenId = usePdfOpenId()
   const openPdf = useOpenPdf()
+  // v0.8: the open-the-reader pair (id write + `openPane('pdf')`), extracted so the
+  // store-driven read-back affordance routes through the same path. @see spec §5.2
+  const openPdfAt = useOpenPdfAt()
   // Reactive subscription to the dock's hydrate latch (NOT getState()) so the
   // pdf-open effect below re-fires AFTER hydrate. `hydrate` full-replaces both
   // side slices, DROPPING content-kind panes (pdf/player); if this effect ran
@@ -831,20 +835,17 @@ export function App() {
   /**
    * Opens the PDF reader dock for a specific pdf_id without navigating to its
    * thread (#168). Called by the feed's PdfFeedNote title-click path (via Feed →
-   * NoteBubble → PdfFeedNoteContainer → PdfFeedNote). Mirrors ThreadView.tsx's
-   * PDF-open effect: writes `pdf.openDocId` asynchronously (so the setting persists
-   * across restarts) and calls `openPane('pdf')` synchronously (so the dock opens
-   * immediately without waiting for the DB write).
+   * NoteBubble → PdfFeedNoteContainer → PdfFeedNote).
+   *
+   * v0.8: the pane-opening pair now lives in `useOpenPdfAt`, so the read-back
+   * affordance — which is store-driven because `NoteBubble` also renders under the
+   * prop-less thread child list — reaches the same one path (spec §5.2). This stays
+   * as the feed's prop, unchanged in behaviour: no locator ⇒ no pending jump ⇒ the
+   * document opens where it was last left.
    *
    * @issue utof/linsae#168
    */
-  const handleOpenPdfReader = useCallback(
-    (pdfId: string) => {
-      void openPdf(pdfId)
-      useDockStore.getState().openPane('pdf')
-    },
-    [openPdf],
-  )
+  const handleOpenPdfReader = useCallback((pdfId: string) => openPdfAt(pdfId), [openPdfAt])
 
   /**
    * Opens the ThreadView for a source note, clearing focusedId so the
