@@ -72,10 +72,28 @@ persisted entry and the on-screen draft are cleared together or not at all.
 
 **A retry posts the original `t`, even if the user edits the body.** The anchor tracks the moment the
 user chose, not the text; a retry that silently re-anchors to a later second is the subtler
-data-loss bug this contract also prevents. Two deferrals do the work: keeping `draft` keeps
-`hasDraft` true, which pins `frozenAt` through `nextFrozenAt`'s two `hasDraft` branches; and keeping
-`anchorless` stops a restored (timestamp-less) draft from inventing an anchor from the mount-time
-playhead on retry.
+data-loss bug this contract also prevents. Two deferrals carry that **posted** anchor: keeping
+`draft` keeps `hasDraft` true, which pins `frozenAt` through `nextFrozenAt`'s two `hasDraft`
+branches; and keeping `anchorless` stops a restored (timestamp-less) draft from inventing an anchor
+from the mount-time playhead on retry.
+
+Both of those are pinned *by `hasDraft`*, so they hold only while text remains. **Editing** the
+failed body keeps `t`; **emptying** the composer and retyping does not — once `hasDraft` goes false
+the freeze effect falls through to `nextFrozenAt`'s final `return s.livePlayhead`
+(`src/renderer/src/thread/composer-chip.ts:78-82`) and re-anchors to wherever the video now is. That
+is the spec's "clearing resumes live-tracking" behaviour rather than a regression, but it means "the
+retry keeps `t`" is a claim about an *edited* draft, not a retyped one.
+
+**`manuallyFrozen` is the exception to that, which is why it must be deferred too.** It is the one
+deferral whose absence is invisible at the moment of failure. While `hasDraft` is true `nextFrozenAt`
+returns `prev` anyway, so hoisting `setManuallyFrozen(false)` above the await changes nothing an
+observer could see. Then the user deletes the failed text: `hasDraft` flips, the effect re-runs on
+that dep, and the guard `if (manuallyFrozen) return`
+(`src/renderer/src/thread/ThreadComposer.tsx:232`) is now the *only* thing standing between
+`frozenAt` and `livePlayhead`. With `manuallyFrozen` wrongly reset the effect proceeds, and the
+anchor the user typed by hand is replaced by the live playhead — with no event that could restore
+it. Pinned by `src/renderer/src/thread/ThreadComposer.test.tsx:651`
+("a rejected post keeps the MANUAL chip time").
 
 **`focused` is deferred for a different reason than the code once claimed.** It is *not* needed to
 protect the anchor: `composer-chip.ts`'s `nextFrozenAt` returns `prev` in **both** `hasDraft` branches
@@ -112,7 +130,7 @@ Someone reading that line and "unifying" the two would regress #23.
 - **#176's own proposed fix: move the clear into the mutation's `onSuccess` in `ThreadView`.** Not
   taken. It works for the youtube branch but needs the parent to reach into composer-local state
   (`manuallyFrozen`, `anchorless`, `focused`, the clobber comparison) that has no business leaving the
-  composer, and it leaves the plain branch — which has no mutation object — without an answer.
+  composer, and it leaves the plain branch — which has no mutation object — without a mechanism.
   Composer-awaits-and-clears-on-resolve keeps the whole reset in one place. #176's "Fix" section is
   therefore *not* what shipped; do not reopen it on that basis.
 - **A shared `useComposerSubmit` hook.** Rejected. The deferral set differs per composer (two vs
@@ -129,25 +147,38 @@ Someone reading that line and "unifying" the two would regress #23.
 
 ## Consequences
 
-- **Both thread composers drop out of React Compiler memoization (#197).** Measured against the pinned
-  `babel-plugin-react-compiler@1.0.0` with the repo's own options (`reactCompilerPreset()` in
-  `electron.vite.config.ts` passes `{}`, so defaults apply), running the compiler over the real files
-  after the oxc TS/JSX transform:
+- **Both thread composers drop out of React Compiler memoization (#197).** Measured with
+  `babel-plugin-react-compiler` at the `^1.0.0` range in `package.json:63` — a caret range, not a pin;
+  it currently resolves to 1.0.0 — and with the repo's own options: `electron.vite.config.ts:43`
+  passes `reactCompilerPreset()` with no arguments, which
+  `node_modules/@vitejs/plugin-react/dist/index.js:45` expands to
+  `plugins: [["babel-plugin-react-compiler", {}]]`, so every default applies.
 
-  | variant | result |
-  |---|---|
-  | both composers at the parent commits (`8576598` / `066fe0c`) | `CompileSuccess` |
-  | both as shipped (`dc05dbe`) | skipped — `Todo: (BuildHIR::lowerStatement) Handle TryStatement with a finalizer ('finally') clause` |
-  | both with the `finally` removed | skipped — `Refs: Cannot access refs during render` (×2) |
-  | parent + an in-flight `useRef` and nothing else | skipped — same refs error |
+  **The result depends on the input form, so measure raw `.tsx`.** `@rolldown/plugin-babel` declares
+  `enforce: "pre"` (`node_modules/@rolldown/plugin-babel/dist/index.mjs:336`) while `vite:oxc`
+  declares no `enforce`, so **babel runs first**; the plugin injects
+  `parserOpts: { plugins: ["typescript", "jsx"] }` for `.tsx` (`dist/index.mjs:389`) precisely because
+  what reaches it is raw TSX. Feeding the compiler oxc-transpiled output instead reproduces the
+  shipped bail but turns the `finally`-removed variant into a spurious
+  `Refs: Cannot access refs during render` — a reading of a pipeline that does not exist. An earlier
+  revision of this ADR recorded that artifact as fact; both columns are shown below so the next
+  person does not re-measure the wrong way.
 
-  **There are two independent bails, not one.** The `finally` merely masks the refs one; deleting it
-  recovers nothing. The refs diagnostic is a conservative false positive — `submit` is *defined*
-  during render but the ref is only ever read inside it — and there is no way to satisfy this contract
-  under 1.0.0 and stay compiled, because the double-submit guard must flip on the same stack as the
-  first keydown, which requires a ref. No correctness or build impact: no `panicThreshold` is set, so
-  the compiler logs and emits the original code. **Do not "clean up" the `try`/`finally` expecting
-  memoization back.**
+  | variant | raw `.tsx` — the real pipeline | post-oxc — **not** the pipeline |
+  |---|---|---|
+  | both composers at the parent commits (`8576598` / `066fe0c`) | `CompileSuccess` | `CompileSuccess` |
+  | both as shipped (HEAD) | `Todo: (BuildHIR::lowerStatement) Handle TryStatement with a finalizer ('finally') clause` | same |
+  | both with the `finally` removed, resets duplicated onto each exit path | `CompileSuccess` | spurious `Refs: Cannot access refs during render` (×2) |
+
+  **There is exactly one bail: the `finally`.** Removing it restores `CompileSuccess` for both
+  components, so the double-submit guard is not what costs the memoization — an in-flight `useRef`
+  read inside an async handler compiles fine. The `finally` is kept anyway, as a deliberate trade: it
+  is the single place that releases the in-flight guard on *every* exit path, including ones added
+  later, whereas hand-duplicating the reset onto each path is a standing invitation to the
+  "permanently deaf composer" failure #198 already tracks (its gap 2). No correctness or build impact:
+  no `panicThreshold` is set, so the compiler logs and emits the original code. A compiler release
+  that lowers `TryStatement` restores memoization here **with no source change** — this is a deferred
+  win, not a dead end.
 - **No in-flight affordance (#198).** `inFlight` is a ref, so a second Enter during the flight is a
   silent no-op and the send button stays enabled (`SendButton` has no `disabled` prop). Deliberate:
   making the flag observable means making it state, which reintroduces the per-keystroke render churn
@@ -164,11 +195,19 @@ Someone reading that line and "unifying" the two would regress #23.
 
 - `src/renderer/src/thread/SimpleComposer.tsx`, `src/renderer/src/thread/ThreadComposer.tsx` (`submit`)
 - `src/renderer/src/thread/ThreadView.tsx` (`post` mutation, `postPlain`, the `mutateAsync` call site)
-- `src/renderer/src/thread/composer-chip.ts` (`chipTime`, `nextFrozenAt`)
+- `src/renderer/src/thread/composer-chip.ts` (`chipTime`, `nextFrozenAt`; `:78-82` is the
+  `return s.livePlayhead` that re-anchors once `hasDraft` goes false)
+- `src/renderer/src/thread/ThreadComposer.test.tsx:651` (the `manuallyFrozen` deferral),
+  `ThreadComposer.tsx:232` (the freeze effect's `if (manuallyFrozen) return` guard)
 - `src/renderer/src/composer/Composer.tsx` (`submit`) + `src/renderer/src/App.tsx` (the `key` remount)
 - `src/main/save-note.ts` (the duplicate-slug `collision` throw)
 - `docs/plans/v0.8.2-composer-dataloss.md` §2.2 (the contract), §2.3 A1/A4
 - Issues: utof/linsae#161, #176, #23, #197, #198, #200
 - TanStack Query v5 — `mutate` returns `void`, `mutateAsync` returns `Promise<TData>`:
   https://tanstack.com/query/latest/docs/framework/react/reference/useMutation
+- React Compiler measurement — why the input must be raw TSX, and what the plugin config resolves to:
+  `node_modules/@rolldown/plugin-babel/dist/index.mjs:336` (`enforce: "pre"`) and `:389` (the `.tsx`
+  `parserOpts: { plugins: ["typescript", "jsx"] }`);
+  `node_modules/@vitejs/plugin-react/dist/index.js:45` (`reactCompilerPreset()` →
+  `["babel-plugin-react-compiler", {}]`); `electron.vite.config.ts:43`; `package.json:63` (`^1.0.0`)
 - `adrs/0006-react-compiler.md` (the compiler pipeline), `adrs/0001-enter-key-sends.md`
