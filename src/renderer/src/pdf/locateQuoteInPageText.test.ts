@@ -4,7 +4,7 @@ import { locateQuoteInPageText } from './locateQuoteInPageText'
 
 /**
  * A page's text the way `useExcerptCapture` builds it: pdf.js `getTextContent()`
- * items joined with a single space (`useExcerptCapture.ts:102-104`). The first item
+ * items joined with a single space (`useExcerptCapture.ts:103-105`). The first item
  * carries its own trailing space — real pdf.js output routinely does — so the join
  * produces a DOUBLE space at offset 10 and the raw string is genuinely not its own
  * normalized form. Every offset below would be off by one if the map were skipped.
@@ -58,7 +58,7 @@ describe('locateQuoteInPageText', () => {
     expect(PAGE_TEXT.slice(range.start, range.end)).toBe(
       'A third page with a longer paragraph that wraps',
     )
-    // Exactly what `useExcerptCapture.ts:113-114` computes from these offsets.
+    // Exactly what `useExcerptCapture.ts:131-134` computes from these offsets.
     expect(PAGE_TEXT.slice(Math.max(0, range.start - 32), range.start)).toBe('Third page  ')
     expect(PAGE_TEXT.slice(range.end, range.end + 32)).toBe(' across two lines.')
   })
@@ -137,8 +137,8 @@ describe('locateQuoteInPageText', () => {
   })
 
   it('resolves a duplicated quote to its FIRST occurrence', () => {
-    // Deliberate: `indexOf` semantics, byte-identical to the v0.6 code this replaces
-    // (`useExcerptCapture.ts:112`). Picking a different instance would move the
+    // Deliberate: `indexOf` semantics, byte-identical to the v0.6 `fullText.indexOf(text)`
+    // this replaces (deleted in v0.8.2). Picking a different instance would move the
     // offsets of already-persisted single-line locators, which is exactly what the
     // raw basis exists to preserve. Disambiguating is prefix/suffix's job.
     const raw = 'the cat sat on the mat'
@@ -149,13 +149,13 @@ describe('locateQuoteInPageText', () => {
 
   it('returns null when the quote is not on the page (the cross-page case)', () => {
     // ADR 0058: a cross-page quote genuinely cannot occur in the anchor page's own
-    // text. C2's `idx >= 0` guards become `range === null` and still omit all four
-    // fields. This must keep working — `useExcerptCapture.ts:109-111`.
+    // text. C2's `idx >= 0` guards became a `null` check and still omit all four
+    // fields. This must keep working — `useExcerptCapture.ts:110-136`.
     expect(locateQuoteInPageText(PAGE_TEXT, 'text from the next page entirely')).toBeNull()
   })
 
   it('returns null for an empty page text or an empty selection', () => {
-    // `getTextContent()` rejecting mid-selection degrades to '' (`useExcerptCapture.ts:108`).
+    // `getTextContent()` rejecting mid-selection degrades to '' (`useExcerptCapture.ts:109`).
     expect(locateQuoteInPageText('', V06_QUOTE)).toBeNull()
     // An empty needle would make `indexOf` return 0 and the end-of-match lookup read
     // before the start of the map — null is the only honest answer.
