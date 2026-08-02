@@ -4,7 +4,9 @@ import { formatClock } from '../lib/time'
 
 /**
  * Controlled presentational transport bar for the video thread player.
- * All playback state is owned by the caller (ThreadView wires to usePlayer).
+ * All playback state is owned by the caller — `PlayerPane` since v0.8.2, which wires it
+ * to `usePlayer` and the shared `yt/transportState` store. (It was `ThreadView` until the
+ * v0.6.4 B5 lift, after which this component was imported by nothing but its own test.)
  *
  * Why purely presentational: keeps this component decoupled from the player
  * singleton so it can be rendered/tested without a real YouTube iframe.
@@ -34,7 +36,7 @@ export interface TransportBarProps {
    * Why: scrubber click converts x-fraction → seconds and delegates here.
    */
   onSeek: (seconds: number) => void
-  /** Cycle the playback rate. ThreadView decides the actual rate sequence. */
+  /** Cycle the playback rate. The sequence lives in `yt/transportState.ts` (`RATES`). */
   onRate: () => void
   /** Toggle follow-playback scroll lock. */
   onToggleFollow: () => void

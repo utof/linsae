@@ -15,7 +15,7 @@
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushMicrotasks } from '../../../../tests/flush'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
@@ -28,7 +28,8 @@ import { useTransportStore } from '../yt/transportState'
  * (and reason) as transportState.test.ts:18. MANDATORY: the `dom` project runs
  * `isolate: false` (vitest.config.ts:35), so this module singleton is shared across
  * files in a worker; a leaked `followOn: false` or a stale marker list would poison
- * transportState.test.ts's own INITIAL capture. (#203)
+ * transportState.test.ts's own INITIAL capture. The afterEach below is the other half:
+ * this capture guards against the file BEFORE, the afterEach against the file AFTER. (#203)
  */
 const TRANSPORT_INITIAL = useTransportStore.getState()
 
@@ -143,6 +144,14 @@ beforeEach(() => {
     durationSec: 100,
   })
   mockApi.videoSources.upsert.mockResolvedValue(undefined)
+})
+
+// Hand the store back pristine so the NEXT file in this worker captures a clean
+// module-load snapshot. `beforeEach` guards this file; this guards everyone after it.
+// Without it the last test's mutations escape under `isolate: false` and the next
+// file's own capture records them as its "initial".
+afterEach(() => {
+  useTransportStore.setState(TRANSPORT_INITIAL, true)
 })
 
 describe('ThreadView', () => {
@@ -322,7 +331,7 @@ describe('ThreadView follow-scroll + click-to-seek', () => {
 // ---------------------------------------------------------------------------
 
 describe('ThreadView marker publishing (B3)', () => {
-  it("publishes the thread's anchored timestamps, sorted and de-duplicated", async () => {
+  it("publishes the thread's anchored timestamps in video-time order", async () => {
     // NOTE_B t=5, NOTE_A t=10 — SECONDS, not the `pct` field of the same objects
     // (which is 2.5/5 at the mocked duration of 200). TransportBar.tsx:184 derives
     // `left` from these itself, so publishing percentages would double-scale the ticks.

@@ -78,14 +78,23 @@ interface TransportState {
  *   a full guest reload, which destroys the `<video>` that the guest's `setRate`
  *   handler writes to (`yt/inject/youtube-guest.ts:203`), and `Player` exposes no
  *   `getPlaybackRate()` to read the truth back. The store never pushes. Re-pushing on
- *   video change is therefore the CONSUMER's standing obligation
- *   (`useEffect(() => player.setPlaybackRate(rate), [videoId, rate])`); without it the
- *   badge and actual playback diverge silently.
- * - `markers` are THREAD-scoped. `ThreadView` is the sole publisher and owns the
- *   lifecycle: republish on change, and call `clearMarkers()` from the effect's
- *   cleanup so one thread's ticks can never appear on the next video's scrubber.
- *   Keeping this a publisher obligation avoids keying the store by `videoId`, which
- *   the plan's "small store" (§3.2) does not call for.
+ *   video change is therefore the CONSUMER's standing obligation; without it the badge
+ *   and actual playback diverge silently.
+ *
+ *   **Copy `PlayerPane.tsx`'s effect, not the obvious one.** Keying it on
+ *   `[videoId, rate]` alone is inert: `load()` sets `rpc = null` (`playerSingleton.ts:302`)
+ *   BEFORE reassigning `src`, and `setPlaybackRate` is `rpc?.invoke('setRate', r)`
+ *   (`:337-339`), so the push fired at videoId-change time is swallowed by the optional
+ *   chain. The deps must also carry the player `state` — a guest state event is the only
+ *   public signal that the reloaded port is live. See `PlayerPane.tsx:109-124`, and
+ *   `PlayerPane.test.tsx`'s `(n)`, which covers exactly that path.
+ * - `markers` are THREAD-scoped, and `useMarkerPublisher` below owns that lifecycle —
+ *   NOT the caller. `ThreadView` is the sole publisher and calls the hook; the hook
+ *   republishes on change and clears on unmount, so one thread's ticks can never appear
+ *   on the next video's scrubber. Do not hand-roll it: the clear belongs in its own
+ *   effect, and folding it into the publish effect's cleanup empties the list on every
+ *   republish (see the hook's own TSDoc). Keeping this a publisher obligation avoids
+ *   keying the store by `videoId`, which the plan's "small store" (§3.2) does not ask for.
  *
  * @see docs/plans/v0.8.2-composer-dataloss.md §3.2–3.3
  * @see src/renderer/src/thread/TransportBar.tsx (the props this feeds)

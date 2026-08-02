@@ -114,9 +114,15 @@ import { useTransportStore } from './transportState'
 /**
  * The transport store's own initial state, captured at module load before any test
  * mutates it — same technique (and same reason) as transportState.test.ts:18.
- * MANDATORY here: the `dom` project runs `isolate: false` (vitest.config.ts:35), so
- * this module singleton is shared with every other file in the worker; leaving a
- * cycled rate or a published marker list behind would poison them. (#203)
+ *
+ * MANDATORY here, and note which direction the danger runs: the `dom` project sets
+ * `isolate: false` (vitest.config.ts:35), so this module singleton is shared with every
+ * other file in the worker, and `vi.resetModules()` at :42 does NOT give this file a
+ * private copy of it. `beforeEach` protects THIS file from whatever ran before it; the
+ * `afterEach` protects the NEXT file from this one. Without the latter the last test's
+ * mutations escape, and the next file's own module-load capture records them as its
+ * "initial" — which is how transportState.test.ts:36-38 (`INITIAL.rate === 1`) goes red
+ * for a reason having nothing to do with the store. (#203)
  */
 const TRANSPORT_INITIAL = useTransportStore.getState()
 
@@ -171,7 +177,14 @@ beforeEach(() => {
   mockApi.settings.set.mockResolvedValue({ ok: true as const })
 })
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  vi.restoreAllMocks()
+  // Hand the store back pristine so the NEXT file in this worker captures a clean
+  // module-load snapshot. Today this file happens to end on the dock-integration block,
+  // whose tests leave the store clean anyway — reordering the describes, appending a
+  // test, sharding, or running with `-t` removes that accident. Do not rely on it.
+  useTransportStore.setState(TRANSPORT_INITIAL, true)
+})
 
 // ── PlayerPane unit tests ─────────────────────────────────────────────────────
 
