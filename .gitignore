@@ -41,3 +41,7 @@ playwright-report/
 !/docs/**/*.md
 !/adrs/**/*.md
 .superpowers/
+
+# Mutation testing (manual `mutation` workflow) — never committed.
+.stryker-tmp/
+reports/

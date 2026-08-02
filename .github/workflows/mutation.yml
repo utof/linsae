@@ -1,0 +1,114 @@
+# Mutation testing — MANUAL ONLY.
+#
+# This is not CI. The repo has no CI by decision (CLAUDE.md): lefthook is the authoritative
+# gate and a hosted re-run of it buys nothing. This job is the opposite kind of thing — a
+# ~20min-to-3h audit that could never live in a pre-commit hook — and it runs only when
+# someone clicks it.
+#
+# What it is for: finding tests that cannot fail. v0.8.3 caught five of those by hand
+# (assertions into windows where nothing had happened yet), and hand-mutation only covers
+# what someone thinks to try.
+#
+# READ BEFORE TRUSTING A SCORE: a flaky test INFLATES the mutation score. If a test
+# flake-fails while a mutant is live, Stryker records the mutant as killed. See #203 — some
+# DOM-heavy files fail ~8 tests under CPU contention on an unrelated tree. The vitest runner
+# forces `maxWorkers: 1`, which removes the intra-process contention that causes it, but
+# Stryker's own `concurrency` reintroduces it at the process level. That is why concurrency
+# defaults to 2 here rather than the usual cpus-1.
+name: mutation
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Stryker --mutate glob. Blank uses stryker.conf.json (src/renderer/src/yt).'
+        required: false
+        default: ''
+      concurrency:
+        description: 'Parallel mutant runners. Keep low — see the flake note in this file.'
+        required: false
+        default: '2'
+      incremental:
+        description: "Reuse the previous run's results for unchanged mutants."
+        type: boolean
+        required: false
+        default: true
+
+jobs:
+  mutate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Stryker's dry run executes the WHOLE suite to collect per-test coverage, including the
+      # `node` project's real-SQLite integration tests — so the native binding has to match the
+      # Node ABI even when only renderer files are being mutated.
+      - run: node scripts/ensure-node-abi.mjs
+
+      # Installed into the runner only. Deliberately NOT a devDependency: CLAUDE.md hard-gates
+      # new deps, and a once-in-a-while audit should not leave a permanent entry behind.
+      - name: Install Stryker (runner only)
+        run: pnpm add -D @stryker-mutator/core@^9 @stryker-mutator/vitest-runner@^9
+
+      - name: Restore incremental results
+        if: inputs.incremental
+        uses: actions/cache@v4
+        with:
+          path: reports/stryker-incremental.json
+          key: stryker-incremental-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: stryker-incremental-${{ github.ref_name }}-
+
+      - name: Run Stryker
+        run: |
+          set -o pipefail
+          pnpm exec stryker run \
+            --concurrency '${{ inputs.concurrency }}' \
+            ${{ inputs.incremental && '--incremental' || '' }} \
+            ${{ inputs.scope && format('--mutate ''{0}''', inputs.scope) || '' }}
+
+      # `always()` so a Stryker crash still yields whatever it managed to write.
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report-${{ github.run_id }}
+          path: reports/
+          retention-days: 30
+
+      # The survivors list is the actual deliverable. Put the headline in the run summary so it
+      # can be read without downloading the artifact.
+      - name: Summarise
+        if: always()
+        run: |
+          [ -f reports/mutation/mutation.json ] || {
+            echo 'No mutation.json — see the log.' >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          node -e '
+            const r = require("./reports/mutation/mutation.json");
+            const all = Object.entries(r.files).flatMap(([f, v]) => v.mutants.map(m => ({ ...m, f })));
+            const n = s => all.filter(m => m.status === s).length;
+            const survived = all.filter(m => m.status === "Survived");
+            const covered = all.length - n("Ignored") - n("CompileError");
+            const score = covered ? ((n("Killed") + n("Timeout")) / covered * 100).toFixed(1) : "n/a";
+            const byFile = {};
+            for (const m of survived) byFile[m.f] = (byFile[m.f] ?? 0) + 1;
+            console.log("## Mutation score: " + score + "%\n");
+            console.log("killed " + n("Killed") + " · timeout " + n("Timeout") +
+                        " · **survived " + survived.length + "** · no-coverage " + n("NoCoverage") + "\n");
+            console.log("> A survivor is a mutation no test noticed. Some are *equivalent mutants* —");
+            console.log("> semantically identical to the original, so untestable by construction.");
+            console.log("> Triage before writing tests, and fix survivors with TESTS, never by");
+            console.log("> changing production code to make a mutant die.\n");
+            console.log("### Survivors by file\n");
+            for (const [f, c] of Object.entries(byFile).sort((a, b) => b[1] - a[1]))
+              console.log("- " + c + " — `" + f + "`");
+          ' >> "$GITHUB_STEP_SUMMARY"
