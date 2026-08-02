@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { dispatchWebviewEvent, fakeGuest } from '../../../../tests/yt-fake-guest'
 
-/** One recorded host→guest port transfer (`playerSingleton.ts:192`). */
+/** One recorded host→guest port transfer (the `contentWindow.postMessage` in `onDomReady`). */
 type PortTransfer = { msg: unknown; port: MessagePort }
 
 /** The parts of the `<webview>` stub a test reads back. */
@@ -21,8 +21,8 @@ function stubWebview(el: HTMLElement) {
     insertCSS: vi.fn(async () => 'key'),
     setUserAgent: vi.fn(),
     // happy-dom gives an unknown element no `contentWindow`, so without this the port
-    // transfer at `playerSingleton.ts:192` throws into its own catch and every handshake
-    // assertion below it is vacuous.
+    // transfer in `onDomReady` throws into its own catch and every handshake assertion
+    // below it is vacuous.
     contentWindow: {
       postMessage: vi.fn((msg: unknown, _origin: string, transfer: Transferable[] = []) => {
         transfers.push({ msg, port: transfer[0] as MessagePort })
@@ -246,9 +246,11 @@ describe('playerSingleton cover (T10)', () => {
   })
 
   it('does not let the previous video’s pending drop reveal the next one', async () => {
-    // The timer is the one thing here HEAD did not have, so it is the one way this refactor
-    // could reveal EARLIER than HEAD (spec N5): a drop armed for video A keeps running
-    // across `load(B)` and can fire before B's own `dom-ready` re-arms it.
+    // A drop armed for video A keeps running across `load(B)` and can fire before B's own
+    // `dom-ready` re-arms it — revealing a still-loading B (spec N5). HEAD had this same
+    // path, not a safer one: its `Promise.race` did not cancel its loser either, and the
+    // loser there was the `timeout(10000)` that RAN the drop. So `raiseCover`'s cancel
+    // closes a reveal-early hole rather than merely declining to open a new one.
     handshakeConfig.readyTimeoutMs = 300
     const p = getPlayer()
     const { wv, cover } = coverAndSpinner(p)

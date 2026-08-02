@@ -88,7 +88,7 @@ export function fakeGuest(
     pause,
     seekTo,
     setRate,
-    // A FULL payload, deliberately: `applyState` (`playerSingleton.ts:115-117`) writes
+    // A FULL payload, deliberately: `applyState` in `playerSingleton.ts` writes
     // `f.currentTime` into the cache unconditionally, so a partial `{duration}` seeds
     // `undefined` there and the next cache assertion reads a lie.
     emitState: (f) => {
