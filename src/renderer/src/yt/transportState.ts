@@ -74,6 +74,15 @@ interface TransportState {
  * - `followOn` / `rate` are PLAYER-scoped preferences. They have NO reset: they must
  *   survive `ThreadView` unmounting while the docked player keeps playing, which is
  *   the entire point of the B5 lift.
+ *
+ *   **"Player-scoped" names THIS STORE's lifetime, not the player's — B2 must close
+ *   the gap.** The player does not hold the rate: `load(id)` reassigns the webview's
+ *   `src` (`playerSingleton.ts:299-307`), a full guest reload, and the guest's
+ *   `setRate` handler writes `videoEl.playbackRate` (`yt/inject/youtube-guest.ts:203`)
+ *   on the `<video>` that reload destroys. `Player` exposes no `getPlaybackRate()` to
+ *   read the truth back, so this store is the SOLE holder of `rate` and never pushes
+ *   it. Without a re-push on video change — `useEffect(() => player.setPlaybackRate(rate),
+ *   [videoId, rate])` — the badge silently reads 1.75× while playback runs at 1×.
  * - `markers` are THREAD-scoped. `ThreadView` is the sole publisher and owns the
  *   lifecycle: republish on change, and call `clearMarkers()` from the effect's
  *   cleanup so one thread's ticks can never appear on the next video's scrubber.
@@ -92,9 +101,12 @@ export const useTransportStore = create<TransportState>((set, get) => ({
   toggleFollow: () => set((s) => ({ followOn: !s.followOn })),
 
   cycleRate: () => {
-    // indexOf → -1 for a rate that is not in the sequence (e.g. one YouTube applied
-    // on its own), and (-1 + 1) % len === 0, so an off-sequence rate resyncs to
-    // RATES[0] rather than wedging the cycle.
+    // indexOf → -1 for a rate that is not in the sequence, and (-1 + 1) % len === 0,
+    // so an off-sequence rate resyncs to RATES[0] rather than wedging the cycle.
+    // Nothing can reach that state today — `rate` is written only here and by
+    // setState, and there is no getPlaybackRate() to import a foreign value. This is
+    // free insurance for the `setRate` the store TSDoc's re-push caveat anticipates,
+    // not a live threat: suppressing the resync would cost MORE code than allowing it.
     const i = RATES.indexOf(get().rate)
     // ?? DEFAULT_RATE only satisfies noUncheckedIndexedAccess; the modulo makes the
     // index provably in-range.

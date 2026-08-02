@@ -140,14 +140,11 @@ describe('transportState — lifetimes', () => {
     // Falsifiable guard on the decision above: if a later task adds `reset()`, this
     // test fails and forces a re-read of the lifetime rationale rather than a silent
     // regression of the B5 persistence guarantee.
-    expect(Object.keys(useTransportStore.getState()).sort()).toEqual([
-      'clearMarkers',
-      'cycleRate',
-      'followOn',
-      'markers',
-      'rate',
-      'setMarkers',
-      'toggleFollow',
-    ])
+    //
+    // Deliberately NOT an exact-key-set assertion. That form also goes red when a
+    // later task adds an UNRELATED member — e.g. the `setRate` the rate-desync
+    // caveat in transportState.ts anticipates — and reports it as a lifetime
+    // violation that never happened. Guard the rule, not the shape.
+    expect(useTransportStore.getState()).not.toHaveProperty('reset')
   })
 })
