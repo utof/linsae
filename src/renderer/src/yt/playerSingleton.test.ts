@@ -590,13 +590,21 @@ describe('playerSingleton navigation (T2, T3, T7, T11)', () => {
     const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
     await p.load('M7lc1UVf-VE')
     // In flight: the runtime is injected and the port is transferred, but no ack yet.
+    const armed = Date.now()
     const t = await domReadyTransfer(wv)
-    // A retry would mean attempt 1's deadline had already passed. This is the guard on the
-    // vacuity above — it is the observable for "the attempt `load` is about to supersede
-    // still exists".
+    // A retry would mean attempt 1's deadline had already passed. Necessary but NOT
+    // sufficient: `transfers.length` is also 1 throughout `retryBackoffMs` (250ms) AFTER the
+    // deadline, when the candidate is already discarded and `t.port`'s peer is closed — a
+    // dead band WIDER than the 200ms live one. Every assertion below is negative, so a stall
+    // in that band would pass them all against the unfixed `load()`, silently.
     expect(wv.transfers.length).toBe(1)
 
     await p.load('dQw4w9WgXcQ')
+    // The guard `transfers.length` cannot make. If the setup outran attempt 1's deadline,
+    // this test proved nothing — fail loudly at the line that names why, rather than passing
+    // for the wrong reason. (Raising `ackTimeoutMs` to widen the window is not the fix: it
+    // would leave `raceAck`'s deadline pending past `afterEach` under `isolate: false`.)
+    expect(Date.now() - armed).toBeLessThan(handshakeConfig.ackTimeoutMs)
 
     // Only NOW does A's document answer — with the token that was current when `load` ran.
     const guestA = openGuest(t.port, { ack: String(t.msg) })

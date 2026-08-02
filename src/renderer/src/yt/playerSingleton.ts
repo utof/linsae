@@ -329,9 +329,10 @@ function syncBounds(): void {
  * the deliberate exception — it is guarded rather than cleared, because `handshakeSeq` never
  * decreases, so a stale retry can only no-op. The cover itself is left in whatever state it
  * is in — `load()` raises it explicitly, and BOTH `dom-ready` and `did-start-navigation`
- * re-arm the drop straight after calling this. Every caller that is not tearing the player
- * down for good MUST re-arm it: clearing without re-arming is how the cover ends up with no
- * pending drop and no event that will ever schedule one (N6).
+ * re-arm the drop straight after calling this. Every caller MUST then either raise the cover
+ * or re-arm the drop: clearing without doing one of the two is how the cover ends up with no
+ * pending drop and no event that will ever schedule one (N6). `load()` takes the raise arm,
+ * which is why it is not a counter-example to the rule.
  */
 function teardown(): void {
   handshakeSeq++
@@ -378,7 +379,9 @@ function onHandshakeFailed(): void {
  * (`shell/browser/api/electron_api_web_contents.cc` @ v42.5.0) — uncommitted navigations are
  * a first-class case, not a corner. This repo produces them itself: `src/main/index.ts`'s
  * `will-navigate` handler cancels every guest hop whose host misses `GUEST_HOST_ALLOW`, which
- * is every ad click-through, description link and sign-in flow. 204/205 responses,
+ * is every ad click-through and description link off the allowlist. (NOT sign-in: the
+ * allowlist carries `google.com` precisely so the consent/login flow can complete in-place.)
+ * 204/205 responses,
  * `Content-Disposition` downloads and BFCache restores are the upstream ones. Without this,
  * `teardown()` nulls `rpc`, nothing commits, nothing re-enters, and the player is silently
  * dead in cases where HEAD keeps working.
