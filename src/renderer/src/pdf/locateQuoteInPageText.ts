@@ -18,10 +18,19 @@
 
 /**
  * Every character JS counts as whitespace: WhiteSpace + LineTerminator. That
- * INCLUDES U+00A0 (nbsp), U+202F, U+2009 and U+FEFF — which matters, because pdf.js
- * emits those in real text content and a re-typed quote carries a plain space. It
- * EXCLUDES U+200B (zero-width space) and U+00AD (soft hyphen): those stay literal on
- * both sides and must match each other exactly.
+ * INCLUDES U+00A0 (nbsp), U+202F, U+2009 and U+FEFF; it EXCLUDES U+200B (zero-width
+ * space) and U+00AD (soft hyphen), which stay literal on both sides and must match
+ * each other exactly.
+ *
+ * Note where those can actually come from. NOT from the page text: pdf.js runs
+ * `normalizeUnicode()` over every `TextItem.str` unless `disableNormalization` is set,
+ * and `useExcerptCapture` calls `getTextContent()` with no arguments, so the default
+ * applies — its NFKC pass folds U+00A0 / U+2009 / U+202F to a plain space before the
+ * text ever reaches this module. (U+FEFF is absent from pdf.js's normalization regex
+ * and does survive.) The exotic codepoints therefore arrive on the QUOTE side — a
+ * re-typed or clipboard-round-tripped selection — which is the direction that needs
+ * the tolerance anyway.
+ *
  * No `g` flag — a global regex carries `lastIndex` across `.test()` calls.
  */
 const WHITESPACE = /\s/
@@ -48,7 +57,9 @@ function normalize(source: string): NormalizedText {
     const ch = source.charAt(i)
     if (WHITESPACE.test(ch)) {
       // Only the FIRST character of a run is kept, so `srcIndex` points at the run's
-      // start — which is what makes `start` land on the raw text the user selected.
+      // start. Nothing reads those entries — the needle is trimmed, so both lookups
+      // below land on non-whitespace characters — but keeping the map a straight
+      // parallel array is what makes the indexing arithmetic checkable by eye.
       if (inRun) continue
       inRun = true
       text += ' '
@@ -84,8 +95,17 @@ interface RawTextRange {
  * v0.6 behaviour of omitting all four text fields in that case.
  *
  * A quote occurring more than once resolves to its FIRST occurrence: `indexOf`
- * semantics, identical to the v0.6 code this replaces, so offsets already persisted
- * for single-line locators stay comparable. Disambiguating is prefix/suffix's job.
+ * semantics. Disambiguating is prefix/suffix's job.
+ *
+ * That matches the v0.6 code this replaces wherever the page text has no collapsed
+ * whitespace run — which is the case for every already-persisted single-line locator,
+ * so those offsets stay comparable. Where a run IS present the two can diverge, since
+ * this search is whitespace-insensitive and can therefore find an earlier, looser
+ * occurrence: for `page = 'a  b filler a b'` and `quote = 'a b'`, v0.6 returned the
+ * exact match at 12 while this returns `'a  b'` at 0. Harmless today — §4.1 of the
+ * plan verified no production reader of `textStart`/`textEnd` exists, the raw basis
+ * is preserved either way, and prefix/suffix derive from the same offsets, so the
+ * stored locator stays self-consistent.
  *
  * @issue utof/linsae#189
  */

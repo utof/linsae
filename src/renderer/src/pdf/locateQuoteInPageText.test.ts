@@ -36,6 +36,7 @@ const V06_QUOTE = 'the selected text'
  */
 const NBSP = String.fromCharCode(0x00a0)
 const ZWSP = String.fromCharCode(0x200b)
+const BOM = String.fromCharCode(0xfeff)
 
 describe('locateQuoteInPageText', () => {
   it('#189: a newline-joined selection matches space-joined page text', () => {
@@ -112,11 +113,11 @@ describe('locateQuoteInPageText', () => {
 
   it('collapses a non-breaking space, but not a zero-width space', () => {
     // JS `\s` is WhiteSpace + LineTerminator, which INCLUDES U+00A0 (and U+202F,
-    // U+2009, U+FEFF, U+3000). pdf.js emits NBSP in real text content, so this is the
-    // case that makes a re-typed or clipboard-round-tripped quote match. It does NOT
-    // include U+200B (zero-width space) or U+00AD (soft hyphen) — those stay literal
-    // on both sides and must match each other exactly. Pinned so a future switch to
-    // `\p{White_Space}` (which excludes U+FEFF) is a visible change.
+    // U+2009, U+FEFF, U+3000). It does NOT include U+200B (zero-width space) or
+    // U+00AD (soft hyphen) — those stay literal on both sides and must match each
+    // other exactly. NBSP reaches this helper from a re-typed or clipboard
+    // round-tripped quote rather than from the page text; see the source file on why
+    // pdf.js itself cannot deliver one.
     const nbspText = `soft${NBSP}hyphen here`
     expect(locateQuoteInPageText(nbspText, 'soft hyphen')).toEqual({ start: 0, end: 11 })
     expect(nbspText.slice(0, 11)).toBe(`soft${NBSP}hyphen`)
@@ -124,6 +125,15 @@ describe('locateQuoteInPageText', () => {
     const zwspText = `zero${ZWSP}width here`
     expect(locateQuoteInPageText(zwspText, 'zero width')).toBeNull()
     expect(locateQuoteInPageText(zwspText, `zero${ZWSP}width`)).toEqual({ start: 0, end: 10 })
+
+    // U+FEFF is the ONLY codepoint that separates `\s` from `\p{White_Space}` (which
+    // excludes it), so it is the only assertion that can make a switch between them
+    // visible. Without this line the surrounding claim pins nothing: swapping the
+    // regex leaves every other case here green. Verified by mutation.
+    expect(locateQuoteInPageText(`bom${BOM}split here`, 'bom split')).toEqual({
+      start: 0,
+      end: 9,
+    })
   })
 
   it('resolves a duplicated quote to its FIRST occurrence', () => {
