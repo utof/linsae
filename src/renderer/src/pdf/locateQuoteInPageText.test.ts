@@ -163,4 +163,39 @@ describe('locateQuoteInPageText', () => {
     expect(locateQuoteInPageText(V06_PAGE_TEXT, ' \n\t ')).toBeNull()
     expect(locateQuoteInPageText('', '')).toBeNull()
   })
+
+  it('never splits a surrogate pair — the map is code-UNIT based end to end', () => {
+    // `normalize` walks with `charAt`, so `srcIndex` and `text` grow one CODE UNIT at
+    // a time and stay the same length. That invariant survives astral characters only
+    // because there are no astral whitespace codepoints (exhaustively true for
+    // U+10000–U+10FFFF), so both halves of a pair take the non-whitespace branch and
+    // are appended contiguously.
+    //
+    // Pinned because the invariant is invisible: rewriting the loop as
+    // `for (const ch of source)` iterates by CODE POINT, appends two units to `text`
+    // while pushing one entry to `srcIndex`, and silently shifts every later offset —
+    // writing a lone surrogate into a PERSISTED locator. Every other test in this file
+    // stays green under that change. Verified by mutation.
+    const EMOJI = String.fromCodePoint(0x1f600)
+    const page = `Hello ${EMOJI} world here`
+
+    const r = locateQuoteInPageText(page, `${EMOJI}\nworld`)
+    expect(r).not.toBeNull()
+    expect(page.slice(r?.start, r?.end)).toBe(`${EMOJI} world`)
+    // `start` lands ON the high surrogate, not between the two units.
+    expect(page.codePointAt(r?.start ?? -1)).toBe(0x1f600)
+  })
+
+  it('prefers a looser earlier match over an exact later one (the v0.6 divergence)', () => {
+    // The one place this helper's result differs from the `indexOf` it replaces, and
+    // the case the persisted-offset-comparability argument has to survive: the search
+    // is whitespace-insensitive, so a collapsed run can match earlier than the exact
+    // text does. Documented in the source TSDoc — pinned here so a future change to
+    // prefer exact matches cannot leave that comment quietly false.
+    const page = 'a  b filler a b'
+
+    expect(locateQuoteInPageText(page, 'a b')).toEqual({ start: 0, end: 4 })
+    expect(page.slice(0, 4)).toBe('a  b')
+    expect(page.indexOf('a b')).toBe(12) // what v0.6 returned for the same input
+  })
 })
