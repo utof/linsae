@@ -44,7 +44,11 @@ vi.mock('../yt/usePlayerState', () => ({
     player,
     currentTime: playerState.currentTime,
     state: 'paused',
-    duration: 100,
+    // Deliberately NOT 100. `markerPositions` returns `{ t, pct: (t / duration) * 100 }`
+    // (rail-layout.ts:141), so at duration 100 `pct === t` identically and the marker
+    // assertions below could not tell the two apart — publishing percentages instead of
+    // seconds would have stayed green. At 200 the notes' t=5/10 give pct 2.5/5.
+    duration: 200,
   }),
 }))
 
@@ -319,7 +323,9 @@ describe('ThreadView follow-scroll + click-to-seek', () => {
 
 describe('ThreadView marker publishing (B3)', () => {
   it("publishes the thread's anchored timestamps, sorted and de-duplicated", async () => {
-    // NOTE_B t=5, NOTE_A t=10; duration 100 from the mocked usePlayerState.
+    // NOTE_B t=5, NOTE_A t=10 — SECONDS, not the `pct` field of the same objects
+    // (which is 2.5/5 at the mocked duration of 200). TransportBar.tsx:184 derives
+    // `left` from these itself, so publishing percentages would double-scale the ticks.
     renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
     await waitFor(() => expect(useTransportStore.getState().markers).toEqual([5, 10]))
   })
@@ -333,9 +339,19 @@ describe('ThreadView marker publishing (B3)', () => {
     expect(useTransportStore.getState().markers).toEqual([])
   })
 
-  it('publishes NO markers for a plain (non-video) thread', async () => {
+  it("publishes NO markers for a plain (non-video) thread, CLEARING a previous video's", async () => {
     // The generic branch has no anchored notes at all — publishing [] is what stops a
-    // previous video's ticks from surviving on the docked scrubber.
+    // previous video's ticks from surviving on the docked scrubber while the docked
+    // player keeps playing (markers are thread-scoped; followOn/rate are not).
+    //
+    // Seeded non-empty on purpose. Asserting `[]` against the `beforeEach` reset would
+    // re-assert the value the harness just set: a publisher that skipped plain threads
+    // entirely would pass. With ticks already on the scrubber, only a publisher that
+    // actually runs for this branch can bring it back to empty.
+    act(() => {
+      useTransportStore.getState().setMarkers([5, 10])
+    })
+
     mockApi.notes.get.mockResolvedValue({
       ...SOURCE_NOTE,
       source_kind: null,
