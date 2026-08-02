@@ -36,10 +36,10 @@ export function dispatchWebviewEvent(
  * `MessageChannel` the host transfers into the webview.
  *
  * Built on the REAL `createRpc` rather than a raw `port.onmessage` capture, for two
- * reasons: `createRpc` takes exclusive ownership of `port.onmessage` (`rpc.ts:76`), so
- * the two cannot coexist; and a guest that records an `invoke` but never replies leaves
- * the host's 1000ms timer (`rpc.ts:118-121`) to reject unhandled — under `isolate: false`
- * (`vitest.config.ts`) that surfaces in some *other* file's report.
+ * reasons: `createRpc` assigns `port.onmessage` itself (`rpc.ts`), so the two cannot
+ * coexist; and a guest that records an `invoke` but never replies leaves the host's
+ * 1000ms timer — the `setTimeout` in `createRpc`'s `invoke` — to reject unhandled, which
+ * under `isolate: false` (`vitest.config.ts`) surfaces in some *other* file's report.
  *
  * `MessageChannel` here is NODE's global (happy-dom's `Window` has none) — the same
  * thing `rpc.test.ts:7-13` already relies on. Its `MessagePort` has `start`/`onmessage`/
@@ -71,8 +71,8 @@ export function fakeGuest(
 } {
   const rpc = createRpc(port)
   // `() => null` rather than a bare `vi.fn()`: this guest's own `createRpc` awaits the
-  // handler and posts the return as the `res` value (`rpc.ts:84-85`) for the host to
-  // await, so an explicit null keeps the round-trip readable in a failure diff.
+  // handler and posts the return as the `res` value (the `invoke` arm of its `onmessage`)
+  // for the host to await, so an explicit null keeps the round-trip readable in a diff.
   const pause = vi.fn(() => null)
   const seekTo = vi.fn(() => null)
   const setRate = vi.fn(() => null)
@@ -80,8 +80,8 @@ export function fakeGuest(
   rpc.handle('seekTo', seekTo)
   rpc.handle('setRate', setRate)
   // Posting on the port is not exclusive to `createRpc`, so this raw ack coexists with
-  // it. `{ t: 'ack', token }` is a `Wire` member (`rpc.ts:14`) handled at `rpc.ts:102-110`,
-  // so the host's `whenAck(token)` resolves off this post.
+  // it. `{ t: 'ack', token }` is a `Wire` member, handled by the `m.t === 'ack'` arm of
+  // `createRpc`'s `onmessage`, so the host's `whenAck(token)` resolves off this post.
   if (opts.ack !== false) port.postMessage({ t: 'ack', token: opts.ack })
   return {
     rpc,

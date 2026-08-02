@@ -149,6 +149,11 @@ export function createRpc(port: MessagePort, opts: { invokeTimeoutMs?: number } 
       })
     },
     destroy() {
+      // In-flight `invoke` promises reject via their own timers; in-flight `whenAck`
+      // promises are abandoned unsettled, deliberately. Every specified caller races a
+      // deadline it owns (spec §5.5 step 4), so nothing awaits one bare, and the whole
+      // `Rpc` closure — waiters included — becomes unreachable together. Do NOT "fix"
+      // this by resolving them `false`: that would publish a channel on a dead port.
       pending.forEach((p) => {
         clearTimeout(p.timer)
       })

@@ -77,7 +77,7 @@ describe('createRpc', () => {
     port2.postMessage({ t: 'ack', token: 'nonce:1' })
     await expect(supersededArrived).resolves.toBe(true)
     // Real timer, not `vi.waitFor`: proving a promise STAYS pending is the one thing
-    // `waitFor` cannot do (`tests/flush.ts:7-13`).
+    // `waitFor` cannot do — see `flushMicrotasks`' docblock in `tests/flush.ts`.
     const raced = await Promise.race([
       wanted,
       new Promise((r) => {
@@ -107,6 +107,35 @@ describe('createRpc', () => {
       expect(probed).toBe(true)
     })
     await expect(host.whenAck('nonce:3')).resolves.toBe(true)
+    host.destroy()
+  })
+
+  it('whenAck stays pending for a token the already-arrived ack does not match', async () => {
+    // The mismatch case on the SHORT-CIRCUIT path — the superseded-attempt shape C4 exists
+    // for. Its sibling above covers mismatch on the WAITER path; without this one,
+    // narrowing the short-circuit to `lastAck !== null` (any ack satisfies any token)
+    // passes the whole suite while violating C4 on a path whose TSDoc claims it.
+    const { port1, port2 } = new MessageChannel()
+    const host = createRpc(port1)
+    let probed = false
+    host.on('probe', () => {
+      probed = true
+    })
+    port2.postMessage({ t: 'ack', token: 'nonce:4' })
+    port2.postMessage({ t: 'event', event: 'probe', payload: null })
+    await vi.waitFor(() => {
+      expect(probed).toBe(true)
+    })
+    // The ack for :4 is now processed and retained. Asking about :5 must NOT resolve off it.
+    const raced = await Promise.race([
+      host.whenAck('nonce:5'),
+      new Promise((r) => {
+        setTimeout(() => {
+          r('still-pending')
+        }, 20)
+      }),
+    ])
+    expect(raced).toBe('still-pending')
     host.destroy()
   })
 })
