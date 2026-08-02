@@ -48,6 +48,10 @@ function probeGuest(): {
   const timeline: string[] = []
   const intervals: number[] = []
   const observers: MutationObserver[] = []
+  // NB: this records every listener added to `window`/`document` while the probe is live, not
+  // only the guest's, and `dispose()` removes all of them. Safe today — nothing else in this
+  // file registers one inside a probe window. It stops being safe the moment a test renders a
+  // component in that window, since React's delegated `document` listeners would be torn out.
   const added: {
     target: EventTarget
     type: string
@@ -157,9 +161,9 @@ function watchPort(port: MessagePort, timeline: string[]): void {
 const open: { host: Rpc; guestPort: MessagePort }[] = []
 
 /** A real `MessageChannel` with a real host-side `createRpc` — the far end goes to the guest. */
-function channel(): { host: Rpc; guestPort: MessagePort } {
+function channel(opts?: { invokeTimeoutMs?: number }): { host: Rpc; guestPort: MessagePort } {
   const { port1, port2 } = new MessageChannel()
-  const c = { host: createRpc(port1), guestPort: port2 }
+  const c = { host: createRpc(port1, opts), guestPort: port2 }
   open.push(c)
   return c
 }
@@ -195,7 +199,7 @@ describe('guestRuntime — idempotent injection, re-armable receiver (C5)', () =
       // The counts are ZERO at injection time — every interval, observer and the keydown
       // stopper lives inside `initPort`, which runs only once a port arrives. So the
       // measurement has to be inject+deliver, twice, not inject twice (spec §8.2 T9).
-      const a = channel()
+      const a = channel({ invokeTimeoutMs: 100 })
       inject('nonce:1')
       deliverPort('nonce:1', a.guestPort)
       const first = probe.counts()
@@ -226,6 +230,13 @@ describe('guestRuntime — idempotent injection, re-armable receiver (C5)', () =
       // point: an `arm` that records the token and a receiver that never re-matches it would
       // satisfy the weaker claim while leaving the handshake exactly as broken as HEAD's.
       expect(await ackWithin(b.host, 'nonce:2')).toBe(true)
+
+      // §6.4's other half: `initPort` DESTROYS the prior rpc. Without this, deleting that
+      // destroy leaves every test here green — the live channel is asserted to survive a
+      // stale token (below), but nothing asserts the superseded one dies. The host's step-5
+      // comment calls this load-bearing: a guest that keeps answering on the old port would
+      // let an abandoned attempt look alive.
+      await expect(a.host.invoke('pause')).rejects.toThrow(/timeout/)
     } finally {
       probe.dispose()
     }
@@ -319,30 +330,40 @@ describe('guestRuntime — idempotent injection, re-armable receiver (C5)', () =
   it('does not double the media-event listeners when a <video> is already hooked', async () => {
     // Every other test here runs against an EMPTY document, so `findVideo()` always fails and
     // `attachVideo()` never runs — which means the 11 media-event listeners that spec §6.1
-    // lists FIRST among C5's hazards are unobserved by all of them. Without this test, moving
-    // `findVideo()`/`attachVideo()` back out of `wireDocument()` keeps the whole file green
-    // while re-arming doubles those 11 per channel.
-    document.body.innerHTML = '<ytd-app><div id="movie_player"><video></video></div></ytd-app>'
-    const video = document.querySelector('video')!
-    const perVideo: string[] = []
-    const realAdd = video.addEventListener.bind(video)
-    vi.spyOn(video, 'addEventListener').mockImplementation(((
-      type: string,
-      fn: EventListenerOrEventListenerObject,
-      opts?: boolean | AddEventListenerOptions,
-    ) => {
-      perVideo.push(type)
-      realAdd(type, fn, opts)
-    }) as unknown as typeof video.addEventListener)
-
+    // lists FIRST among C5's hazards are unobserved by all of them.
+    //
+    // The mutation this uniquely catches is the NAIVE FIX for the known "a re-armed channel
+    // gets no `ready`/`state` snapshot" gap — re-attaching the existing element on re-arm:
+    //   wireDocument();
+    //   if (videoEl) { var vv = videoEl; videoEl = null; attachVideo(vv); }
+    // That reds this test alone (`expected 33 to be 22`) and nothing else in the file.
+    // Whoever closes that issue must re-emit the snapshot WITHOUT re-running `attachVideo`.
+    // (Merely hoisting `findVideo()` out of `wireDocument()` is caught by test 1 instead, and
+    // does not double the 11 — `attachVideo`'s `if (v === videoEl) return` guard stops it.)
     const probe = probeGuest()
     try {
+      document.body.innerHTML = '<ytd-app><div id="movie_player"><video></video></div></ytd-app>'
+      const video = document.querySelector('video')!
+      const perVideo: string[] = []
+      const realAdd = video.addEventListener.bind(video)
+      vi.spyOn(video, 'addEventListener').mockImplementation(((
+        type: string,
+        fn: EventListenerOrEventListenerObject,
+        opts?: boolean | AddEventListenerOptions,
+      ) => {
+        perVideo.push(type)
+        realAdd(type, fn, opts)
+      }) as unknown as typeof video.addEventListener)
+
       const a = channel()
       inject('nonce:5')
       deliverPort('nonce:5', a.guestPort)
-      // The guest found the <video> and hooked it — otherwise the assertion below is vacuous
-      // for the same reason the empty-document tests cannot see this path at all.
-      expect(perVideo.length).toBeGreaterThan(0)
+      // The guest found the <video> and hooked it EXACTLY once — otherwise the delta below is
+      // vacuous for the same reason the empty-document tests cannot see this path at all.
+      // `toBe(11)` rather than `> 0` on purpose: under the naive-fix mutation above the count
+      // is already 22 here, which a `> 0` guard waves through, leaving only the delta to
+      // catch it. 11 is the `mediaEvents` list, asserted by the guest's own inventory comment.
+      expect(perVideo.length).toBe(11)
       const hooked = perVideo.length
       expect(await ackWithin(a.host, 'nonce:5')).toBe(true)
 
