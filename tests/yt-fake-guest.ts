@@ -6,7 +6,7 @@ import { createRpc, type Rpc } from '../src/renderer/src/yt/rpc'
  * Electron builds a webview's DOM events as plain `Event`s carrying extra own
  * properties (`isMainFrame`, `isInPlace`), which `lib.dom`'s `Event` does not
  * declare and `WebviewElement` (`playerSingleton.ts:34-40`) does not type either.
- * @see https://github.com/electron/electron/blob/main/lib/renderer/web-view/web-view-impl.ts (v42.5.0, :117-120)
+ * @see https://github.com/electron/electron/blob/v42.5.0/lib/renderer/web-view/web-view-impl.ts#L117-L120
  */
 type WebviewEventProps = { isMainFrame?: boolean; isInPlace?: boolean }
 type WebviewEvent = Event & WebviewEventProps
