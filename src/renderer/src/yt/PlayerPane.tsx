@@ -115,7 +115,7 @@ function PlayerPaneInner({ videoId }: { videoId: string }): React.JSX.Element {
   // live. Pushing again on later state changes is idempotent and cheap.
   //
   // Do NOT delete this in favour of `onRate` below: `onRate` covers only the click.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: videoId + state are re-run TRIGGERS, not values the body reads — the guest they push to was replaced. Same pattern as usePlayerState.ts:26.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: videoId + state are re-run TRIGGERS, not values the body reads — the guest they push to was replaced. Same pattern as the `videoId` dep on `usePlayerState`'s poll effect.
   useEffect(() => {
     void player.setPlaybackRate(rate)
   }, [player, rate, videoId, state])

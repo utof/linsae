@@ -1,4 +1,4 @@
-import { type Mock, vi } from 'vitest'
+import { expect, type Mock, vi } from 'vitest'
 import type { VideoFlags } from '../src/renderer/src/yt/player-state'
 import { createRpc, type Rpc } from '../src/renderer/src/yt/rpc'
 
@@ -38,6 +38,90 @@ export function dispatchWebviewEvent(
 ): void {
   const ev: WebviewEvent = Object.assign(new Event(name), props)
   el.dispatchEvent(ev)
+}
+
+/** One recorded host→guest port transfer (the `contentWindow.postMessage` in `handshake()`). */
+type PortTransfer = { msg: unknown; port: MessagePort }
+
+/**
+ * The parts of the `<webview>` stub a test reads back, for the
+ * `as unknown as StubbedWebview` cast every consumer needs — `wrapper.querySelector('webview')`
+ * is typed `Element`, and none of these members exist on it.
+ */
+export type StubbedWebview = HTMLElement & {
+  executeJavaScript: ReturnType<typeof vi.fn>
+  transfers: PortTransfer[]
+}
+
+function stubWebview(el: HTMLElement): void {
+  const ex = vi.fn(async (_code: string, _gesture?: boolean) => undefined)
+  // Every host→guest port transfer, in order. A test reads the handshake token back
+  // out of `msg` and hands `port` to `fakeGuest`.
+  const transfers: PortTransfer[] = []
+  Object.assign(el, {
+    executeJavaScript: ex,
+    insertCSS: vi.fn(async () => 'key'),
+    setUserAgent: vi.fn(),
+    // happy-dom gives an unknown element no `contentWindow`, so without this the port
+    // transfer in `handshake()` throws into its own catch and every handshake assertion
+    // downstream is vacuous.
+    contentWindow: {
+      postMessage: vi.fn((msg: unknown, _origin: string, transfer: Transferable[] = []) => {
+        transfers.push({ msg, port: transfer[0] as MessagePort })
+      }),
+    },
+    // Read by the C6 diagnostic in `onHandshakeFailed()` (spec §5.1): it names the guest's
+    // current URL, and an unstubbed `getURL` would throw out of the handshake instead of
+    // letting the test assert.
+    getURL: vi.fn(() => 'https://www.youtube.com/watch?v=M7lc1UVf-VE'),
+    transfers,
+  })
+  el.getBoundingClientRect = () =>
+    ({
+      x: 1,
+      y: 2,
+      width: 320,
+      height: 180,
+      top: 2,
+      left: 1,
+      right: 321,
+      bottom: 182,
+      toJSON() {},
+    }) as DOMRect
+}
+
+/**
+ * Make every `document.createElement('webview')` hand back a stubbed Electron `<webview>`.
+ *
+ * Why it is a `createElement` spy and not a fixture the test builds: `getPlayer()` creates the
+ * element itself (`playerSingleton.ts`), so a test has no seam to inject one through. It must
+ * therefore be installed BEFORE the first `getPlayer()` of the test — i.e. in `beforeEach`.
+ *
+ * Without it, `playerSingleton.ts`'s guest injection and its port transfer BOTH throw into
+ * their own catches, no port is ever transferred, and `fakeGuest` has nothing to attach to —
+ * so every handshake assertion passes against an implementation that did nothing.
+ *
+ * Returns a restore fn; call it in `afterEach`. Same contract as `tests/pdf-layout.ts`'s
+ * `installPdfLayout`, and for the same reason: the renderer project sets `isolate: false`
+ * (`vitest.config.ts`), so one happy-dom context is shared by every file in a worker and an
+ * unrestored `document.createElement` spy leaks into unrelated later files.
+ *
+ * @see docs/specs/v0.8.3-player-transport.md §8.1
+ * @issue utof/linsae#154
+ */
+export function installWebviewStub(): () => void {
+  const orig = document.createElement.bind(document)
+  const spy = vi.spyOn(document, 'createElement').mockImplementation(((
+    tag: string,
+    opts?: ElementCreationOptions,
+  ) => {
+    const el = orig(tag, opts)
+    if (tag === 'webview') stubWebview(el)
+    return el
+  }) as typeof document.createElement)
+  return () => {
+    spy.mockRestore()
+  }
 }
 
 /**
@@ -107,4 +191,91 @@ export function fakeGuest(
       rpc.signalReady()
     },
   }
+}
+
+/** Guests opened through `openGuest`, awaiting `destroyGuests()`. */
+const guests: ReturnType<typeof fakeGuest>[] = []
+
+/**
+ * `fakeGuest`, with the teardown registered for you.
+ *
+ * Why not `guest.rpc.destroy()` as the test's own last statement: that line is skipped exactly
+ * when an assertion throws, so a failing test leaves an open `MessagePort` behind. Under
+ * `isolate: false` (`vitest.config.ts`) unrestored state "leaks into unrelated later files and
+ * fails them in confusing places" — the lesson `tests/pdf-layout.ts` records.
+ *
+ * @issue utof/linsae#154
+ */
+export function openGuest(...args: Parameters<typeof fakeGuest>): ReturnType<typeof fakeGuest> {
+  const g = fakeGuest(...args)
+  guests.push(g)
+  return g
+}
+
+/** Destroy every guest opened since the last call. Call in `afterEach`. */
+export function destroyGuests(): void {
+  guests.splice(0).forEach((g) => {
+    g.rpc.destroy()
+  })
+}
+
+/**
+ * Dispatch `dom-ready` and resolve the ONE port transfer it produces — `{ msg: token, port }`,
+ * the raw material every handshake test works from.
+ *
+ * Indexed from a watermark rather than from 0 because the token is per-attempt (spec §5.5): a
+ * test that drives a second document must read the second transfer's token, not the first.
+ *
+ * Polls fast, and counts `>=` rather than `===`, because the handshake RETRIES on its own: a
+ * caller that means to answer this attempt has to be handed the port before its deadline
+ * passes, and a caller that doesn't must not be tripped up by attempt 2 landing mid-poll.
+ */
+export async function domReadyTransfer(wv: StubbedWebview): Promise<PortTransfer> {
+  const before = wv.transfers.length
+  dispatchWebviewEvent(wv, 'dom-ready')
+  await vi.waitFor(
+    () => {
+      expect(wv.transfers.length).toBeGreaterThanOrEqual(before + 1)
+    },
+    { interval: 10 },
+  )
+  return wv.transfers[before]!
+}
+
+/**
+ * Drive one host→guest handshake far enough that a guest is listening: dispatch `dom-ready`,
+ * wait for the host's port transfer, and open a fake guest echoing the token the host sent. The
+ * caller decides whether that guest ever emits `ready` — the two cases T10 separates.
+ *
+ * Returning here does NOT mean the channel is published: the host still has to see the ack
+ * (spec §5.5 step 6). Callers that go on to invoke must `awaitPublished` first.
+ */
+export async function connectGuest(wv: StubbedWebview): Promise<ReturnType<typeof fakeGuest>> {
+  const t = await domReadyTransfer(wv)
+  return openGuest(t.port, { ack: String(t.msg) })
+}
+
+/**
+ * Block until the host has PUBLISHED the channel (spec §5.5 step 6), then hand the guest back
+ * with its call counters at zero.
+ *
+ * `rpc` is module-private on purpose (spec §8.1), so the only host-side observable for
+ * "published" is that an invoke round-trips to the guest — and polling that means calling
+ * `pause()` an indeterminate number of times. Hence the `mockClear()`: callers count pauses
+ * afterwards, and a count that depends on how many times `vi.waitFor` happened to poll is not
+ * an assertion. Only the `pause` counter is cleared — `seekTo`/`setRate` are untouched by the
+ * poll, so they need no reset.
+ *
+ * `player` is typed structurally rather than as `ReturnType<typeof getPlayer>` so this module
+ * stays free of an import of the code under test.
+ */
+export async function awaitPublished(
+  player: { pause(): Promise<void> },
+  guest: ReturnType<typeof fakeGuest>,
+): Promise<void> {
+  await vi.waitFor(async () => {
+    await player.pause()
+    expect(guest.pause).toHaveBeenCalled()
+  })
+  guest.pause.mockClear()
 }

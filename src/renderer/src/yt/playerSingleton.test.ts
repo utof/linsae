@@ -1,63 +1,25 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { dispatchWebviewEvent, fakeGuest } from '../../../../tests/yt-fake-guest'
+import {
+  awaitPublished,
+  connectGuest,
+  destroyGuests,
+  dispatchWebviewEvent,
+  domReadyTransfer,
+  type fakeGuest,
+  installWebviewStub,
+  openGuest,
+  type StubbedWebview,
+} from '../../../../tests/yt-fake-guest'
 
-/** One recorded host→guest port transfer (the `contentWindow.postMessage` in `handshake()`). */
-type PortTransfer = { msg: unknown; port: MessagePort }
-
-/** The parts of the `<webview>` stub a test reads back. */
-type StubbedWebview = HTMLElement & {
-  executeJavaScript: ReturnType<typeof vi.fn>
-  transfers: PortTransfer[]
-}
-
-function stubWebview(el: HTMLElement) {
-  const ex = vi.fn(async (_code: string, _gesture?: boolean) => undefined)
-  // Every host→guest port transfer, in order. A test reads the handshake token back
-  // out of `msg` and hands `port` to `fakeGuest` (tests/yt-fake-guest.ts).
-  const transfers: PortTransfer[] = []
-  Object.assign(el, {
-    executeJavaScript: ex,
-    insertCSS: vi.fn(async () => 'key'),
-    setUserAgent: vi.fn(),
-    // happy-dom gives an unknown element no `contentWindow`, so without this the port
-    // transfer in `handshake()` throws into its own catch and every handshake assertion
-    // below it is vacuous.
-    contentWindow: {
-      postMessage: vi.fn((msg: unknown, _origin: string, transfer: Transferable[] = []) => {
-        transfers.push({ msg, port: transfer[0] as MessagePort })
-      }),
-    },
-    // Read by the C6 diagnostic in `onHandshakeFailed()` (spec §5.1): it names the guest's
-    // current URL, and an unstubbed `getURL` would throw out of the handshake instead of
-    // letting T4 assert.
-    getURL: vi.fn(() => 'https://www.youtube.com/watch?v=M7lc1UVf-VE'),
-    transfers,
-  })
-  el.getBoundingClientRect = () =>
-    ({
-      x: 1,
-      y: 2,
-      width: 320,
-      height: 180,
-      top: 2,
-      left: 1,
-      right: 321,
-      bottom: 182,
-      toJSON() {},
-    }) as DOMRect
-}
-
+/**
+ * The `<webview>` stub and the `createElement` spy that installs it live in the shared harness
+ * rather than here: `usePlayerState.test.tsx` drives the SAME real singleton and needs both, and
+ * a second copy of a fixture this load-bearing is how the two drift apart.
+ */
+let restoreWebviewStub = (): void => {}
 beforeEach(() => {
-  const orig = document.createElement.bind(document)
-  vi.spyOn(document, 'createElement').mockImplementation(((
-    tag: string,
-    opts?: ElementCreationOptions,
-  ) => {
-    const el = orig(tag, opts)
-    if (tag === 'webview') stubWebview(el)
-    return el
-  }) as typeof document.createElement)
+  restoreWebviewStub = installWebviewStub()
 })
 
 import { destroyPlayer, getPlayer, handshakeConfig, setPlayerInteractive } from './playerSingleton'
@@ -71,81 +33,6 @@ import { destroyPlayer, getPlayer, handshakeConfig, setPlayerInteractive } from 
 const handshakeDefaults = { ...handshakeConfig }
 
 /**
- * Fake guests a test opened, torn down in `afterEach`.
- *
- * Why not `guest.rpc.destroy()` as the test's own last statement: that line is skipped
- * exactly when an assertion throws, so a failing test leaves an open `MessagePort` behind.
- * Under `isolate: false` (`vitest.config.ts`) unrestored state "leaks into unrelated later
- * files and fails them in confusing places" — the lesson `tests/pdf-layout.ts` records
- * (utof/linsae#154).
- */
-const guests: ReturnType<typeof fakeGuest>[] = []
-function openGuest(...args: Parameters<typeof fakeGuest>): ReturnType<typeof fakeGuest> {
-  const g = fakeGuest(...args)
-  guests.push(g)
-  return g
-}
-
-/**
- * Dispatch `dom-ready` and resolve the ONE port transfer it produces — `{ msg: token,
- * port }`, the raw material every handshake test works from.
- *
- * Indexed from a watermark rather than from 0 because the token is per-attempt (spec §5.5):
- * a test that drives a second document must read the second transfer's token, not the first.
- *
- * Polls fast, and counts `>=` rather than `===`, because the handshake RETRIES on its own: a
- * caller that means to answer this attempt has to be handed the port before its deadline
- * passes, and a caller that doesn't must not be tripped up by attempt 2 landing mid-poll.
- */
-async function domReadyTransfer(wv: StubbedWebview): Promise<PortTransfer> {
-  const before = wv.transfers.length
-  dispatchWebviewEvent(wv, 'dom-ready')
-  await vi.waitFor(
-    () => {
-      expect(wv.transfers.length).toBeGreaterThanOrEqual(before + 1)
-    },
-    { interval: 10 },
-  )
-  return wv.transfers[before]!
-}
-
-/**
- * Drive one host→guest handshake far enough that a guest is listening: dispatch
- * `dom-ready`, wait for the host's port transfer, and open a fake guest echoing the token
- * the host sent. The caller decides whether that guest ever emits `ready` — the two cases
- * T10 separates.
- *
- * Returning here does NOT mean the channel is published: the host still has to see the ack
- * (spec §5.5 step 6). Callers that go on to invoke must `awaitPublished` first.
- */
-async function connectGuest(wv: StubbedWebview): Promise<ReturnType<typeof fakeGuest>> {
-  const t = await domReadyTransfer(wv)
-  return openGuest(t.port, { ack: String(t.msg) })
-}
-
-/**
- * Block until the host has PUBLISHED the channel (spec §5.5 step 6), then hand the guest
- * back with its call counters at zero.
- *
- * `rpc` is module-private on purpose (spec §8.1), so the only host-side observable for
- * "published" is that an invoke round-trips to the guest — and polling that means calling
- * `pause()` an indeterminate number of times. Hence the `mockClear()`: every caller below
- * counts pauses afterwards, and a count that depends on how many times `vi.waitFor` happened
- * to poll is not an assertion. Only the `pause` counter is cleared — `seekTo`/`setRate` are
- * untouched by the poll, so they need no reset.
- */
-async function awaitPublished(
-  p: ReturnType<typeof getPlayer>,
-  guest: ReturnType<typeof fakeGuest>,
-): Promise<void> {
-  await vi.waitFor(async () => {
-    await p.pause()
-    expect(guest.pause).toHaveBeenCalled()
-  })
-  guest.pause.mockClear()
-}
-
-/**
  * `console.warn` calls that are the C6 diagnostic, and not one of the other warners.
  *
  * Filtered by prefix on purpose: `safeExec` and `safeInsertCSS` warn on the same console in
@@ -157,11 +44,10 @@ function diagnostics(warn: { mock: { calls: unknown[][] } }): unknown[][] {
 }
 
 afterEach(() => {
-  guests.splice(0).forEach((g) => {
-    g.rpc.destroy()
-  })
+  destroyGuests()
   destroyPlayer()
   Object.assign(handshakeConfig, handshakeDefaults)
+  restoreWebviewStub()
   vi.restoreAllMocks()
 })
 
