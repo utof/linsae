@@ -12,6 +12,15 @@ type WebviewEventProps = { isMainFrame?: boolean; isInPlace?: boolean }
 type WebviewEvent = Event & WebviewEventProps
 
 /**
+ * The webview lifecycle events `playerSingleton.ts` actually listens for. A union rather
+ * than `string` because a mistyped name has no runtime signal here: the dispatch succeeds,
+ * nothing is listening, and the test fails as a `vi.waitFor` timeout in whatever it was
+ * waiting on — minutes of debugging that `tsc` can spend zero on. Add a member when the
+ * singleton starts listening for one.
+ */
+type WebviewEventName = 'dom-ready' | 'did-start-navigation'
+
+/**
  * Dispatch a webview lifecycle event (`dom-ready`, `did-start-navigation`, …) the way
  * Electron constructs it: a bare `Event` with the extra fields assigned as own
  * properties, NOT a `CustomEvent` with a `detail`.
@@ -24,7 +33,7 @@ type WebviewEvent = Event & WebviewEventProps
  */
 export function dispatchWebviewEvent(
   el: HTMLElement,
-  name: string,
+  name: WebviewEventName,
   props: WebviewEventProps = {},
 ): void {
   const ev: WebviewEvent = Object.assign(new Event(name), props)

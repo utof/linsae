@@ -41,6 +41,18 @@ interface WebviewElement extends HTMLElement {
   getURL(): string
 }
 
+/**
+ * A `did-start-navigation` event. Electron dispatches webview lifecycle events as plain
+ * `Event`s carrying the extra fields as OWN properties, not as `CustomEvent`s with a
+ * `detail` (`lib/renderer/web-view/web-view-impl.ts` @ v42.5.0) — and neither `lib.dom`'s
+ * `Event` nor `WebviewElement` declares them, so `tsc --strict` needs this.
+ *
+ * Both fields are optional because the DOM contract cannot promise them: an event arriving
+ * without `isMainFrame` is treated as "not the main frame" and ignored, which is the safe
+ * direction — a spurious teardown destroys a live channel.
+ */
+type NavigationEvent = Event & { isMainFrame?: boolean; isInPlace?: boolean }
+
 /** The extra (non-Player) members the singleton exposes. */
 type PlayerInstance = Player & {
   wrapper: HTMLDivElement
@@ -79,11 +91,6 @@ const PAUSE_JS = "var v=document.querySelector('#movie_player video');if(v){v.pa
  * through. The cost is shared module state, so **tests MUST save and restore any field they
  * change** — a shrunk timeout left behind is visible to every later test in the file, and
  * under `isolate: false` to later files too.
- *
- * `armWatchdogMs` is the one field with no consumer at this commit — the navigation watchdog
- * it bounds lands with the `did-start-navigation` listener (spec §5.3). The object is
- * specified whole because splitting it across commits would leave the spec's §5.1 half-true
- * in both.
  *
  * @see docs/specs/v0.8.3-player-transport.md §5.1
  * @issue utof/linsae#213
@@ -300,8 +307,9 @@ function syncBounds(): void {
 /**
  * Invalidate every piece of guest-derived state — the single point where contract C2 is
  * enforced (spec §5.2). Called wherever the current document is going or already gone:
- * `dom-ready` (§5.4, a NEW one has committed, so the old channel is dead by definition) and
- * `destroyPlayer()` (§5.8).
+ * `dom-ready` (§5.4, a NEW one has committed, so the old channel is dead by definition),
+ * `did-start-navigation` (§5.3, the early warning that it is about to be), `load()` (§5.7)
+ * and `destroyPlayer()` (§5.8).
  *
  * The order is load-bearing. `handshakeSeq++` goes first, so the instant this returns every
  * attempt still in flight is stale by construction and none of them can publish — each
@@ -319,9 +327,11 @@ function syncBounds(): void {
  * timer that outlives the state it was armed for fires into someone else's document, and in
  * the suite it crosses `afterEach` into the next test's world (spec §5.8). The retry timer is
  * the deliberate exception — it is guarded rather than cleared, because `handshakeSeq` never
- * decreases, so a stale retry can only no-op. The cover itself
- * is left in whatever state it is in — `load()` raises it explicitly, and `dom-ready` re-arms
- * the drop straight after calling this.
+ * decreases, so a stale retry can only no-op. The cover itself is left in whatever state it
+ * is in — `load()` raises it explicitly, and BOTH `dom-ready` and `did-start-navigation`
+ * re-arm the drop straight after calling this. Every caller that is not tearing the player
+ * down for good MUST re-arm it: clearing without re-arming is how the cover ends up with no
+ * pending drop and no event that will ever schedule one (N6).
  */
 function teardown(): void {
   handshakeSeq++
@@ -355,6 +365,48 @@ function onHandshakeFailed(): void {
     `[player] handshake failed after ${handshakeConfig.maxAttempts} attempts on`,
     webview?.getURL(),
   )
+}
+
+/**
+ * The C6 watchdog's fire path: a main-frame navigation started `armWatchdogMs` ago and
+ * nothing has committed since — no `dom-ready` has re-entered the handshake, and none may
+ * ever arrive (spec §5.3).
+ *
+ * `did-start-navigation` and `dom-ready` are NOT a matched pair, which is the whole reason
+ * this exists. Electron emits the former unconditionally with no commit check, while its
+ * sibling `DidFinishNavigation` early-returns on `!navigation_handle->HasCommitted()`
+ * (`shell/browser/api/electron_api_web_contents.cc` @ v42.5.0) — uncommitted navigations are
+ * a first-class case, not a corner. This repo produces them itself: `src/main/index.ts`'s
+ * `will-navigate` handler cancels every guest hop whose host misses `GUEST_HOST_ALLOW`, which
+ * is every ad click-through, description link and sign-in flow. 204/205 responses,
+ * `Content-Disposition` downloads and BFCache restores are the upstream ones. Without this,
+ * `teardown()` nulls `rpc`, nothing commits, nothing re-enters, and the player is silently
+ * dead in cases where HEAD keeps working.
+ *
+ * Re-entering `handshake()` is the entire action, and it is the right one even when the
+ * navigation was cancelled: a cancelled navigation leaves the PREVIOUS document in place,
+ * and that document is exactly what the channel should be talking to. If there is genuinely
+ * no live document, the handshake's own port transfer throws (`contentWindow` is null),
+ * retries, exhausts, and emits the C6 diagnostic from `onHandshakeFailed()`.
+ *
+ * `attempts` was reset by the `teardown()` that preceded the arm, so this gets a full
+ * `maxAttempts` and the "exactly one diagnostic" guarantee survives.
+ */
+function onNavigationStalled(): void {
+  armWatchdog = 0
+  // `handshake()`'s entry guard `if (!wv) return` is SILENT, and a silent exit on the one
+  // path C6 exists to cover is precisely the shape C6 forbids — so the no-element case is
+  // named here rather than delegated to it. It cannot fire today: `destroyPlayer()` reaches
+  // `teardown()`, which clears this timer, before it nulls `webview`. Kept because the
+  // alternative is a `return` nobody would ever see, and it shares `onHandshakeFailed()`'s
+  // message prefix so both land in one diagnostic stream.
+  if (!webview) {
+    console.warn('[player] handshake failed: navigation stalled with no webview')
+    return
+  }
+  handshake().catch((e: unknown) => {
+    console.warn('[player] handshake threw', e)
+  })
 }
 
 /**
@@ -557,6 +609,30 @@ export function getPlayer(): PlayerInstance {
     })
   })
 
+  // Contract C2's early half. `dom-ready` is the AUTHORITATIVE invalidation point (§5.4);
+  // this is the early warning that the current document is on its way out — and, unlike
+  // `dom-ready`, it may never be followed by anything at all, which is what the paired
+  // watchdog is for (spec §5.3, `onNavigationStalled`).
+  webview.addEventListener('did-start-navigation', (e) => {
+    const nav = e as NavigationEvent
+    // In-page (SPA) navigation keeps the JS world alive, and with it the injected guest
+    // runtime holding the far end of the port, so tearing down here would destroy a channel
+    // that is still perfectly good. Sub-frame navigations (ads, embeds) are not the guest
+    // document at all.
+    if (!nav.isMainFrame || nav.isInPlace) return
+    // ORDER IS LOAD-BEARING for both lines below, in the same direction: `teardown()` clears
+    // `armWatchdog` AND `coverTimer`, so anything armed before it is swept by it.
+    teardown()
+    // The cover's pending drop is one of the things `teardown()` just cleared (§5.2 step 5),
+    // and this path's whole premise is that no `dom-ready` is coming to re-arm it. Left
+    // un-armed, a cover that is up when a navigation is cancelled stays up forever with no
+    // event that will ever schedule a drop — N6's permanent black screen over the very page
+    // the user has to click. The deadline restarts with the navigation, so it stays bounded
+    // and stays unconditional.
+    armCoverTimer()
+    armWatchdog = window.setTimeout(onNavigationStalled, handshakeConfig.armWatchdogMs)
+  })
+
   wrapper.appendChild(webview)
   wrapper.appendChild(cover)
   wrapper.appendChild(spinner)
@@ -607,8 +683,14 @@ export function getPlayer(): PlayerInstance {
     async load(id: string): Promise<void> {
       if (id === videoId) return
       videoId = id
-      rpc?.destroy()
-      rpc = null
+      // §5.7: the FULL invalidation, NOT the `rpc?.destroy(); rpc = null` this replaces.
+      // That pair looks equivalent and is not — it does not bump `handshakeSeq`, so an
+      // attempt already past its port transfer survives the load and publishes the OUTGOING
+      // document's channel. Video A's guest then feeds A's duration into video B's cache,
+      // `usePlayerState` latches the first non-null read, and `ThreadView`'s
+      // `durationWrittenRef` writes it to B's `video_sources` row on disk (#211). It also
+      // left `pendingRpc` holding an open port and the cache full of A's numbers.
+      teardown()
       raiseCover()
       webviewEl.src = watchUrl(id)
     },

@@ -145,6 +145,17 @@ async function awaitPublished(
   guest.pause.mockClear()
 }
 
+/**
+ * `console.warn` calls that are the C6 diagnostic, and not one of the other warners.
+ *
+ * Filtered by prefix on purpose: `safeExec` and `safeInsertCSS` warn on the same console in
+ * the same handler, so an unfiltered spy counts the wrong calls (spec §8.2, T4). Shared by
+ * T4 and T11 — the two tests whose whole claim is "exactly one diagnostic".
+ */
+function diagnostics(warn: { mock: { calls: unknown[][] } }): unknown[][] {
+  return warn.mock.calls.filter((c) => String(c[0]).startsWith('[player] handshake failed'))
+}
+
 afterEach(() => {
   guests.splice(0).forEach((g) => {
     g.rpc.destroy()
@@ -346,13 +357,6 @@ describe('playerSingleton cover (T10)', () => {
  * channel — a port that was merely transferred proves nothing, which is precisely the bug.
  */
 describe('playerSingleton handshake (T1, T4, T5, T6)', () => {
-  /** `console.warn` calls that are the C6 diagnostic, and not one of the other warners. */
-  function diagnostics(warn: { mock: { calls: unknown[][] } }): unknown[][] {
-    // Filtered by prefix on purpose: `safeExec` and `safeInsertCSS` warn on the same console
-    // in the same handler, so an unfiltered spy counts the wrong calls (spec §8.2, T4).
-    return warn.mock.calls.filter((c) => String(c[0]).startsWith('[player] handshake failed'))
-  }
-
   it('re-arms on the second dom-ready: the newer guest owns the channel (T1)', async () => {
     const p = getPlayer()
     const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
@@ -468,5 +472,223 @@ describe('playerSingleton handshake (T1, T4, T5, T6)', () => {
     await awaitPublished(p, guest)
     await p.pause()
     expect(guest.pause).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * T2, T3, T7, T11 (spec §8.2) — contract C2 (every main-frame CROSS-document navigation
+ * invalidates the channel and the value cache; an in-page one does not) and the half of C6
+ * that a navigation owns (a navigation that starts and never commits must not leave the
+ * player silently dead).
+ *
+ * Every cache assertion here is preceded by a proof that the cache was SEEDED
+ * (`publishAndSeed`). A cache that was never written cannot be observed to be cleared, and
+ * without that proof T2 and T7 pass against an implementation that never caches anything —
+ * two tests in this file were already found green under the very regression their docstring
+ * claimed to guard.
+ */
+describe('playerSingleton navigation (T2, T3, T7, T11)', () => {
+  /**
+   * A FULL `VideoFlags` payload. `{ duration: 213 }` alone leaves `currentTime` undefined,
+   * which `applyState` writes straight into the cache — the next cache assertion then reads
+   * a lie (spec §8.1).
+   */
+  const SEEDED = {
+    ready: true,
+    ended: false,
+    paused: true,
+    waiting: false,
+    started: true,
+    currentTime: 0,
+    duration: 213,
+  }
+
+  /**
+   * Publish a channel and seed the value cache through it, in the ONE order that works: the
+   * host attaches its `state` listener at publish (spec §5.5 step 6), so an `emitState`
+   * posted before the ack lands on a channel with no listener and silently seeds nothing.
+   *
+   * Returns with the guest's `pause` counter at zero (`awaitPublished` clears it) and with
+   * `getDuration()` proven to be 213 — the "something has provably happened" the negative
+   * assertions below are measured against.
+   */
+  async function publishAndSeed(
+    p: ReturnType<typeof getPlayer>,
+    wv: StubbedWebview,
+  ): Promise<ReturnType<typeof fakeGuest>> {
+    const guest = await connectGuest(wv)
+    await awaitPublished(p, guest)
+    guest.emitState(SEEDED)
+    await vi.waitFor(async () => {
+      expect(await p.getDuration()).toBe(213)
+    })
+    return guest
+  }
+
+  it('a cross-document navigation kills the channel and the value cache (T2)', async () => {
+    const p = getPlayer()
+    const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
+    const guest = await publishAndSeed(p, wv)
+
+    // The event Electron fires the instant a main-frame navigation STARTS — before anything
+    // commits, and possibly before anything ever does (T11).
+    dispatchWebviewEvent(wv, 'did-start-navigation', { isMainFrame: true, isInPlace: false })
+
+    // Both halves of C2, and both halves of this milestone: #213 is the channel not being
+    // invalidated, #211 is the cache not being invalidated. One `teardown()` owns both.
+    await p.pause()
+    expect(guest.pause).not.toHaveBeenCalled()
+    expect(await p.getDuration()).toBeNull()
+  })
+
+  it('an in-page navigation leaves both alone (T3 — paired with T2, not evidence alone)', async () => {
+    // T3 passes against an EMPTY implementation and on HEAD: no listener at all also fails
+    // to tear down. It is meaningful only next to T2, where the same dispatch with
+    // `isInPlace: false` must produce the opposite outcome (spec §8.2).
+    const p = getPlayer()
+    const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
+    const guest = await publishAndSeed(p, wv)
+
+    // YouTube's own SPA route change. The JS world — and with it the guest runtime holding
+    // the far end of the port — survives it, so tearing down here would destroy a channel
+    // that is still perfectly good.
+    dispatchWebviewEvent(wv, 'did-start-navigation', { isMainFrame: true, isInPlace: true })
+
+    await p.pause()
+    expect(guest.pause).toHaveBeenCalledTimes(1)
+    expect(await p.getDuration()).toBe(213)
+  })
+
+  it('load(B) drops the duration video A seeded (T7)', async () => {
+    const p = getPlayer()
+    const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
+    await p.load('M7lc1UVf-VE')
+    const guest = await publishAndSeed(p, wv)
+
+    await p.load('dQw4w9WgXcQ')
+
+    // #211 exactly: `getDuration()` returning A's 213 here is latched by `usePlayerState`'s
+    // first non-null read and written to B's `video_sources` row by `ThreadView`'s
+    // `durationWrittenRef` — on disk, surviving restart.
+    await p.pause()
+    expect(guest.pause).not.toHaveBeenCalled()
+    expect(await p.getDuration()).toBeNull()
+  })
+
+  it('load(B) invalidates a handshake still IN FLIGHT for A (T7, §5.7)', async () => {
+    // The half a clean `load(A)` → `load(B)` cannot see. `load()` nulling `rpc` inline (what
+    // it did before §5.7) does not bump `handshakeSeq`, so an attempt already past its port
+    // transfer survives the load and publishes the OUTGOING document's channel — A's guest
+    // then feeds A's duration into B's cache. HEAD had no such path: it published
+    // synchronously in the `dom-ready` handler, so `load()`'s null was final.
+    // Long enough that attempt 1 is still LIVE when `load` runs below. At a short deadline
+    // the attempt has already timed out and been discarded by the time the harness reads its
+    // token back, `t.port` belongs to nobody, and every assertion here passes vacuously —
+    // measured: at `ackTimeoutMs = 10` this test was green against the unfixed `load()`.
+    handshakeConfig.ackTimeoutMs = 200
+    const p = getPlayer()
+    const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
+    await p.load('M7lc1UVf-VE')
+    // In flight: the runtime is injected and the port is transferred, but no ack yet.
+    const t = await domReadyTransfer(wv)
+    // A retry would mean attempt 1's deadline had already passed. This is the guard on the
+    // vacuity above — it is the observable for "the attempt `load` is about to supersede
+    // still exists".
+    expect(wv.transfers.length).toBe(1)
+
+    await p.load('dQw4w9WgXcQ')
+
+    // Only NOW does A's document answer — with the token that was current when `load` ran.
+    const guestA = openGuest(t.port, { ack: String(t.msg) })
+    guestA.emitState(SEEDED)
+
+    // A bounded settle, not an empty window: the in-flight attempt resolves within
+    // `ackTimeoutMs` of its transfer whichever way it goes (ack or deadline), and a
+    // MessagePort delivers in FIFO order, so the `state` post above is drained after the ack
+    // that would have published the channel.
+    await new Promise((r) => {
+      setTimeout(r, 300)
+    })
+
+    await p.pause()
+    expect(guestA.pause).not.toHaveBeenCalled()
+    expect(await p.getDuration()).toBeNull()
+    // The state the corruption is measured against: A's value would be written to B's row.
+    expect(p.videoId).toBe('dQw4w9WgXcQ')
+  })
+
+  it('a navigation that never commits does not leave the player silently dead (T11)', async () => {
+    // Shrunken so the watchdog plus a whole exhausted handshake is ~350ms rather than ~13s.
+    // Real timers, never `vi.useFakeTimers()`; restored in `afterEach` (spec §8.1).
+    // `ackTimeoutMs` is deliberately NOT shrunk to single digits: the first handshake below
+    // has to publish, and a deadline shorter than the harness takes to read the token back
+    // and ack would retry underneath it — the attempt the guest answers would already be
+    // superseded, and the test would fail in `awaitPublished` long before reaching its claim.
+    handshakeConfig.armWatchdogMs = 20
+    handshakeConfig.ackTimeoutMs = 100
+    handshakeConfig.retryBackoffMs = 5
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const p = getPlayer()
+    const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
+
+    // Publish first: the null state below is one the watchdog has to RESCUE, not the state
+    // the module happens to start in.
+    const guest = await connectGuest(wv)
+    await awaitPublished(p, guest)
+
+    // A navigation starts and nothing ever commits, so no `dom-ready` follows it. Our own
+    // main process does this to every guest navigation off the allowlist (`src/main/index.ts`,
+    // the `will-navigate` handler's `GUEST_HOST_ALLOW` test); 204/205 responses,
+    // `Content-Disposition` downloads and BFCache restores are the upstream cases.
+    dispatchWebviewEvent(wv, 'did-start-navigation', { isMainFrame: true, isInPlace: false })
+    await p.pause()
+    expect(guest.pause).not.toHaveBeenCalled()
+
+    // C6: the channel is dead, and something must SAY so within a bounded time. Without the
+    // watchdog nothing re-enters the handshake — `dom-ready` is the only other door and it
+    // is never coming — so this waits out its timeout in silence, which is the state the
+    // player is in on HEAD whenever `src/main/index.ts` cancels a guest hop.
+    await vi.waitFor(() => {
+      expect(diagnostics(warn).length).toBe(1)
+    })
+    // "Exactly one" is the claim, and `vi.waitFor` returns the instant the count first
+    // reaches 1. Settle past another whole attempt's worth of wall clock.
+    await new Promise((r) => {
+      setTimeout(r, 60)
+    })
+    expect(diagnostics(warn).length).toBe(1)
+    expect(diagnostics(warn)[0]!.join(' ')).toContain('https://www.youtube.com/watch?v=M7lc1UVf-VE')
+  })
+
+  it('a navigation that never commits still drops the cover (T11 sibling, N6)', async () => {
+    // `teardown()` clears `coverTimer` (spec §5.2 step 5), and the navigation path's whole
+    // premise is that no `dom-ready` is coming to re-arm it. Without a re-arm on this path
+    // the cover is left up with no pending drop and no event that will ever schedule one —
+    // a permanent black screen over the page the user has to click. HEAD does not have this:
+    // its 10s cover timeout, once a document had committed, was uncancellable.
+    //
+    // T11 above cannot see it: it asserts on the channel and the diagnostic, not on the DOM.
+    //
+    // The two deadlines are different ON PURPOSE, and that is what makes this discriminating
+    // rather than merely true. A's drop is armed for a deadline no `vi.waitFor` will ever
+    // wait out, so the only drop this test can observe is one armed AFTER the navigation. If
+    // the navigation path re-armed nothing, the cover would either hang on A's 5s timer
+    // (no listener at all) or hang forever (`teardown()` swept it and nothing replaced it).
+    handshakeConfig.readyTimeoutMs = 5000
+    const p = getPlayer()
+    const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
+    const cover = p.wrapper.querySelector('#yt-player-cover') as HTMLElement
+    await p.load('M7lc1UVf-VE')
+    // A commits, so a drop IS pending — the state `teardown()` is about to sweep. Without
+    // this the test would only prove the weaker "arm on a cover that had nothing armed".
+    await connectGuest(wv)
+    expect(cover.style.display).toBe('block')
+
+    handshakeConfig.readyTimeoutMs = 20
+    dispatchWebviewEvent(wv, 'did-start-navigation', { isMainFrame: true, isInPlace: false })
+
+    await vi.waitFor(() => {
+      expect(cover.style.display).toBe('none')
+    })
   })
 })
