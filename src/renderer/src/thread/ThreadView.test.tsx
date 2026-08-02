@@ -148,8 +148,13 @@ beforeEach(() => {
 
 // Hand the store back pristine so the NEXT file in this worker captures a clean
 // module-load snapshot. `beforeEach` guards this file; this guards everyone after it.
-// Without it the last test's mutations escape under `isolate: false` and the next
+// Without it the last test's mutations can escape under `isolate: false` and the next
 // file's own capture records them as its "initial".
+//
+// Honest scope: under TODAY's file ordering, deleting this changes nothing — measured,
+// the suite stays green. It is defence in depth against an ordering nobody controls,
+// not a guard something currently trips. Cheap enough to keep; do not read its presence
+// as evidence the hazard is live here. (#203)
 afterEach(() => {
   useTransportStore.setState(TRANSPORT_INITIAL, true)
 })

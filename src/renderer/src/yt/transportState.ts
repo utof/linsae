@@ -82,7 +82,7 @@ interface TransportState {
  *   and actual playback diverge silently.
  *
  *   **Copy `PlayerPane.tsx`'s effect, not the obvious one.** Keying it on
- *   `[videoId, rate]` alone is inert: `load()` sets `rpc = null` (`playerSingleton.ts:302`)
+ *   `[videoId, rate]` alone is inert: `load()` sets `rpc = null` (`playerSingleton.ts:303`)
  *   BEFORE reassigning `src`, and `setPlaybackRate` is `rpc?.invoke('setRate', r)`
  *   (`:337-339`), so the push fired at videoId-change time is swallowed by the optional
  *   chain. The deps must also carry the player `state` — a guest state event is the only

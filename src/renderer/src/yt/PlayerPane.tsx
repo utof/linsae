@@ -109,7 +109,7 @@ function PlayerPaneInner({ videoId }: { videoId: string }): React.JSX.Element {
   // read 1.75× while playback ran at 1×.
   //
   // `state` is in the deps on purpose: `setPlaybackRate` is `rpc?.invoke('setRate', r)`
-  // (playerSingleton.ts:337-339) and `load()` NULLS `rpc` (:302) until the reloaded
+  // (playerSingleton.ts:337-339) and `load()` NULLS `rpc` (:303) until the reloaded
   // guest's dom-ready re-creates it — so the push fired at videoId-change time is
   // swallowed. A state event is the only public signal that the new guest's port is
   // live. Pushing again on later state changes is idempotent and cheap.

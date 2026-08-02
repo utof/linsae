@@ -605,7 +605,7 @@ export function ThreadView({
    *
    * Why `useCallback` (not `useMutation`): neither branch consumes `isPending`,
    * and the success path is five straight-line statements (`setPostError(null)`
-   * at `:603` plus the four invalidations at `:604-607`) — a mutation object
+   * at `:627` plus the four invalidations at `:628-631`) — a mutation object
    * would add ceremony without removing any. The error surface
    * is shared deliberately: the two composers render in mutually exclusive
    * branches, so one `postError` serves both.

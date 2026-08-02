@@ -361,7 +361,7 @@ describe('PlayerPane transport bar (B2, #169)', () => {
 
   it('(n) RE-PUSHES the rate on a guest state event (the port is null right after load)', async () => {
     // setPlaybackRate is `rpc?.invoke('setRate', r)` (playerSingleton.ts:337-339) and
-    // load() nulls `rpc` (:302) until the reloaded guest's dom-ready re-creates it, so a
+    // load() nulls `rpc` (:303) until the reloaded guest's dom-ready re-creates it, so a
     // push fired at videoId-change time is swallowed. A state event is the only public
     // signal that the new guest's port is live — hence it is also a re-push trigger.
     await renderPaneWithVideo()
