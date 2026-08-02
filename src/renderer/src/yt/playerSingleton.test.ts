@@ -28,8 +28,9 @@ function stubWebview(el: HTMLElement) {
         transfers.push({ msg, port: transfer[0] as MessagePort })
       }),
     },
-    // The C6 diagnostic reads the guest's current URL (spec §5.1); unstubbed it throws
-    // out of the handshake instead of letting the assertion run.
+    // Staged for the C6 diagnostic that `onHandshakeFailed()` gains in Task 4 (spec §5.1):
+    // it reads the guest's current URL, and an unstubbed `getURL` would throw out of the
+    // handshake instead of letting T4/T11 assert. Nothing calls it at this commit.
     getURL: vi.fn(() => 'https://www.youtube.com/watch?v=M7lc1UVf-VE'),
     transfers,
   })
@@ -59,10 +60,54 @@ beforeEach(() => {
   }) as typeof document.createElement)
 })
 
-import { destroyPlayer, getPlayer, setPlayerInteractive } from './playerSingleton'
+import { destroyPlayer, getPlayer, handshakeConfig, setPlayerInteractive } from './playerSingleton'
+
+/**
+ * `handshakeConfig` is exported mutable module state (spec §5.1), so a test that shrinks a
+ * timing to keep its wall-clock sane has to hand it back. Restoring in `afterEach` rather
+ * than in the test body is the point: the body's restore is skipped exactly when an
+ * assertion throws, which is when a leaked 20ms handshake timeout does the most damage.
+ */
+const handshakeDefaults = { ...handshakeConfig }
+
+/**
+ * Fake guests a test opened, torn down in `afterEach`.
+ *
+ * Why not `guest.rpc.destroy()` as the test's own last statement: that line is skipped
+ * exactly when an assertion throws, so a failing test leaves an open `MessagePort` behind.
+ * Under `isolate: false` (`vitest.config.ts`) unrestored state "leaks into unrelated later
+ * files and fails them in confusing places" — the lesson `tests/pdf-layout.ts` records
+ * (utof/linsae#154).
+ */
+const guests: ReturnType<typeof fakeGuest>[] = []
+function openGuest(...args: Parameters<typeof fakeGuest>): ReturnType<typeof fakeGuest> {
+  const g = fakeGuest(...args)
+  guests.push(g)
+  return g
+}
+
+/**
+ * Drive one host→guest handshake far enough that a guest is listening: dispatch
+ * `dom-ready`, wait for the host's port transfer, and open a fake guest echoing the token
+ * the host sent. The caller decides whether that guest ever emits `ready` — the two cases
+ * T10 separates.
+ */
+async function connectGuest(wv: StubbedWebview): Promise<ReturnType<typeof fakeGuest>> {
+  const before = wv.transfers.length
+  dispatchWebviewEvent(wv, 'dom-ready')
+  await vi.waitFor(() => {
+    expect(wv.transfers.length).toBe(before + 1)
+  })
+  const t = wv.transfers[before]!
+  return openGuest(t.port, { ack: String(t.msg) })
+}
 
 afterEach(() => {
+  guests.splice(0).forEach((g) => {
+    g.rpc.destroy()
+  })
   destroyPlayer()
+  Object.assign(handshakeConfig, handshakeDefaults)
   vi.restoreAllMocks()
 })
 
@@ -81,9 +126,7 @@ describe('playerSingleton (webview)', () => {
   })
   it('play() grants a user gesture via executeJavaScript(code, true)', async () => {
     const p = getPlayer()
-    const wv = p.wrapper.querySelector('webview') as unknown as {
-      executeJavaScript: ReturnType<typeof vi.fn>
-    }
+    const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
     await p.play()
     expect(wv.executeJavaScript).toHaveBeenCalledWith(expect.any(String), true)
   })
@@ -116,9 +159,9 @@ describe('playerSingleton (webview)', () => {
       expect(wv.transfers.length).toBe(1)
     })
     const t = wv.transfers[0]!
-    const guest = fakeGuest(t.port, { ack: String(t.msg) })
-    // Settle the host's readiness race (`playerSingleton.ts:197`) instead of leaving
-    // `onDomReady` pending across `afterEach`'s destroyPlayer() for the full 10s.
+    const guest = openGuest(t.port, { ack: String(t.msg) })
+    // Drop the cover now rather than leaving its 10s timer armed across `afterEach`
+    // (`destroyPlayer()` clears it, but a settled cover keeps this test's timing its own).
     guest.emitReady()
 
     // Round-trips a real invoke to prove the transferred port is LIVE, not merely
@@ -129,7 +172,6 @@ describe('playerSingleton (webview)', () => {
 
     expect(wv.executeJavaScript).toHaveBeenCalledTimes(1)
     expect(wv.transfers.length).toBe(1)
-    guest.rpc.destroy()
   })
   it('mount/unmount keeps the wrapper attached to <body> (never re-parented)', () => {
     const p = getPlayer()
@@ -141,5 +183,83 @@ describe('playerSingleton (webview)', () => {
     expect(p.wrapper.parentElement).toBe(document.body)
     p.unmount()
     expect(p.wrapper.parentElement).toBe(document.body)
+  })
+})
+
+/**
+ * T10 (spec §8.2). The black cover drops on `ready`-or-timeout and on NOTHING else — both
+ * neighbouring designs are regressions, and each half below guards one of them:
+ *
+ *   - dropping on `ack` reveals YouTube's startup churn as a "muted, plays 1s, then stops"
+ *     flash. That was tried (commit 47a05f7) and reverted; spec N5, tracked in #65.
+ *   - dropping only on `ready`-or-handshake-*failure* leaves the cover up FOREVER on a
+ *     consent wall, where the handshake succeeds and `ready` never fires. Spec N6.
+ */
+describe('playerSingleton cover (T10)', () => {
+  function coverAndSpinner(p: ReturnType<typeof getPlayer>) {
+    return {
+      wv: p.wrapper.querySelector('webview') as unknown as StubbedWebview,
+      cover: p.wrapper.querySelector('#yt-player-cover') as HTMLElement,
+      spinner: p.wrapper.querySelector('#yt-player-spinner') as HTMLElement,
+    }
+  }
+
+  it('drops on the guest `ready` event', async () => {
+    const p = getPlayer()
+    const { wv, cover, spinner } = coverAndSpinner(p)
+    await p.load('M7lc1UVf-VE')
+    expect(cover.style.display).toBe('block')
+
+    // The ready timeout is left at its default here on purpose: it is orders of magnitude
+    // longer than `vi.waitFor`'s window, so the timer cannot be what drops the cover below.
+    const guest = await connectGuest(wv)
+    guest.emitReady()
+
+    await vi.waitFor(() => {
+      expect(cover.style.display).toBe('none')
+    })
+    // `refreshSpinner` reads the cover's own `display`, so it has to run AFTER the drop.
+    // Reversed, it sees a cover that is still up and leaves the spinner turning over a
+    // playing video until the next state event happens to re-sync it.
+    expect(spinner.style.display).toBe('none')
+  })
+
+  it('drops after readyTimeoutMs when `ready` never fires (the consent-wall shape)', async () => {
+    // Real timers with a shrunken bound, NOT `vi.useFakeTimers()`: the handshake awaits
+    // `safeExec` and MessagePort delivery, and happy-dom groups zero-delay timeouts into one
+    // shared Node timer under `isolate: false` (`rpc.test.ts`). Restored in `afterEach`.
+    handshakeConfig.readyTimeoutMs = 20
+    const p = getPlayer()
+    const { wv, cover, spinner } = coverAndSpinner(p)
+    await p.load('M7lc1UVf-VE')
+    expect(cover.style.display).toBe('block')
+
+    // The guest ACKS — the transport is live, the handshake succeeds — but never hooks a
+    // <video>, so it never emits `ready`. That is exactly a consent wall: the page needs a
+    // click, and the cover is what stands between the user and giving it.
+    await connectGuest(wv)
+
+    await vi.waitFor(() => {
+      expect(cover.style.display).toBe('none')
+    })
+    expect(spinner.style.display).toBe('none')
+  })
+
+  it('does not let the previous video’s pending drop reveal the next one', async () => {
+    // The timer is the one thing here HEAD did not have, so it is the one way this refactor
+    // could reveal EARLIER than HEAD (spec N5): a drop armed for video A keeps running
+    // across `load(B)` and can fire before B's own `dom-ready` re-arms it.
+    handshakeConfig.readyTimeoutMs = 300
+    const p = getPlayer()
+    const { wv, cover } = coverAndSpinner(p)
+    await p.load('M7lc1UVf-VE')
+    await connectGuest(wv) // arms A's drop; the guest never becomes ready
+
+    await p.load('dQw4w9WgXcQ')
+    // Past A's deadline, with no `dom-ready` for B yet — the cover must still be up.
+    await new Promise((r) => {
+      setTimeout(r, 400)
+    })
+    expect(cover.style.display).toBe('block')
   })
 })

@@ -55,7 +55,31 @@ type PlayerInstance = Player & {
 /** Fixed nonce for the host→guest port transfer (spec §4.1). Not secret; just unique. */
 const NONCE = 'mx-port-7f3a9'
 
-const timeout = (ms: number) => new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), ms))
+/**
+ * Timing + retry bounds for the guest handshake, exported as a MUTABLE object so tests can
+ * shrink them. Mirrors `createRpc`'s `opts.invokeTimeoutMs` — the existing precedent in this
+ * area for making a timing constant injectable.
+ *
+ * Why an exported mutable object rather than parameters: the handshake is driven by the
+ * webview's own DOM events, not by callers, so there is no call site to thread options
+ * through. The cost is shared module state, so **tests MUST save and restore any field they
+ * change** — a shrunk timeout left behind is visible to every later test in the file, and
+ * under `isolate: false` to later files too.
+ *
+ * Only `readyTimeoutMs` has a consumer at this commit (the cover timer). The rest are
+ * specified here whole because the handshake rewrite they bound lands in the next task and
+ * splitting the object across two commits would leave the spec's §5.1 half-true in both.
+ *
+ * @see docs/specs/v0.8.3-player-transport.md §5.1
+ * @issue utof/linsae#213
+ */
+export const handshakeConfig = {
+  ackTimeoutMs: 3000,
+  maxAttempts: 3,
+  readyTimeoutMs: 10_000,
+  armWatchdogMs: 4000,
+  retryBackoffMs: 250,
+}
 
 // ── module-level singletons ──────────────────────────────────────────────────
 
@@ -66,6 +90,10 @@ let spinner: HTMLDivElement | null = null
 // Key returned by the last CLEAN_CSS insertCSS, so setYoutubeChrome can removeInsertedCSS it.
 let cssKey: string | null = null
 let rpc: Rpc | null = null
+// The bounded unconditional cover drop (spec §5.6). `window.setTimeout` deliberately:
+// the DOM overload returns a number, Node's returns a NodeJS.Timeout, and this file is
+// typechecked against both libs (see the same note in `NoteBubble.tsx`).
+let coverTimer = 0
 let videoId: string | null = null
 let cache: { currentTime: number; duration: number | null; last: PlayerState } = {
   currentTime: 0,
@@ -146,6 +174,63 @@ function refreshSpinner(): void {
   spinner.style.display = coverUp || cache.last === 'buffering' ? 'block' : 'none'
 }
 
+/**
+ * Cancel any pending unconditional drop. Every transition of the cover goes through this —
+ * a timer that outlives the state it was armed for fires into someone else's document.
+ */
+function clearCoverTimer(): void {
+  if (coverTimer) {
+    clearTimeout(coverTimer)
+    coverTimer = 0
+  }
+}
+
+/**
+ * Drop the black cover and re-sync the spinner.
+ *
+ * Do NOT move this earlier to shave the ~1s — in particular, do NOT key it on the
+ * handshake's `ack`. That window deliberately masks YouTube's startup churn
+ * (muted-autoplay → forced-unmute pause → chrome settling); revealing early (commit
+ * 47a05f7) exposed it as a "muted, plays 1s, then stops" flash and was reverted. Fast+clean
+ * reveal is tracked in #65. Spec §5.6 / N5.
+ *
+ * `refreshSpinner()` reads the cover's own `display`, so it must run AFTER the drop.
+ */
+function dropCover(): void {
+  clearCoverTimer()
+  if (cover) cover.style.display = 'none'
+  refreshSpinner()
+}
+
+/**
+ * Raise the cover for a video change, cancelling any drop still pending for the OLD one.
+ *
+ * The cancel is the whole point of routing this through a function: a timer armed for the
+ * outgoing document keeps running across `load()`, and if it fires before the incoming
+ * document's `dom-ready` re-arms it, it reveals the new video's startup churn — N5's
+ * regression, arriving by the back door. Cover up ⇒ no drop pending, always.
+ */
+function raiseCover(): void {
+  clearCoverTimer()
+  if (cover) cover.style.display = 'block'
+  refreshSpinner()
+}
+
+/**
+ * Arm the cover's bounded UNCONDITIONAL drop for the document that just committed.
+ *
+ * Why unconditional, and why it is not the handshake's business: on a consent wall the
+ * handshake SUCCEEDS (the transport is live and acks) while the guest never hooks a
+ * `<video>`, so `ready` never arrives. A drop gated on the handshake's outcome therefore
+ * fires on neither branch and the player stays permanently black over the very page the
+ * user has to click. This timer is the escape hatch, and it is why the webview is left
+ * interactive. Spec §5.6 / N6.
+ */
+function armCoverTimer(): void {
+  clearCoverTimer()
+  coverTimer = window.setTimeout(dropCover, handshakeConfig.readyTimeoutMs)
+}
+
 /** rAF loop: keep the fixed wrapper exactly over the ThreadView host placeholder. */
 function syncBounds(): void {
   if (!wrapper) {
@@ -186,6 +271,11 @@ async function onDomReady(): Promise<void> {
     cache.currentTime = o.currentTime
     if (o.duration > 0) cache.duration = o.duration
   })
+  // The cover's `ready` half — whichever of this and `armCoverTimer`'s timer comes first
+  // wins (spec §5.6). Registered here with the `state`/`time` listeners because it belongs
+  // to the same channel and must travel with them; `whenReady()` short-circuits on a
+  // `ready` it has already seen, so attaching it late cannot miss one.
+  void rpc.whenReady().then(dropCover)
 
   await safeExec(guestRuntime(NONCE))
   try {
@@ -193,15 +283,6 @@ async function onDomReady(): Promise<void> {
   } catch (e) {
     console.warn('[player] port transfer failed', e)
   }
-
-  await Promise.race([rpc.whenReady(), timeout(10000)])
-
-  // Drop the black cover only now, after the guest is ready — do NOT reveal at CSS-paint to
-  // shave the ~1s. That window deliberately masks YouTube's startup churn (muted-autoplay →
-  // forced-unmute pause → chrome settling); revealing early (commit 47a05f7) exposed it as a
-  // "muted, plays 1s, then stops" flash and was reverted. Fast+clean reveal is tracked in #65.
-  if (cover) cover.style.display = 'none'
-  refreshSpinner()
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
@@ -235,6 +316,10 @@ export function getPlayer(): PlayerInstance {
   webview.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;'
 
   cover = document.createElement('div')
+  // A handle, purely so tests can reach the cover by name: it is one of two anonymous
+  // <div>s in a three-child wrapper, and a positional query silently retargets the moment
+  // that order changes. Nothing styles or scripts it by id. (Same for the spinner below.)
+  cover.id = 'yt-player-cover'
   cover.style.cssText = 'position:absolute;inset:0;background:#000;z-index:2;pointer-events:none;'
 
   // Loading spinner: a Figma-blue (#0D99FF) arc on a translucent track, centered over the
@@ -243,6 +328,7 @@ export function getPlayer(): PlayerInstance {
   // webview interactive. Visibility is driven by refreshSpinner() off the player state.
   ensureSpinnerStyle()
   spinner = document.createElement('div')
+  spinner.id = 'yt-player-spinner'
   spinner.style.cssText =
     'position:absolute;top:50%;left:50%;width:40px;height:40px;margin:-20px 0 0 -20px;box-sizing:border-box;border-radius:50%;border:3px solid rgba(255,255,255,0.18);border-top-color:#0D99FF;animation:yt-spin 0.8s linear infinite;z-index:3;pointer-events:none;display:none;'
 
@@ -254,8 +340,12 @@ export function getPlayer(): PlayerInstance {
     // insertCSS must wait for dom-ready (it calls getWebContentsId, which throws synchronously
     // before then — that was the 'did-start-loading' crash). Skipped when the "show full
     // YouTube UI" debug toggle is on; re-applies on every (re)load otherwise. The cover is
-    // dropped later (onDomReady) — NOT here — on purpose; see the cover-hide note there.
+    // NOT dropped here — see `dropCover`.
     if (!isYoutubeChromeShown()) safeInsertCSS()
+    // A document committed, so the cover's deadline restarts with it. Armed OUTSIDE the
+    // handshake on purpose: it has to survive every way the handshake can end, including
+    // the ones that end well (spec §5.6 / N6, and `armCoverTimer`).
+    armCoverTimer()
     void onDomReady()
   })
 
@@ -301,8 +391,7 @@ export function getPlayer(): PlayerInstance {
       videoId = id
       rpc?.destroy()
       rpc = null
-      if (cover) cover.style.display = 'block'
-      refreshSpinner()
+      raiseCover()
       webviewEl.src = watchUrl(id)
     },
 
@@ -395,6 +484,9 @@ export function setPlayerInteractive(on: boolean): void {
 export function destroyPlayer(): void {
   rpc?.destroy()
   rpc = null
+  // A live cover timer outliving the singleton is a documented flake generator: it crosses
+  // `afterEach` and fires into the next test's world (spec §5.8).
+  clearCoverTimer()
   if (syncRaf) {
     cancelAnimationFrame(syncRaf)
     syncRaf = 0
