@@ -182,9 +182,12 @@ describe('usePlayer + usePlayerState duration (T8, T12)', () => {
    *
    * The remount is faithful, not a convenience: `App.tsx` keys `ThreadView` by `threadNoteId`
    * "so the player singleton and duration write-back state reset per video", so a video change
-   * IS a fresh mount with `duration` back at null and a fresh `durationWrittenRef`. Without the
-   * remount `duration` is still 213 from A and React's `Object.is` bail-out makes a re-read of
-   * 213 unobservable — the assertion below could not fail.
+   * IS a fresh mount with `duration` back at null and a fresh `durationWrittenRef`.
+   *
+   * Measured, without the remount: the `videoId = 'B'` re-render seeds `seen` with A's still-
+   * current 213 before any poll runs, so the assertion goes red against CORRECT code too
+   * (`[213, 500]`), and red under the `resetCache` mutation as well (`[213, 500, 500]`). The
+   * failure mode is not "cannot fail" — it is red both ways, i.e. zero discriminating power.
    */
   it('never lets the previous video’s duration reach the hook after a change (T12, §7)', async () => {
     const p = getPlayer()
