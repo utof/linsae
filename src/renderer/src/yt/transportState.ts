@@ -4,10 +4,6 @@ import { create } from 'zustand'
  * Playback-rate cycle, in order. Literal sequence mandated by
  * docs/plans/v0.8.2-composer-dataloss.md §3.2 ("do not re-invent") — it restores
  * the `RATES` array that lived in `ThreadView` before commit 4ab51f0 deleted it.
- *
- * NOT exported: nothing outside this module consumes it (B2 reads `cycleRate()`'s
- * return value instead), and an unused export fails the precommit knip gate —
- * same reasoning as pdf/excerptState.ts:4-5.
  */
 const RATES = [1, 1.25, 1.5, 1.75, 2]
 
@@ -46,13 +42,14 @@ interface TransportState {
    * Why it returns the value: the store must stay side-effect-free, but B2 also has
    * to push the rate at the player (`player.setPlaybackRate(next)`). Returning the
    * new rate lets `onRate={() => player.setPlaybackRate(cycleRate())}` stay a
-   * one-liner instead of re-reading the store after a `set`. Mirrors the
-   * get()+set()-in-one-action precedent at pdf/pendingJumpState.ts:40-44.
+   * one-liner instead of re-reading the store after a `set`.
    */
   cycleRate: () => number
   /**
    * Publish the thread's marker timestamps. No-ops when the values are unchanged,
-   * so a republishing effect cannot churn subscribers' references.
+   * so a republishing effect cannot churn subscribers' references. Retains the
+   * caller's array by reference — publish a FRESH array; an in-place mutation of an
+   * already-published one compares equal to itself and is therefore invisible.
    */
   setMarkers: (next: number[]) => void
   /** Drop all markers. Idempotent and reference-stable. */
@@ -75,14 +72,14 @@ interface TransportState {
  *   survive `ThreadView` unmounting while the docked player keeps playing, which is
  *   the entire point of the B5 lift.
  *
- *   **"Player-scoped" names THIS STORE's lifetime, not the player's — B2 must close
- *   the gap.** The player does not hold the rate: `load(id)` reassigns the webview's
- *   `src` (`playerSingleton.ts:299-307`), a full guest reload, and the guest's
- *   `setRate` handler writes `videoEl.playbackRate` (`yt/inject/youtube-guest.ts:203`)
- *   on the `<video>` that reload destroys. `Player` exposes no `getPlaybackRate()` to
- *   read the truth back, so this store is the SOLE holder of `rate` and never pushes
- *   it. Without a re-push on video change — `useEffect(() => player.setPlaybackRate(rate),
- *   [videoId, rate])` — the badge silently reads 1.75× while playback runs at 1×.
+ *   **"Player-scoped" names THIS STORE's lifetime, not the player's.** `rate` is held
+ *   ONLY here: `load(id)` reassigns the webview's `src` (`playerSingleton.ts:299-307`),
+ *   a full guest reload, which destroys the `<video>` that the guest's `setRate`
+ *   handler writes to (`yt/inject/youtube-guest.ts:203`), and `Player` exposes no
+ *   `getPlaybackRate()` to read the truth back. The store never pushes. Re-pushing on
+ *   video change is therefore the CONSUMER's standing obligation
+ *   (`useEffect(() => player.setPlaybackRate(rate), [videoId, rate])`); without it the
+ *   badge and actual playback diverge silently.
  * - `markers` are THREAD-scoped. `ThreadView` is the sole publisher and owns the
  *   lifecycle: republish on change, and call `clearMarkers()` from the effect's
  *   cleanup so one thread's ticks can never appear on the next video's scrubber.
@@ -103,10 +100,6 @@ export const useTransportStore = create<TransportState>((set, get) => ({
   cycleRate: () => {
     // indexOf → -1 for a rate that is not in the sequence, and (-1 + 1) % len === 0,
     // so an off-sequence rate resyncs to RATES[0] rather than wedging the cycle.
-    // Nothing can reach that state today — `rate` is written only here and by
-    // setState, and there is no getPlaybackRate() to import a foreign value. This is
-    // free insurance for the `setRate` the store TSDoc's re-push caveat anticipates,
-    // not a live threat: suppressing the resync would cost MORE code than allowing it.
     const i = RATES.indexOf(get().rate)
     // ?? DEFAULT_RATE only satisfies noUncheckedIndexedAccess; the modulo makes the
     // index provably in-range.

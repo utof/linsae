@@ -1,12 +1,9 @@
 // NOTE: deliberately NOT pinned to `// @vitest-environment node`, unlike the sibling
-// store tests pdf/excerptState.test.ts:1 and pdf/pendingJumpState.test.ts:1.
-// The `dom` vitest project runs with `isolate: false` (vitest.config.ts:35), so a
-// node-pinned file forces a mid-run environment teardown/recreate. Adding one here
-// made pdf/PdfPage.test.tsx fail 8 tests ("cancels the render task BEFORE
-// page.cleanup() on unmount") while passing 11/11 in isolation. Measured on this
-// branch: with the pin → 1 file / 8 tests failed; without it → 161 files, 1367 tests,
-// all green. This store needs no DOM, so inheriting happy-dom costs nothing.
-// The underlying fragility is PdfPage.test.tsx's order sensitivity, not this file.
+// store tests pdf/excerptState.test.ts:1 and pdf/pendingJumpState.test.ts:1. Adding
+// the pin here turns 8 tests red in pdf/PdfPage.test.tsx. The fragility is that
+// file's order sensitivity under the `dom` project's `isolate: false`, not this one;
+// the measurement and the latent defect are recorded on utof/linsae#203. This store
+// needs no DOM, so inheriting happy-dom costs nothing but setup time.
 import { beforeEach, describe, expect, it } from 'vitest'
 import { useTransportStore } from './transportState'
 
