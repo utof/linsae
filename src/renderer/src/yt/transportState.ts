@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { create } from 'zustand'
 
 /**
@@ -119,3 +120,38 @@ export const useTransportStore = create<TransportState>((set, get) => ({
 
   clearMarkers: () => set({ markers: NO_MARKERS }),
 }))
+
+/**
+ * Publishes `markers` for the calling component's lifetime and CLEARS them when it
+ * unmounts. `ThreadView` is the sole publisher; this hook exists so that publishing
+ * and teardown cannot be separated — B1 could only state that pairing in prose, and a
+ * prose-only contract is exactly what rotted for two milestones and produced #169.
+ *
+ * Without the teardown, one thread's tick marks stay on the docked scrubber over the
+ * NEXT video (`markers` are thread-scoped; `followOn`/`rate` deliberately are not).
+ *
+ * Two effects, not one: folding the clear into the publish effect's cleanup would
+ * empty the list on every republish — a visible flicker on the scrubber and two store
+ * writes where one belongs.
+ *
+ * Reads the store through `getState()` rather than a selector: the publisher must NOT
+ * re-render when the markers it just published come back around.
+ *
+ * @param markers - Fresh array of absolute positions in seconds. `setMarkers` retains
+ *   it by reference and bails on value-equality, so an unmemoized caller is safe — but
+ *   NEVER mutate an array already handed to this hook.
+ * @see src/renderer/src/thread/ThreadView.tsx (the sole caller)
+ * @issue utof/linsae#169
+ */
+export function useMarkerPublisher(markers: number[]): void {
+  useEffect(() => {
+    useTransportStore.getState().setMarkers(markers)
+  }, [markers])
+
+  useEffect(
+    () => () => {
+      useTransportStore.getState().clearMarkers()
+    },
+    [],
+  )
+}

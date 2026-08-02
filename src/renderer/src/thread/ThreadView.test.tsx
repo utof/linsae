@@ -14,13 +14,23 @@
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushMicrotasks } from '../../../../tests/flush'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
 import { serializeScene } from '../ink/svg'
 import { useDockStore } from '../panes/dockStore'
+import { useTransportStore } from '../yt/transportState'
+
+/**
+ * The transport store's own initial state, captured at module load — same technique
+ * (and reason) as transportState.test.ts:18. MANDATORY: the `dom` project runs
+ * `isolate: false` (vitest.config.ts:35), so this module singleton is shared across
+ * files in a worker; a leaked `followOn: false` or a stale marker list would poison
+ * transportState.test.ts's own INITIAL capture. (#203)
+ */
+const TRANSPORT_INITIAL = useTransportStore.getState()
 
 // Mock usePlayerState so tests never touch the player singleton / rAF loop.
 // `seekTo` is a shared spy and `currentTime` is read from a mutable holder so
@@ -110,6 +120,8 @@ Element.prototype.scrollIntoView = scrollIntoView
 beforeEach(() => {
   // Reset dockStore so openPane('player') calls start from a clean slate (B5).
   useDockStore.getState().reset()
+  // `setState(…, true)` REPLACES rather than merges, so no mutated field survives.
+  useTransportStore.setState(TRANSPORT_INITIAL, true)
   scrollIntoView.mockClear()
   playerState.currentTime = 0
   getMediaRect.mockReturnValue({ x: 0, y: 0, width: 480, height: 270 } as DOMRect)
@@ -252,11 +264,90 @@ describe('ThreadView follow-scroll + click-to-seek', () => {
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
   })
 
-  // Note: the "turn follow OFF" test is removed in B5 — the follow-toggle button
-  // was part of TransportBar, which now lives in the right-dock PlayerPane (not
-  // ThreadView). Follow defaults to ON and is always active in ThreadView.
+  // The "turn follow OFF" case was dropped in B5 (`4ab51f0`) along with ThreadView's
+  // TransportBar, and `followOn` was hardcoded `true` in its place. B3 restores it —
+  // the toggle now lives on the TransportBar in the right-dock PlayerPane and reaches
+  // this component through the shared transport store, so this asserts the real
+  // cross-pane path, not a local useState.
   // The scroll-never-seeks invariant (scroll event ≠ seekTo) is covered by the
   // separate "scroll-never-seeks invariant" describe block below.
+  it('with follow OFF in the store, advancing the playhead does NOT scroll (B3)', async () => {
+    const { rerenderThread } = renderThread()
+    await waitFor(() => expect(screen.getByText('note at five seconds')).toBeInTheDocument())
+
+    // The PlayerPane's follow button does exactly this.
+    act(() => {
+      useTransportStore.getState().toggleFollow()
+    })
+    scrollIntoView.mockClear()
+
+    playerState.currentTime = 7
+    rerenderThread()
+    await flushMicrotasks()
+
+    expect(scrollIntoView).not.toHaveBeenCalled()
+  })
+
+  it('the jump-to-now pill appears once follow is OFF (unreachable while followOn was hardcoded)', async () => {
+    // `jumpPillDirection` returns null whenever `followOn` is true (rail-layout.ts:179),
+    // so with ThreadView.tsx:260 hardcoded `true` this pill could never render in
+    // production — the whole affordance has been dead since v0.6.4 B5.
+    const { rerenderThread } = renderThread()
+    await waitFor(() => expect(screen.getByText('note at five seconds')).toBeInTheDocument())
+    expect(screen.queryByLabelText('jump to now')).toBeNull()
+
+    act(() => {
+      useTransportStore.getState().toggleFollow()
+    })
+    // Advance the playhead so an active cluster row exists for measurePill to measure
+    // (activeIdx -1 → no row → pillDir stays null).
+    playerState.currentTime = 7
+    rerenderThread()
+
+    await waitFor(() => expect(screen.getByLabelText('jump to now')).toBeInTheDocument())
+    // Scope of this assertion: it proves the pill's RENDER PATH is reachable again,
+    // NOT that 'up' vs 'down' is chosen correctly. happy-dom has no layout, so every
+    // getBoundingClientRect() is all-zeros and `playheadY < viewTop + 8` is trivially
+    // true — the pill always comes out 'up' here. The direction is real geometry and
+    // belongs to the Electron smoke (B4).
+  })
+})
+
+// ---------------------------------------------------------------------------
+// B3 — ThreadView is the sole publisher of the transport store's markers (#169)
+// ---------------------------------------------------------------------------
+
+describe('ThreadView marker publishing (B3)', () => {
+  it("publishes the thread's anchored timestamps, sorted and de-duplicated", async () => {
+    // NOTE_B t=5, NOTE_A t=10; duration 100 from the mocked usePlayerState.
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(useTransportStore.getState().markers).toEqual([5, 10]))
+  })
+
+  it("CLEARS the markers on unmount, so one thread's ticks never appear on the next video", async () => {
+    const { unmount } = renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(useTransportStore.getState().markers).toEqual([5, 10]))
+
+    unmount()
+
+    expect(useTransportStore.getState().markers).toEqual([])
+  })
+
+  it('publishes NO markers for a plain (non-video) thread', async () => {
+    // The generic branch has no anchored notes at all — publishing [] is what stops a
+    // previous video's ticks from surviving on the docked scrubber.
+    mockApi.notes.get.mockResolvedValue({
+      ...SOURCE_NOTE,
+      source_kind: null,
+      source_locator: null,
+    } as unknown as Note)
+    mockApi.links.commentsOf.mockResolvedValue([])
+
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('thread-generic-scroll')).toBeInTheDocument())
+
+    expect(useTransportStore.getState().markers).toEqual([])
+  })
 })
 
 // ---------------------------------------------------------------------------
