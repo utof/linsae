@@ -78,9 +78,11 @@ ADR 0016.
 
 - **`followOn` and `rate` are player-scoped and have NO reset.** They must survive `ThreadView`
   unmounting while the docked player keeps playing, which is the entire point of the B5 lift.
-- **`markers` are thread-scoped.** `ThreadView` is the sole publisher and owns the teardown. Keeping it
-  a publisher obligation avoids keying the store by `videoId`, which the plan's "small store" (§3.2)
-  does not call for.
+- **`markers` are thread-scoped.** `ThreadView` is the sole publisher, but `useMarkerPublisher` — not
+  the caller — owns the lifecycle: the hook republishes on change and clears on unmount. Keeping the
+  teardown on the publishing side avoids keying the store by `videoId`, which the plan's "small store"
+  (§3.2) does not call for. (`db0207e` corrected the same "the caller owns it" phrasing in the store's
+  own TSDoc; do not reintroduce it here.)
 
 `useMarkerPublisher` exists so that publish and teardown **cannot be separated**. B1 could only state
 the pairing in prose, and a prose-only contract is precisely what rotted for two milestones and
