@@ -172,18 +172,27 @@ describe('locateQuoteInPageText', () => {
     // are appended contiguously.
     //
     // Pinned because the invariant is invisible: rewriting the loop as
-    // `for (const ch of source)` iterates by CODE POINT, appends two units to `text`
-    // while pushing one entry to `srcIndex`, and silently shifts every later offset —
-    // writing a lone surrogate into a PERSISTED locator. Every other test in this file
-    // stays green under that change. Verified by mutation.
+    // `for (const ch of source)` iterates by CODE POINT, so `srcIndex` ends up mapping
+    // to code-POINT offsets while `indexOf` still reports code-UNIT ones. Every later
+    // offset shifts, corrupting a PERSISTED locator.
+    //
+    // The fixture is deliberate. An astral character alone does NOT expose this —
+    // with nothing collapsed before the lookup the two bases coincide and the mutant
+    // returns the identical range (measured). It needs an astral character BEFORE a
+    // collapsed whitespace run, which is what this page has. Under the code-point
+    // walk this case reads past the end of the map and yields `end: NaN`.
     const EMOJI = String.fromCodePoint(0x1f600)
-    const page = `Hello ${EMOJI} world here`
+    const page = `x ${EMOJI}  y z`
 
-    const r = locateQuoteInPageText(page, `${EMOJI}\nworld`)
-    expect(r).not.toBeNull()
-    expect(page.slice(r?.start, r?.end)).toBe(`${EMOJI} world`)
-    // `start` lands ON the high surrogate, not between the two units.
-    expect(page.codePointAt(r?.start ?? -1)).toBe(0x1f600)
+    const r = locateQuoteInPageText(page, 'y\nz')
+    expect(r).toEqual({ start: 6, end: 9 })
+    expect(page.slice(6, 9)).toBe('y z')
+
+    // And the pair itself is addressable: `start` lands ON the high surrogate rather
+    // than between the two units.
+    const pair = locateQuoteInPageText(page, EMOJI)
+    expect(pair).toEqual({ start: 2, end: 4 })
+    expect(page.codePointAt(pair?.start ?? -1)).toBe(0x1f600)
   })
 
   it('prefers a looser earlier match over an exact later one (the v0.6 divergence)', () => {
