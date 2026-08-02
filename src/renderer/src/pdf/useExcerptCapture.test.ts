@@ -54,7 +54,7 @@ const QUOTE_END = QUOTE_START + QUOTE.length // 24
  * The #189 fixture: ONE page whose text wraps over four visual lines.
  *
  * pdf.js hands `getTextContent()` back as ITEMS, which capture joins with a SPACE
- * (`useExcerptCapture.ts:102-104`); the DOM — and so `sel.toString()` — joins the same
+ * (`useExcerptCapture.ts:103-105`); the DOM — and so `sel.toString()` — joins the same
  * words with `\n` at each line break. Both joiners are one character wide, so the two
  * strings share every offset, and the asserted numbers below are readable off either.
  */
