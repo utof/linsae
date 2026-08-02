@@ -1,7 +1,7 @@
 /**
  * Returns a self-contained ES2019 JS string that runs INSIDE the youtube.com page.
  * The returned string is injected via webview.executeJavaScript and receives a
- * MessagePort transferred from the host via a nonce-gated window.message event.
+ * MessagePort transferred from the host via a token-gated window.message event.
  *
  * Wire format matches rpc.ts Wire union exactly:
  *   request:  {t:'invoke', id, method, args}
@@ -10,16 +10,34 @@
  *   ready:    {t:'ready'}
  *   ack:      {t:'ack', token}
  *
+ * INJECTING IT TWICE INTO ONE DOCUMENT IS A SUPPORTED CALL (contract C5): the host
+ * re-injects on every handshake attempt and whenever its C6 watchdog re-enters against
+ * a document that is already running this runtime. The second injection only re-arms the
+ * expected token through `window.__linsaeGuest.arm(token)`; the receiver installed by the
+ * first stays live for the document's lifetime and accepts the new port. Which token the
+ * document currently answers to is therefore the LAST one injected — a port transferred
+ * with a superseded token is ignored, which is the guest-side half of contract C4.
+ *
  * Adapted from aidenlx/media-extended (MIT) —
  *   web/userscript/youtube.ts, lib/remote-player/{init-port,hook}.
  *
  * Why a string (not a bundled sub-entry): spec §D9 — sidesteps the electron-vite/
  * rolldown "bundle-an-IIFE-and-exclude-from-react-compiler-babel" issue the plan
- * reviewer flagged. The guest code is small, isolated, and covered by the T7 smoke.
+ * reviewer flagged. The guest code is small, isolated, and executed for real by
+ * `youtube-guest.test.ts` (T9) on top of the T7 smoke.
+ *
+ * @see docs/specs/v0.8.3-player-transport.md §6.1–§6.5
+ * @issue utof/linsae#213
  */
 export function guestRuntime(nonce: string): string {
   return `(function(NONCE) {
   'use strict';
+
+  // C5 (spec §6.1). A second copy of this closure would double 11 media-event listeners,
+  // a capture-phase keydown stopper, two MutationObservers, three 200ms setIntervals and
+  // the rAF loop — the observerActive flag below guards only WITHIN one closure and sees
+  // nothing across two injected copies. Re-arm the live one instead and stand down.
+  if (window.__linsaeGuest) { window.__linsaeGuest.arm(NONCE); return; }
 
   /** Inline RPC — wire format must match rpc.ts Wire union exactly. */
   function buildRpc(port) {
@@ -96,6 +114,10 @@ export function guestRuntime(nonce: string): string {
   var startedFlag = false;
   var waitingFlag = false;
   var observerActive = false;
+  // The token this document currently answers to; replaced by arm() on every re-injection.
+  var expectedToken = null;
+  // Whether the one-time per-document DOM wiring has been done (C5) — see wireDocument().
+  var domWired = false;
 
   function stopRaf() {
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
@@ -191,8 +213,19 @@ export function guestRuntime(nonce: string): string {
     obs.observe(target, { childList: true, subtree: true });
   }
 
-  function initPort(port) {
+  function initPort(port, token) {
+    // §6.4. The host tears its end of the previous channel down before it re-injects, so an
+    // rpc left alive here would keep posting into a port nobody reads. Killing it is also
+    // what makes the host's rule "a superseded attempt stands down silently" load-bearing:
+    // a retry of an attempt the host already published would destroy the live peer.
+    if (rpc) { rpc.destroy(); rpc = null; }
     rpc = buildRpc(port);
+
+    // §6.3 / C3: the FIRST act, ahead of every DOM touch below. 'ack' means only "the
+    // transport is live" — which is why it fires on a consent page that has no <video> at
+    // all — where 'ready' (sent from attachVideo) means "<video> hooked". The host publishes
+    // the channel on ack and drops its cover on ready; neither may be inferred from the other.
+    rpc.ack(token);
 
     // Invoke handlers
     rpc.handle('play', function() { if (videoEl) { videoEl.play().catch(function() {}); } return null; });
@@ -210,6 +243,20 @@ export function guestRuntime(nonce: string): string {
     });
     rpc.handle('setRate', function(r) { if (videoEl) { videoEl.playbackRate = r; } return null; });
     rpc.handle('setMuted', function(m) { if (videoEl) { videoEl.muted = m; } return null; });
+
+    wireDocument();
+  }
+
+  /**
+   * The one-time, per-DOCUMENT wiring: everything below outlives any single channel and is
+   * re-entered on every re-arm, so it must no-op the second time (C5). None of it needs
+   * rebuilding for a new channel — each site reads the CLOSURE variable 'rpc', which
+   * initPort has just repointed at the new one, so a re-armed host receives their events
+   * without a second copy of the listener/observer/interval that produces them.
+   */
+  function wireDocument() {
+    if (domWired) return;
+    domWired = true;
 
     // Disable YouTube's own keyboard shortcuts — they fight host hotkeys (spec §8)
     // This listener runs in the guest document and does NOT affect the host frame.
@@ -284,12 +331,33 @@ export function guestRuntime(nonce: string): string {
     }
   }
 
-  // Receive the transferred MessagePort by nonce
-  window.addEventListener('message', function onMsg(e) {
-    if (e.data !== NONCE) return;
-    window.removeEventListener('message', onMsg);
-    initPort(e.ports[0]);
+  /** Point this document at a new handshake token (spec §6.2). */
+  function arm(token) {
+    expectedToken = token;
+  }
+
+  // Receive the transferred MessagePort by token. The listener stays installed for the
+  // DOCUMENT's lifetime: removing itself on the first match (as it did before C5) meant the
+  // second port a re-armed handshake transferred was dropped unacked, so the host retried
+  // until it gave up and the player went silently dead on a document that was still alive.
+  //
+  // Deliberately NO 'event.source === window' check. Electron's recipe assumes the message
+  // originates from a preload in the SAME window; ours arrives from the host frame via
+  // contentWindow.postMessage, so e.source is not window — what it actually is under
+  // Electron 42's inner-WebContents model is unverified, and copying the check could break
+  // the receiver outright (spec §6.2).
+  window.addEventListener('message', function(e) {
+    if (e.data !== expectedToken) return;
+    // A token-shaped message carrying no transferred port must not reach initPort: it would
+    // destroy the LIVE rpc and then throw on an undefined port, killing a working channel.
+    if (!e.ports || e.ports.length !== 1) return;
+    initPort(e.ports[0], e.data);
   });
+
+  // Published LAST, so a throw anywhere above cannot leave a sentinel that turns every later
+  // injection into a no-op arm() on a runtime that never finished starting.
+  window.__linsaeGuest = { arm: arm };
+  arm(NONCE);
 
 })(${JSON.stringify(nonce)});`
 }
