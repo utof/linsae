@@ -307,15 +307,19 @@ function syncBounds(): void {
  * attempt still in flight is stale by construction and none of them can publish — each
  * compares its captured `seq` at every resume point. Then both channels are destroyed and
  * nulled: `pendingRpc` too, because a candidate whose ack never arrives would otherwise hold
- * an open port for the rest of the process.
+ * an open port until its own deadline expires (up to `ackTimeoutMs`), which in the suite
+ * crosses `afterEach`.
  *
- * `handshake()` can be suspended between building a candidate and registering it, so a
- * candidate created AFTER this ran would survive it — which is why §5.5 step 2 re-checks
- * `seq` immediately after assigning `pendingRpc` rather than trusting this sweep alone.
+ * `handshake()` can be suspended between injecting the guest and building a candidate (the
+ * `await safeExec` of §5.5 step 1), so a candidate created AFTER this ran would survive it —
+ * which is why step 2 re-checks `seq` after assigning `pendingRpc` rather than trusting this
+ * sweep alone. See that comment for why the re-check is dead today and kept anyway.
  *
  * Both timers are cleared here rather than at the call sites, so no caller can forget one: a
  * timer that outlives the state it was armed for fires into someone else's document, and in
- * the suite it crosses `afterEach` into the next test's world (spec §5.8). The cover itself
+ * the suite it crosses `afterEach` into the next test's world (spec §5.8). The retry timer is
+ * the deliberate exception — it is guarded rather than cleared, because `handshakeSeq` never
+ * decreases, so a stale retry can only no-op. The cover itself
  * is left in whatever state it is in — `load()` raises it explicitly, and `dom-ready` re-arms
  * the drop straight after calling this.
  */
@@ -590,7 +594,13 @@ export function getPlayer(): PlayerInstance {
       // The fallback is not belt-and-braces: `rpc` is null for as long as the handshake is
       // still running (up to `maxAttempts × ackTimeoutMs`), and closing the pane in that
       // window used to leave the video AUDIBLE with nothing on screen (spec §5.9).
-      if (rpc) void rpc.invoke('pause')
+      // `.catch` because `invoke` rejects on its own 1000ms deadline (`createRpc`'s timer),
+      // and a bare `void` attaches no handler — reachable whenever a published channel's peer
+      // has gone away without a `dom-ready` to tear it down.
+      if (rpc)
+        void rpc.invoke('pause').catch(() => {
+          /* peer already gone; the pane is closing anyway */
+        })
       else void safeExec(PAUSE_JS)
     },
 

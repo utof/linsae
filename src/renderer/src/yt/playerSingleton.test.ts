@@ -131,7 +131,8 @@ async function connectGuest(wv: StubbedWebview): Promise<ReturnType<typeof fakeG
  * "published" is that an invoke round-trips to the guest — and polling that means calling
  * `pause()` an indeterminate number of times. Hence the `mockClear()`: every caller below
  * counts pauses afterwards, and a count that depends on how many times `vi.waitFor` happened
- * to poll is not an assertion.
+ * to poll is not an assertion. Only the `pause` counter is cleared — `seekTo`/`setRate` are
+ * untouched by the poll, so they need no reset.
  */
 async function awaitPublished(
   p: ReturnType<typeof getPlayer>,
@@ -226,6 +227,20 @@ describe('playerSingleton (webview)', () => {
     expect(p.wrapper.parentElement).toBe(document.body)
     p.unmount()
     expect(p.wrapper.parentElement).toBe(document.body)
+  })
+
+  it('unmount pauses through the guest even with no channel published (§5.9)', async () => {
+    const p = getPlayer()
+    const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
+    await p.load('M7lc1UVf-VE')
+    // No handshake here, so `rpc` is null — the window §5.9 exists for. It is not a corner
+    // case: it lasts for as long as the handshake runs (up to `maxAttempts × ackTimeoutMs`),
+    // and closing the pane inside it used to leave the video AUDIBLE with nothing on screen.
+    p.unmount()
+    expect(wv.executeJavaScript).toHaveBeenCalledWith(
+      expect.stringContaining('.pause()'),
+      undefined,
+    )
   })
 })
 
