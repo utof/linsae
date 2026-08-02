@@ -581,8 +581,9 @@ export function ThreadView({
    * Query invalidation stays on the success path only.
    *
    * Why `useCallback` (not `useMutation`): neither branch consumes `isPending`,
-   * and the four invalidations plus the error reset are three statements — a
-   * mutation object would add ceremony without removing any. The error surface
+   * and the success path is five straight-line statements (`setPostError(null)`
+   * at `:603` plus the four invalidations at `:604-607`) — a mutation object
+   * would add ceremony without removing any. The error surface
    * is shared deliberately: the two composers render in mutually exclusive
    * branches, so one `postError` serves both.
    *
