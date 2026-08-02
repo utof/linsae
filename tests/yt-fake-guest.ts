@@ -36,9 +36,9 @@ export function dispatchWebviewEvent(
  * `MessageChannel` the host transfers into the webview.
  *
  * Built on the REAL `createRpc` rather than a raw `port.onmessage` capture, for two
- * reasons: `createRpc` takes exclusive ownership of `port.onmessage` (`rpc.ts:45`), so
+ * reasons: `createRpc` takes exclusive ownership of `port.onmessage` (`rpc.ts:76`), so
  * the two cannot coexist; and a guest that records an `invoke` but never replies leaves
- * the host's 1000ms timer (`rpc.ts:79-82`) to reject unhandled — under `isolate: false`
+ * the host's 1000ms timer (`rpc.ts:118-121`) to reject unhandled — under `isolate: false`
  * (`vitest.config.ts`) that surfaces in some *other* file's report.
  *
  * `MessageChannel` here is NODE's global (happy-dom's `Window` has none) — the same
@@ -70,9 +70,9 @@ export function fakeGuest(
   emitReady: () => void
 } {
   const rpc = createRpc(port)
-  // `() => null` rather than a bare `vi.fn()`: the host awaits the handler's return and
-  // posts it back as the `res` value (`rpc.ts:54`), so an explicit null keeps the
-  // round-trip readable in a failure diff.
+  // `() => null` rather than a bare `vi.fn()`: this guest's own `createRpc` awaits the
+  // handler and posts the return as the `res` value (`rpc.ts:84-85`) for the host to
+  // await, so an explicit null keeps the round-trip readable in a failure diff.
   const pause = vi.fn(() => null)
   const seekTo = vi.fn(() => null)
   const setRate = vi.fn(() => null)
@@ -80,8 +80,8 @@ export function fakeGuest(
   rpc.handle('seekTo', seekTo)
   rpc.handle('setRate', setRate)
   // Posting on the port is not exclusive to `createRpc`, so this raw ack coexists with
-  // it. `{ t: 'ack' }` is not in `Wire` (`rpc.ts:6-10`) yet — the host currently drops
-  // unknown `t` silently at `rpc.ts:69-71`, so this is inert until `whenAck` lands.
+  // it. `{ t: 'ack', token }` is a `Wire` member (`rpc.ts:14`) handled at `rpc.ts:102-110`,
+  // so the host's `whenAck(token)` resolves off this post.
   if (opts.ack !== false) port.postMessage({ t: 'ack', token: opts.ack })
   return {
     rpc,

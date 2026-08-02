@@ -8,6 +8,7 @@
  *   response: {t:'res', id, ok, value|error}
  *   event:    {t:'event', event, payload}
  *   ready:    {t:'ready'}
+ *   ack:      {t:'ack', token}
  *
  * Adapted from aidenlx/media-extended (MIT) —
  *   web/userscript/youtube.ts, lib/remote-player/{init-port,hook}.
@@ -64,6 +65,13 @@ export function guestRuntime(nonce: string): string {
       ready: function() {
         if (isDestroyed) return;
         port.postMessage({ t: 'ready' });
+      },
+      // Echoes the host's per-attempt token so a late ack from a superseded attempt is
+      // dropped rather than publishing a dead channel (contract C4). Distinct from
+      // ready(): ack means "transport live", ready means "<video> hooked" (C3).
+      ack: function(token) {
+        if (isDestroyed) return;
+        port.postMessage({ t: 'ack', token: token });
       },
       destroy: function() { isDestroyed = true; port.onmessage = null; try { port.close(); } catch(e) {} }
     };
