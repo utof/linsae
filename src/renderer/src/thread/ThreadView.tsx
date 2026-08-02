@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, Clock, Film } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import type { Attachment } from '../../../shared/types'
 import { AnnotateEditor } from '../annotate/AnnotateEditor'
@@ -12,10 +12,11 @@ import { api } from '../lib/api'
 import { useSetSetting } from '../lib/use-setting'
 import { useDockStore } from '../panes/dockStore'
 import { getPlayer } from '../yt/playerSingleton'
+import { useMarkerPublisher, useTransportStore } from '../yt/transportState'
 import { usePlayerState } from '../yt/usePlayerState'
 import { JumpPill } from './JumpPill'
 import { Rail } from './Rail'
-import { activeClusterIndex, jumpPillDirection } from './rail-layout'
+import { activeClusterIndex, jumpPillDirection, markerPositions } from './rail-layout'
 import { SimpleComposer } from './SimpleComposer'
 import { ThreadComposer } from './ThreadComposer'
 import { ThreadRoot } from './ThreadRoot'
@@ -59,13 +60,16 @@ const COL = 520
  *   PlayerPane — ThreadView never calls `player.mount()` directly (ADR 0016).
  * - Duration write-back (I-4): when `duration` first becomes non-null on this
  *   mount, `api.videoSources.upsert` is called once with `{ durationSec }`.
- * - `followOn` defaults to true per spec §TransportBar.
+ * - `followOn` comes from the shared transport store (`yt/transportState.ts`) and is
+ *   toggled from the TransportBar in the docked PlayerPane; this thread PUBLISHES its
+ *   anchored timestamps to the same store as the scrubber's marker ticks (#169).
  * - Sort defaults to 'video' (video-time order); pill toggles to 'capture'.
  *
  * Visual source: v21-design-system/v21-youtube-view-handoff/ThreadView.jsx
  * (shell region lines 276–334).
  *
- * @see src/renderer/src/yt/PlayerPane.tsx (holds the player placeholder, B5)
+ * @see src/renderer/src/yt/PlayerPane.tsx (holds the player placeholder + TransportBar)
+ * @see src/renderer/src/yt/transportState.ts (followOn / rate / markers, cross-pane)
  * @see src/renderer/src/yt/usePlayerState.ts (read-only playback state)
  * @see src/renderer/src/thread/useThreadNotes.ts
  * @see src/renderer/src/thread/rail-layout.ts
@@ -253,11 +257,28 @@ export function ThreadView({
   const effectiveSortMode = kind === 'youtube' ? sortMode : 'capture'
   const { sorted, clusters, anchorless } = useThreadNotes(noteId, effectiveSortMode)
 
-  // ── follow state ──────────────────────────────────────────────────────────
-  // After B5 the follow-toggle lived in TransportBar (now in PlayerPane).
-  // ThreadView defaults follow to always-on; the toggle is surfaced in the
-  // player pane in a future task.
-  const followOn = true
+  // ── transport store (cross-pane) ──────────────────────────────────────────
+  // `followOn` is owned by the shared transport store and toggled from the
+  // TransportBar in the right-dock PlayerPane. It is NOT a display flag: it gates the
+  // follow auto-scroll below and `jumpPillDirection` (rail-layout.ts:179 returns null
+  // whenever it is true). It lived here as `const followOn = true` from `4ab51f0`
+  // until B3 — under a comment claiming the toggle had moved to PlayerPane, which was
+  // never true: the bar was mounted nowhere, so the toggle existed nowhere, and the
+  // jump pill could not render at all. @issue utof/linsae#169
+  const followOn = useTransportStore((s) => s.followOn)
+
+  // Publish this thread's anchored timestamps as the scrubber's marker ticks. The
+  // hook owns the teardown too (clears on unmount), so a thread's ticks can never
+  // outlive it onto the next video's scrubber. @see src/renderer/src/yt/transportState.ts
+  //
+  // Memoized so the identity is stable across the ~5 Hz playhead ticks (`sorted` is
+  // memoized in useThreadNotes); `setMarkers` also bails on value-equality, so this is
+  // belt-and-braces against re-running the effect, not a correctness requirement. #51
+  const markers = useMemo(
+    () => markerPositions(sorted, duration).map((m) => m.t),
+    [sorted, duration],
+  )
+  useMarkerPublisher(markers)
 
   // ── follow auto-scroll · jump-pill · flash (spec §319–322) ──────────────────
   // The active cluster is the one the playhead currently sits in. `scrollRef`
@@ -299,10 +320,12 @@ export function ThreadView({
     flashTimerRef.current = setTimeout(() => setFlashClusterIdx(-1), FLASH_MS)
   }, [])
 
-  // Follow auto-scroll: always on after B5 (toggle was in TransportBar).
+  // Follow auto-scroll: when follow is on and the active cluster changes, bring it
+  // into view + flash. Keyed on [activeIdx, followOn] so toggling follow ON re-syncs,
+  // and a playhead change with follow OFF does nothing.
   useEffect(() => {
-    if (activeIdx >= 0) scrollClusterIntoView(activeIdx)
-  }, [activeIdx, scrollClusterIntoView])
+    if (followOn && activeIdx >= 0) scrollClusterIntoView(activeIdx)
+  }, [activeIdx, followOn, scrollClusterIntoView])
 
   // Jump-pill visibility: measure the active cluster's top vs the scroll
   // container's rect (predicate is pure — jumpPillVisible). The row's viewport
@@ -327,7 +350,7 @@ export function ThreadView({
         viewBottom: view.bottom,
       }),
     )
-  }, [activeIdx, sortMode])
+  }, [activeIdx, sortMode, followOn])
 
   // Re-measure when the measurement inputs (active cluster / sort / follow) change.
   useEffect(() => {
@@ -570,17 +593,38 @@ export function ThreadView({
    * No media anchor — pure text, comment-on the root note's slug.
    * Invalidates the same keys as the youtube post so the child list re-renders.
    *
-   * Why useCallback (not useMutation): the plain branch needs no loading/error
-   * surface in the composer — SimpleComposer is intentionally minimal. A
-   * useCallback keeps the wiring thin; error handling can be layered in v0.7+.
+   * **Rejects on failure, by contract.** `SimpleComposer` clears the draft only
+   * when this resolves, so resolving is a promise that the note exists. Both
+   * failure modes therefore throw AND set `postError` (the same pair the
+   * youtube mutation gets from `onError`/`onSuccess`):
+   *  - `!note?.slug` — a bare `return` used to resolve here, which under the
+   *    clear-on-success contract would eat the draft with no note created. The
+   *    youtube path has always thrown for this (`'video note not loaded'`).
+   *  - `notes.create` rejecting, e.g. a duplicate body-derived slug.
+   * Query invalidation stays on the success path only.
    *
+   * Why `useCallback` (not `useMutation`): neither branch consumes `isPending`,
+   * and the success path is five straight-line statements (`setPostError(null)`
+   * at `:627` plus the four invalidations at `:628-631`) — a mutation object
+   * would add ceremony without removing any. The error surface
+   * is shared deliberately: the two composers render in mutually exclusive
+   * branches, so one `postError` serves both.
+   *
+   * @issue utof/linsae#161
+   * @see adrs/0063-composer-clears-on-success.md
    * @see src/renderer/src/lib/api.ts (notes.create signature)
    * @see src/renderer/src/thread/useThreadNotes.ts (queryKey: ['thread', noteId])
    */
   const postPlain = useCallback(
     async (body: string) => {
-      if (!note?.slug) return
-      await api.notes.create(body, 'claim', { commentOn: note.slug })
+      try {
+        if (!note?.slug) throw new Error('note not loaded')
+        await api.notes.create(body, 'claim', { commentOn: note.slug })
+      } catch (err) {
+        setPostError(err instanceof Error ? err.message : String(err))
+        throw err
+      }
+      setPostError(null)
       void queryClient.invalidateQueries({ queryKey: ['thread', noteId] })
       void queryClient.invalidateQueries({ queryKey: ['notes'] })
       void queryClient.invalidateQueries({ queryKey: ['note-titles'] })
@@ -791,8 +835,12 @@ export function ThreadView({
             onCapture={() => {
               void onCapture()
             }}
-            onPost={({ body, t }) => {
-              post.mutate({ body, t })
+            // `mutateAsync`, NOT `mutate`: v5's `mutate` returns `void` and
+            // never rejects, so the composer would clear on a failed post.
+            // @issue utof/linsae#176
+            // @see adrs/0063-composer-clears-on-success.md
+            onPost={async ({ body, t }) => {
+              await post.mutateAsync({ body, t })
             }}
             onManualSeekEntry={(s) => {
               void player.seekTo(s)
@@ -963,6 +1011,8 @@ export function ThreadView({
             <div style={{ maxWidth: COL, margin: '0 auto' }}>
               <SimpleComposer
                 onSubmit={postPlain}
+                error={postError}
+                onClearError={() => setPostError(null)}
                 initialDraft={initialDraft}
                 onDraftChange={onDraftChange}
                 onDraftClear={onDraftClear}

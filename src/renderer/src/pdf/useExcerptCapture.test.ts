@@ -50,6 +50,27 @@ const QUOTE = 'the selected text'
 const QUOTE_START = PAGE_TEXT.indexOf(QUOTE) // 7
 const QUOTE_END = QUOTE_START + QUOTE.length // 24
 
+/**
+ * The #189 fixture: ONE page whose text wraps over four visual lines.
+ *
+ * pdf.js hands `getTextContent()` back as ITEMS, which capture joins with a SPACE
+ * (`useExcerptCapture.ts:103-105`); the DOM — and so `sel.toString()` — joins the same
+ * words with `\n` at each line break. Both joiners are one character wide, so the two
+ * strings share every offset, and the asserted numbers below are readable off either.
+ */
+const WRAPPED_ITEMS = ['Third page', 'A third page paragraph', 'with more words', 'and a trailer']
+/** What `getTextContent()` + the space join produce — what the locator indexes. */
+const WRAPPED_PAGE_TEXT = WRAPPED_ITEMS.join(' ')
+/** What the text layer holds, and therefore what a drag over it selects. */
+const WRAPPED_DOM_TEXT = WRAPPED_ITEMS.join('\n')
+/**
+ * Lines 2-3 of the four. Bounded by text on both sides on purpose: a selection at
+ * either end of the page yields an empty prefix or suffix, and those would then be
+ * indistinguishable from the #189 failure they are meant to disprove.
+ */
+const WRAPPED_QUOTE_START = WRAPPED_DOM_TEXT.indexOf('A third page') // 11
+const WRAPPED_QUOTE_END = WRAPPED_DOM_TEXT.indexOf('\nand a trailer') // 49
+
 interface MountedPage {
   /** The `[data-page-number]` wrapper — what `closest()` must resolve to. */
   wrapper: HTMLElement
@@ -70,9 +91,13 @@ interface Mounted {
  * Build the reader's DOM for the given pages and the registry they would have
  * published. Mirrors `PdfReader.tsx:452-471` (absolute wrapper) and
  * `PdfPage.tsx:212-226` (`[data-page-number]` › content › textLayer › span › text).
+ *
+ * `text` is what the DOM holds (so what a drag selects); `items` is what
+ * `getTextContent()` returns. They default to the same string, but keeping them
+ * separable is what lets a test express #189 — the two are NOT the same in a real PDF.
  */
 function mountPages(
-  specs: Array<{ pageNumber: number; text?: string; viewport?: ViewportLike }>,
+  specs: Array<{ pageNumber: number; text?: string; items?: string[]; viewport?: ViewportLike }>,
 ): Mounted {
   const scrollEl = document.createElement('div')
   const spacer = document.createElement('div')
@@ -84,6 +109,7 @@ function mountPages(
 
   for (const spec of specs) {
     const text = spec.text ?? PAGE_TEXT
+    const items = (spec.items ?? [text]).map((str) => ({ str }))
     const positioned = document.createElement('div')
     const wrapper = document.createElement('div')
     wrapper.setAttribute('data-index', String(spec.pageNumber - 1))
@@ -103,7 +129,7 @@ function mountPages(
     registryRef.current.set(spec.pageNumber, {
       page: {
         pageNumber: spec.pageNumber,
-        getTextContent: vi.fn().mockResolvedValue({ items: [{ str: text }] }),
+        getTextContent: vi.fn().mockResolvedValue({ items }),
       },
       viewport: spec.viewport ?? IDENTITY_VIEWPORT,
       contentEl: content,
@@ -300,8 +326,9 @@ describe('useExcerptCapture', () => {
     // `quote` is the FULL selection, spanning both pages (ADR 0058).
     expect(p?.locator.quote).toBe('the selected text afterpage four')
     // The anchor page's getTextContent() cannot contain a cross-page quote, so
-    // `indexOf` returns -1 and the EXISTING idx guards omit all four fields. Honest
-    // degradation, no new branch.
+    // `locateQuoteInPageText` returns null and the guards omit all four fields —
+    // and no normalization can rescue it, since the halves meet with no whitespace
+    // between them ('afterpage'). Honest degradation, no new branch.
     expect(p?.locator.textStart).toBeUndefined()
     expect(p?.locator.textEnd).toBeUndefined()
     expect(p?.locator.prefix).toBe('')
@@ -502,5 +529,72 @@ describe('useExcerptCapture', () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     })
     expect(pending()).toBeNull()
+  })
+
+  it('#189: a MULTI-LINE selection keeps prefix/suffix/textStart/textEnd', async () => {
+    // The bug this batch exists to fix, and it has nothing cross-page about it: ONE
+    // page, one drag, spanning a line break. v0.6 searched the space-joined page text
+    // for the newline-joined selection, `indexOf` returned -1, and all four fields were
+    // dropped — silently, on the majority of real selections. Found against the
+    // committed fixture by `scripts/pdf-multipage-smoke.mjs` (excerpt-text-selectors).
+    const { scrollEl, registryRef, pages } = mountPages([
+      { pageNumber: 3, text: WRAPPED_DOM_TEXT, items: WRAPPED_ITEMS },
+    ])
+    const page3 = pages.get(3) as MountedPage
+    const range = document.createRange()
+    range.setStart(page3.textNode, WRAPPED_QUOTE_START)
+    range.setEnd(page3.textNode, WRAPPED_QUOTE_END)
+    stubSelection(range, [rectOnPage(3, { top: 10, height: 20 })])
+
+    renderHook(() => useExcerptCapture({ pdfId: 'pdf-1', registryRef, scrollEl }))
+    await mouseUp(page3.wrapper)
+
+    const p = pending()
+    const quote = 'A third page paragraph\nwith more words'
+    // Fixture guards. Without them a fixture that quietly became single-line — or a
+    // page text that happened to contain the newline — would make every assertion
+    // below pass under the v0.6 code too, which is the failure mode #189 itself was.
+    expect(p?.locator.quote).toBe(quote)
+    expect(WRAPPED_PAGE_TEXT.indexOf(quote)).toBe(-1)
+
+    expect(p?.locator.textStart).toBe(11)
+    expect(p?.locator.textEnd).toBe(49)
+    // The offsets index the RAW space-joined page text, unchanged from v0.6's basis.
+    expect(WRAPPED_PAGE_TEXT.slice(11, 49)).toBe('A third page paragraph with more words')
+    expect(p?.locator.prefix).toBe('Third page ')
+    expect(p?.locator.suffix).toBe(' and a trailer')
+  })
+
+  it('stores the RAW quote but TRIMMED offsets when the selection ends on a line break', async () => {
+    // A drag usually ends on the last line's break, so `sel.toString()` carries a
+    // trailing `\n`. `quote` keeps it (it is the selection, verbatim) while
+    // `[textStart, textEnd)` covers the TRIMMED text, because `locateQuoteInPageText`
+    // trims before matching. `quote.length !== textEnd - textStart` is therefore
+    // CORRECT here — they measure two different strings. Nothing reads them together
+    // today (ADR 0059: `rect` is the primary anchor, the text selectors are advisory),
+    // and this pins the asymmetry so a future reader who assumes they agree finds it
+    // stated rather than inferring a bug.
+    const { scrollEl, registryRef, pages } = mountPages([
+      { pageNumber: 3, text: WRAPPED_DOM_TEXT, items: WRAPPED_ITEMS },
+    ])
+    const page3 = pages.get(3) as MountedPage
+    const range = document.createRange()
+    range.setStart(page3.textNode, WRAPPED_QUOTE_START)
+    // +1: swallow the line break that ends the last selected line.
+    range.setEnd(page3.textNode, WRAPPED_QUOTE_END + 1)
+    stubSelection(range, [rectOnPage(3, { top: 10, height: 20 })])
+
+    renderHook(() => useExcerptCapture({ pdfId: 'pdf-1', registryRef, scrollEl }))
+    await mouseUp(page3.wrapper)
+
+    const p = pending()
+    expect(p?.locator.quote).toBe('A third page paragraph\nwith more words\n')
+    expect(p?.locator.quote?.length).toBe(39)
+    expect(p?.locator.textStart).toBe(11)
+    expect(p?.locator.textEnd).toBe(49)
+    expect((p?.locator.textEnd ?? 0) - (p?.locator.textStart ?? 0)).toBe(38)
+    // The trailing break is not counted, so `suffix` still starts at the next word's
+    // separator rather than one character into it.
+    expect(p?.locator.suffix).toBe(' and a trailer')
   })
 })

@@ -14,12 +14,24 @@
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushMicrotasks } from '../../../../tests/flush'
 import { installMockApi, type MockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Note } from '../../../shared/types'
 import { serializeScene } from '../ink/svg'
 import { useDockStore } from '../panes/dockStore'
+import { useTransportStore } from '../yt/transportState'
+
+/**
+ * The transport store's own initial state, captured at module load — same technique
+ * (and reason) as transportState.test.ts:18. MANDATORY: the `dom` project runs
+ * `isolate: false` (vitest.config.ts:35), so this module singleton is shared across
+ * files in a worker; a leaked `followOn: false` or a stale marker list would poison
+ * transportState.test.ts's own INITIAL capture. The afterEach below is the other half:
+ * this capture guards against the file BEFORE, the afterEach against the file AFTER. (#203)
+ */
+const TRANSPORT_INITIAL = useTransportStore.getState()
 
 // Mock usePlayerState so tests never touch the player singleton / rAF loop.
 // `seekTo` is a shared spy and `currentTime` is read from a mutable holder so
@@ -33,7 +45,11 @@ vi.mock('../yt/usePlayerState', () => ({
     player,
     currentTime: playerState.currentTime,
     state: 'paused',
-    duration: 100,
+    // Deliberately NOT 100. `markerPositions` returns `{ t, pct: (t / duration) * 100 }`
+    // (rail-layout.ts:141), so at duration 100 `pct === t` identically and the marker
+    // assertions below could not tell the two apart — publishing percentages instead of
+    // seconds would have stayed green. At 200 the notes' t=5/10 give pct 2.5/5.
+    duration: 200,
   }),
 }))
 
@@ -109,6 +125,8 @@ Element.prototype.scrollIntoView = scrollIntoView
 beforeEach(() => {
   // Reset dockStore so openPane('player') calls start from a clean slate (B5).
   useDockStore.getState().reset()
+  // `setState(…, true)` REPLACES rather than merges, so no mutated field survives.
+  useTransportStore.setState(TRANSPORT_INITIAL, true)
   scrollIntoView.mockClear()
   playerState.currentTime = 0
   getMediaRect.mockReturnValue({ x: 0, y: 0, width: 480, height: 270 } as DOMRect)
@@ -126,6 +144,19 @@ beforeEach(() => {
     durationSec: 100,
   })
   mockApi.videoSources.upsert.mockResolvedValue(undefined)
+})
+
+// Hand the store back pristine so the NEXT file in this worker captures a clean
+// module-load snapshot. `beforeEach` guards this file; this guards everyone after it.
+// Without it the last test's mutations can escape under `isolate: false` and the next
+// file's own capture records them as its "initial".
+//
+// Honest scope: under TODAY's file ordering, deleting this changes nothing — measured,
+// the suite stays green. It is defence in depth against an ordering nobody controls,
+// not a guard something currently trips. Cheap enough to keep; do not read its presence
+// as evidence the hazard is live here. (#203)
+afterEach(() => {
+  useTransportStore.setState(TRANSPORT_INITIAL, true)
 })
 
 describe('ThreadView', () => {
@@ -251,11 +282,102 @@ describe('ThreadView follow-scroll + click-to-seek', () => {
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
   })
 
-  // Note: the "turn follow OFF" test is removed in B5 — the follow-toggle button
-  // was part of TransportBar, which now lives in the right-dock PlayerPane (not
-  // ThreadView). Follow defaults to ON and is always active in ThreadView.
+  // The "turn follow OFF" case was dropped in B5 (`4ab51f0`) along with ThreadView's
+  // TransportBar, and `followOn` was hardcoded `true` in its place. B3 restores it —
+  // the toggle now lives on the TransportBar in the right-dock PlayerPane and reaches
+  // this component through the shared transport store, so this asserts the real
+  // cross-pane path, not a local useState.
   // The scroll-never-seeks invariant (scroll event ≠ seekTo) is covered by the
   // separate "scroll-never-seeks invariant" describe block below.
+  it('with follow OFF in the store, advancing the playhead does NOT scroll (B3)', async () => {
+    const { rerenderThread } = renderThread()
+    await waitFor(() => expect(screen.getByText('note at five seconds')).toBeInTheDocument())
+
+    // The PlayerPane's follow button does exactly this.
+    act(() => {
+      useTransportStore.getState().toggleFollow()
+    })
+    scrollIntoView.mockClear()
+
+    playerState.currentTime = 7
+    rerenderThread()
+    await flushMicrotasks()
+
+    expect(scrollIntoView).not.toHaveBeenCalled()
+  })
+
+  it('the jump-to-now pill appears once follow is OFF (unreachable while followOn was hardcoded)', async () => {
+    // `jumpPillDirection` returns null whenever `followOn` is true (rail-layout.ts:179),
+    // so with ThreadView.tsx:260 hardcoded `true` this pill could never render in
+    // production — the whole affordance has been dead since v0.6.4 B5.
+    const { rerenderThread } = renderThread()
+    await waitFor(() => expect(screen.getByText('note at five seconds')).toBeInTheDocument())
+    expect(screen.queryByLabelText('jump to now')).toBeNull()
+
+    act(() => {
+      useTransportStore.getState().toggleFollow()
+    })
+    // Advance the playhead so an active cluster row exists for measurePill to measure
+    // (activeIdx -1 → no row → pillDir stays null).
+    playerState.currentTime = 7
+    rerenderThread()
+
+    await waitFor(() => expect(screen.getByLabelText('jump to now')).toBeInTheDocument())
+    // Scope of this assertion: it proves the pill's RENDER PATH is reachable again,
+    // NOT that 'up' vs 'down' is chosen correctly. happy-dom has no layout, so every
+    // getBoundingClientRect() is all-zeros and `playheadY < viewTop + 8` is trivially
+    // true — the pill always comes out 'up' here. The direction is real geometry and
+    // belongs to the Electron smoke (B4).
+  })
+})
+
+// ---------------------------------------------------------------------------
+// B3 — ThreadView is the sole publisher of the transport store's markers (#169)
+// ---------------------------------------------------------------------------
+
+describe('ThreadView marker publishing (B3)', () => {
+  it("publishes the thread's anchored timestamps in video-time order", async () => {
+    // NOTE_B t=5, NOTE_A t=10 — SECONDS, not the `pct` field of the same objects
+    // (which is 2.5/5 at the mocked duration of 200). TransportBar.tsx:184 derives
+    // `left` from these itself, so publishing percentages would double-scale the ticks.
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(useTransportStore.getState().markers).toEqual([5, 10]))
+  })
+
+  it("CLEARS the markers on unmount, so one thread's ticks never appear on the next video", async () => {
+    const { unmount } = renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(useTransportStore.getState().markers).toEqual([5, 10]))
+
+    unmount()
+
+    expect(useTransportStore.getState().markers).toEqual([])
+  })
+
+  it("publishes NO markers for a plain (non-video) thread, CLEARING a previous video's", async () => {
+    // The generic branch has no anchored notes at all — publishing [] is what stops a
+    // previous video's ticks from surviving on the docked scrubber while the docked
+    // player keeps playing (markers are thread-scoped; followOn/rate are not).
+    //
+    // Seeded non-empty on purpose. Asserting `[]` against the `beforeEach` reset would
+    // re-assert the value the harness just set: a publisher that skipped plain threads
+    // entirely would pass. With ticks already on the scrubber, only a publisher that
+    // actually runs for this branch can bring it back to empty.
+    act(() => {
+      useTransportStore.getState().setMarkers([5, 10])
+    })
+
+    mockApi.notes.get.mockResolvedValue({
+      ...SOURCE_NOTE,
+      source_kind: null,
+      source_locator: null,
+    } as unknown as Note)
+    mockApi.links.commentsOf.mockResolvedValue([])
+
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('thread-generic-scroll')).toBeInTheDocument())
+
+    expect(useTransportStore.getState().markers).toEqual([])
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -947,10 +1069,14 @@ describe('ThreadView scroll restore/persist (Task 2.2)', () => {
 })
 
 describe('ThreadView FIX 2 — post guard when note not loaded', () => {
-  it('does not call notes.create when note is null (postPlain guard returns early)', async () => {
+  it('does not call notes.create when note is null, and does NOT eat the draft', async () => {
     // Override notes.get to return null so `note` never populates.
     // With branching: note=null → kind='plain' → generic branch renders with SimpleComposer.
-    // postPlain guards: `if (!note?.slug) return` — notes.create is never reached.
+    // postPlain guards on `!note?.slug`. v0.8.2 A3 turned that early `return` into a
+    // THROW: a resolve here would let the clear-on-success composer clear the draft
+    // with no note created — the same silent data-loss in a new place. Mirrors the
+    // youtube path's `throw new Error('video note not loaded')` (ThreadView.tsx:509).
+    // @issue utof/linsae#161
     mockApi.notes.get.mockResolvedValue(null)
 
     renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
@@ -958,13 +1084,94 @@ describe('ThreadView FIX 2 — post guard when note not loaded', () => {
     await waitFor(() => expect(screen.getByLabelText('back')).toBeInTheDocument())
 
     // The generic branch renders SimpleComposer (note=null → kind='plain').
-    // Type a caption and submit — postPlain returns early because note?.slug is falsy.
-    const textarea = screen.getByRole('textbox')
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
     fireEvent.change(textarea, { target: { value: 'caption' } })
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
 
-    // Allow async postPlain a tick to run its early return.
-    await new Promise((r) => setTimeout(r, 50))
+    // The user is TOLD nothing happened…
+    expect(await screen.findByRole('alert')).toHaveTextContent('note not loaded')
+    await flushMicrotasks()
+    // …no note was created…
     expect(mockApi.notes.create).not.toHaveBeenCalled()
+    // …and the caption is still there to retry with.
+    expect(textarea.value).toBe('caption')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v0.8.2 cluster A — a failed plain post must not destroy the user's text.
+// `notes.create` is a real throw site: `save-note.ts:164` rejects with
+// `a note named "<slug>" already exists` when two short identical replies
+// collide on the body-derived slug.
+// @issue utof/linsae#161 · @see docs/plans/v0.8.2-composer-dataloss.md §2
+// ---------------------------------------------------------------------------
+
+describe('ThreadView plain post failure (A3 — postPlain propagates)', () => {
+  it('a rejected notes.create keeps the typed text and surfaces the error', async () => {
+    mockApi.notes.get.mockResolvedValue(PLAIN_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([])
+    mockApi.notes.create.mockRejectedValue(new Error('a note named "yes" already exists'))
+
+    renderWithProviders(<ThreadView noteId="n1" onClose={() => {}} />)
+    // Wait for the ROOT BODY, not just the textarea: `postPlain` guards on
+    // `note?.slug`, so submitting before the notes.get query settles would
+    // exercise the not-loaded path instead of the create-rejects one.
+    await screen.findByText(/root body/)
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'yes' } })
+    fireEvent.keyDown(ta, { key: 'Enter' })
+
+    await waitFor(() => expect(mockApi.notes.create).toHaveBeenCalledOnce())
+    // The rejection must reach the user, not just the console.
+    expect(await screen.findByRole('alert')).toHaveTextContent('a note named "yes" already exists')
+    await flushMicrotasks()
+    expect(ta.value).toBe('yes')
+  })
+
+  it('a resolved notes.create clears the draft and shows no error', async () => {
+    mockApi.notes.get.mockResolvedValue(PLAIN_NOTE)
+    mockApi.links.commentsOf.mockResolvedValue([])
+    mockApi.notes.create.mockResolvedValue({ ...CHILD_ONE, body: 'yes' })
+
+    renderWithProviders(<ThreadView noteId="n1" onClose={() => {}} />)
+    await screen.findByText(/root body/)
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'yes' } })
+    fireEvent.keyDown(ta, { key: 'Enter' })
+
+    await waitFor(() => expect(mockApi.notes.create).toHaveBeenCalledOnce())
+    await waitFor(() => expect(ta.value).toBe(''))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v0.8.2 A4a — `onPost` must actually be AWAITABLE.
+// TanStack Query v5's `mutate` returns `void`; only `mutateAsync` returns a
+// promise that rejects. With `post.mutate` the composer's `await onPost(...)`
+// awaits `undefined`, resolves on the next microtask and runs its success
+// branch unconditionally — A4 would look done and clear the draft anyway.
+// @issue utof/linsae#176 · @see docs/plans/v0.8.2-composer-dataloss.md §2.3 A4a
+// ---------------------------------------------------------------------------
+
+describe('ThreadView youtube post failure (A4a — onPost is awaited)', () => {
+  it('a rejected notes.create keeps the typed caption and surfaces the error', async () => {
+    mockApi.notes.create.mockRejectedValue(new Error('a note named "yes" already exists'))
+
+    renderWithProviders(<ThreadView noteId="v1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('My Video')).toBeInTheDocument())
+
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.focus(ta)
+    fireEvent.change(ta, { target: { value: 'yes' } })
+    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+
+    await waitFor(() => expect(mockApi.notes.create).toHaveBeenCalledOnce())
+    // The rejection must reach the user, not just the console.
+    expect(await screen.findByRole('alert')).toHaveTextContent('a note named "yes" already exists')
+    // …and the caption is still there to retry with. Hard negative — flush, not
+    // waitFor: `mutate` would have cleared it exactly one microtask later.
+    await flushMicrotasks()
+    expect(ta.value).toBe('yes')
   })
 })

@@ -1,7 +1,7 @@
 # linsae - a note-taking app
 
 ## Models
-- Implementer: Sonnet default unless difficult complex task. Reviewer / hard decisions: Fable or whatever the orchestrator is currently.
+- Implementer: **Opus minimum, always** — never Sonnet, regardless of how simple the task looks (user, 2026-08-01). Reviewer / hard decisions: Fable or whatever the orchestrator is currently.
 note: A task is simple only if ALL four hold:
 
 1. Transcription, not design — the plan contains the complete code verbatim; the implementer makes no design decisions.
@@ -36,12 +36,38 @@ note: A task is simple only if ALL four hold:
 4. Plan at `docs/plans/v0.x-name.md`.
 5. **Fresh Opus subagent reviews plan.**
 6. Revise → green.
-7. Execute via `/subagent-driven-development` (Sonnet workers).
+7. Execute via `/subagent-driven-development` (Opus workers).
 8. Update `memory/progress.md`; trim stale pointers.
 
 **Review-round cap (per artifact):** spec reviews = **1**, plan reviews = **1**. After the cap, accept residual nits, queue them for `gh issue create -l nit`, and proceed. (Numbers literal — bump to 2 if drift is observed.)
 
 **Nit threshold:** see `## Inline-fix gate` below. **Never** mention Claude Code / sessions / AI authorship in issue / PR.
+
+## Recovering a subagent report (common — happens most batches)
+A subagent often finishes its work, writes its transcript, then goes idle **without its final
+report reaching the orchestrator** — you get only an `idle_notification`. The work is NOT lost and
+the agent is NOT broken. Do **not** re-dispatch, and do **not** conclude "the agent never ran" from
+a missing task-output file — read the transcript directly:
+
+```fish
+set f (ls -t ~/.claude/projects/<project-slug>/<session-id>/subagents/agent-a<name>-*.jsonl | head -1)
+tac "$f" | grep -m1 '"type":"assistant"' | python3 -c "
+import json,sys
+m=json.loads(sys.stdin.read())
+t=''.join(b.get('text','') for b in m['message']['content'] if isinstance(b,dict))
+print('TOTAL CHARS:',len(t)); print(t[:9000])"
+```
+
+- Path is `<project-slug>/<session-id>/subagents/`, filename `agent-a<agent-name>-<hash>.jsonl`.
+  The `a` prefix before the name is part of the format.
+- **The session-id is the conversation's own session, NOT the suffix on the `agent_id` handle** —
+  those differ, and assuming they match sends you to a directory that doesn't exist.
+- `find` needs `-maxdepth 3`+ to reach these; a shallower search returns nothing and looks like
+  proof the agent produced nothing. It isn't.
+- Reports run long (30k chars is normal). Slice with `t[9000:20000]` etc. — never `Read` the
+  `.jsonl` whole; it is the full conversation and will blow up context.
+- Pinging the idle agent via `SendMessage` does not work — it won't consume its mailbox. Go
+  straight to the transcript.
 
 ## Inline-fix gate (ALL must hold; else `gh issue create`) p.s. REMINDER - DONT FORGET ABOUT THIS. also, if issue - check & include relevant tags
 **Scope: nits only.** Blockers (failing tests, spec / ADR violations, security regressions, hard-gate breaches) fix on the branch regardless of size — gate doesn't apply.

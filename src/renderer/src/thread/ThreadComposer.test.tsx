@@ -18,8 +18,9 @@
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushMicrotasks } from '../../../../tests/flush'
 import { installMockApi, renderWithProviders } from '../../../../tests/setup'
 import type { Attachment } from '../../../shared/types'
 import { ThreadComposer } from './ThreadComposer'
@@ -107,7 +108,7 @@ describe('ThreadComposer', () => {
     expect(onPost).not.toHaveBeenCalled()
   })
 
-  it('(c) submitting clears draft and chip resumes live-tracking', () => {
+  it('(c) submitting clears draft and chip resumes live-tracking', async () => {
     const onPost = vi.fn()
     const { rerender } = render(<ThreadComposer {...makeProps({ livePlayhead: 50, onPost })} />)
 
@@ -118,8 +119,11 @@ describe('ThreadComposer', () => {
 
     // After submit the textarea should be empty and chip should resume live-tracking.
     // Re-render with a new livePlayhead; chip should update.
+    // waitFor because `submit()` awaits onPost before releasing the freeze state
+    // (clear-on-success), so the chip resumes tracking ≥1 microtask after keydown.
+    // @see docs/plans/v0.8.2-composer-dataloss.md §2.3 A0
     rerender(<ThreadComposer {...makeProps({ livePlayhead: 90, onPost })} />)
-    expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:30')
+    await waitFor(() => expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:30'))
   })
 
   it('(d) Camera button calls onCapture when provided', () => {
@@ -303,7 +307,7 @@ describe('ThreadComposer', () => {
     expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:15')
   })
 
-  it('(f) manual chip value resets to live tracking after submit', () => {
+  it('(f) manual chip value resets to live tracking after submit', async () => {
     const onPost = vi.fn()
     const { rerender } = render(<ThreadComposer {...makeProps({ livePlayhead: 30, onPost })} />)
 
@@ -318,9 +322,10 @@ describe('ThreadComposer', () => {
     fireEvent.change(textarea, { target: { value: 'a note' } })
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
 
-    // After submit, re-render with a new livePlayhead — chip must resume live tracking
+    // After submit, re-render with a new livePlayhead — chip must resume live tracking.
+    // Post-await, like the (c) submit test above.
     rerender(<ThreadComposer {...makeProps({ livePlayhead: 99, onPost })} />)
-    expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:39')
+    await waitFor(() => expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:39'))
   })
 
   // ── v0.7 Task 4.2: per-thread draft persistence ──────────────────────────
@@ -340,22 +345,29 @@ describe('ThreadComposer', () => {
     expect(onDraftChange).toHaveBeenCalledWith('hi there')
   })
 
-  it('(t4.2) calls onDraftClear when a note is posted via Enter (clear-and-cancel)', () => {
+  it('(t4.2) calls onDraftClear when a note is posted via Enter (clear-and-cancel)', async () => {
     const onDraftClear = vi.fn()
     render(<ThreadComposer {...makeProps({ livePlayhead: 50, onDraftClear })} />)
     const textarea = screen.getByRole('textbox')
     fireEvent.focus(textarea)
     fireEvent.change(textarea, { target: { value: 'note text' } })
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
-    expect(onDraftClear).toHaveBeenCalledOnce()
+    // Fires on the success branch, after `submit()` awaits onPost — post-await.
+    await waitFor(() => expect(onDraftClear).toHaveBeenCalledOnce())
   })
 
-  it('(t4.2) does NOT call onDraftClear on a truly-empty no-op submit', () => {
+  it('(t4.2) does NOT call onDraftClear on a truly-empty no-op submit', async () => {
     const onDraftClear = vi.fn()
     render(<ThreadComposer {...makeProps({ livePlayhead: 50, onDraftClear })} />)
     const textarea = screen.getByRole('textbox')
     // No draft, no pending frame → submit is a no-op.
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
+    // A NEGATIVE must not use waitFor — it resolves on its first passing tick and
+    // can only prove "eventually true", never "never happens". `flushMicrotasks`
+    // yields a full macrotask turn so the whole microtask queue drains first; a
+    // wrongly-deferred onDraftClear would then already have run.
+    // @see tests/flush.ts · docs/plans/v0.8.2-composer-dataloss.md §2.3 A0
+    await flushMicrotasks()
     expect(onDraftClear).not.toHaveBeenCalled()
   })
 
@@ -509,5 +521,247 @@ describe('ThreadComposer pendingFrame behavior', () => {
     // Advancing livePlayhead must not change the chip while frame is pending
     rerender(ui(200))
     expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:39')
+  })
+})
+
+// ── v0.8.2 A4: the clear-on-success contract ─────────────────────────────────
+// A composer never clears its own draft optimistically. `submit()` awaits
+// `onPost` and defers ALL FIVE post-submit updates — `setDraft('')`,
+// `onDraftClear()`, `setManuallyFrozen(false)`, `setAnchorless(false)` and
+// `setFocused(false)` — to the resolve branch. The tests below pin one deferral
+// each.
+//
+// @issue utof/linsae#176 · @see adrs/0063-composer-clears-on-success.md
+
+/**
+ * An `onPost` the test settles by hand, so assertions can run WHILE the post is
+ * in flight. `resolve!` carries a definite-assignment assertion: the Promise
+ * executor runs synchronously, but TS's control-flow analysis cannot see that
+ * and would otherwise narrow the binding to `null` forever.
+ * Mirrors `SimpleComposer.test.tsx`'s `pendingSubmit` — the two composers
+ * implement one contract, so their tests share a shape.
+ */
+function pendingPost() {
+  let resolve!: () => void
+  const onPost = vi.fn(
+    (_args: { body: string; t: number | null }) =>
+      new Promise<void>((r) => {
+        resolve = r
+      }),
+  )
+  return { onPost, settle: () => resolve() }
+}
+
+/** The real throw site: a duplicate body-derived slug (`save-note.ts:164`). */
+function rejectingPost() {
+  return vi.fn(async (_args: { body: string; t: number | null }) => {
+    throw new Error('a note named "note-text" already exists')
+  })
+}
+
+/** Rejects the first post, resolves the second — the edit-and-retry path. */
+function failThenSucceedPost() {
+  const onPost = vi.fn<(args: { body: string; t: number | null }) => Promise<void>>()
+  onPost.mockRejectedValueOnce(new Error('a note named "note-text" already exists'))
+  onPost.mockResolvedValueOnce(undefined)
+  return onPost
+}
+
+describe('ThreadComposer clear-on-success (A4)', () => {
+  it('keeps the draft AND the persisted entry when onPost rejects (#176)', async () => {
+    const onPost = rejectingPost()
+    const onDraftClear = vi.fn()
+    render(<ThreadComposer {...makeProps({ livePlayhead: 50, onPost, onDraftClear })} />)
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.focus(ta)
+    fireEvent.change(ta, { target: { value: 'note text' } })
+    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+
+    await flushMicrotasks()
+    expect(onPost).toHaveBeenCalledWith({ body: 'note text', t: 50 })
+    // (a) the on-screen text survives …
+    expect(ta.value).toBe('note text')
+    // (b) … and so does the durable `composer.draft.thread.v1` entry. Dropping
+    // it is the half of #176 that survives a restart, so this is a hard
+    // negative — flush, never waitFor.
+    expect(onDraftClear).not.toHaveBeenCalled()
+  })
+
+  it('a retry after a rejected post anchors at the SAME t (frozenAt survives)', async () => {
+    const onPost = failThenSucceedPost()
+    const { rerender } = render(<ThreadComposer {...makeProps({ livePlayhead: 50, onPost })} />)
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.focus(ta) // freezes the anchor at 0:50
+    fireEvent.change(ta, { target: { value: 'note text' } })
+    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+    await flushMicrotasks()
+
+    // The video kept playing while the post was failing.
+    rerender(<ThreadComposer {...makeProps({ livePlayhead: 90, onPost })} />)
+    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+    await flushMicrotasks()
+
+    expect(onPost).toHaveBeenCalledTimes(2)
+    expect(onPost.mock.calls[0]?.[0]).toEqual({ body: 'note text', t: 50 })
+    // Not 90. The user anchored at 0:50; a failed send must not move the anchor.
+    expect(onPost.mock.calls[1]?.[0]).toEqual({ body: 'note text', t: 50 })
+    expect(ta.value).toBe('')
+  })
+
+  it('a rejected post leaves a restored draft ANCHORLESS — the retry still posts t: null', async () => {
+    // `setAnchorless(false)` deferred: the original timestamp was never
+    // persisted, so a retry must not invent one from the mount-time playhead.
+    const onPost = failThenSucceedPost()
+    render(
+      <ThreadComposer {...makeProps({ livePlayhead: 30, initialDraft: 'restored', onPost })} />,
+    )
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+    await flushMicrotasks()
+
+    // Still anchorless: the chip is still the "+ time" affordance, not a clock.
+    expect(screen.getByRole('button', { name: /add anchor time/i })).toBeInTheDocument()
+    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+    await flushMicrotasks()
+
+    expect(onPost).toHaveBeenCalledTimes(2)
+    expect(onPost.mock.calls[1]?.[0]).toEqual({ body: 'restored', t: null })
+  })
+
+  it('a rejected post leaves the composer FOCUSED — the chip does not resume live-tracking', async () => {
+    const onPost = rejectingPost()
+    const { rerender } = render(<ThreadComposer {...makeProps({ livePlayhead: 50, onPost })} />)
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.focus(ta)
+    fireEvent.change(ta, { target: { value: 'note text' } })
+    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+    await flushMicrotasks()
+
+    // `focused` only becomes observable once `hasDraft` goes false — `chipTime`
+    // live-tracks exactly when `!focused && !hasDraft`. So the user gives up on
+    // the text and deletes it WITHOUT blurring. With `focused` preserved the
+    // chip re-freezes ONCE, at the moment the user cleared the text; a stray
+    // `setFocused(false)` on the failure path would leave it free-running with
+    // the playhead, silently re-anchoring whatever the user types next.
+    fireEvent.change(ta, { target: { value: '' } })
+    rerender(<ThreadComposer {...makeProps({ livePlayhead: 90, onPost })} />)
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('0:50')
+  })
+
+  it('a rejected post keeps the MANUAL chip time (manuallyFrozen survives)', async () => {
+    const onPost = rejectingPost()
+    render(<ThreadComposer {...makeProps({ livePlayhead: 30, onPost })} />)
+    // Pin the anchor to 1:15 by hand.
+    fireEvent.click(screen.getByTestId('composer-chip'))
+    fireEvent.change(screen.getByTestId('chip-time-input'), { target: { value: '1:15' } })
+    fireEvent.keyDown(screen.getByTestId('chip-time-input'), { key: 'Enter' })
+
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.focus(ta)
+    fireEvent.change(ta, { target: { value: 'note text' } })
+    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+    await flushMicrotasks()
+
+    // Deleting the failed text must not cost the user their hand-picked anchor:
+    // with `manuallyFrozen` still true the freeze effect early-returns
+    // (ThreadComposer.tsx §freeze/resume), so frozenAt stays 75. A stray
+    // `setManuallyFrozen(false)` would let it re-capture livePlayhead (0:30) the
+    // moment `hasDraft` flips.
+    fireEvent.change(ta, { target: { value: '' } })
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:15')
+  })
+
+  it('clears the draft and the persisted entry ONLY once onPost has resolved', async () => {
+    // Deliberately gated on a promise the test settles by hand. A test that
+    // mocks onPost to RESOLVE immediately and asserts "the draft cleared" passes
+    // against the buggy optimistic clear and the fixed one identically — it is
+    // worthless. @see docs/plans/v0.8.2-composer-dataloss.md §7
+    const { onPost, settle } = pendingPost()
+    const onDraftClear = vi.fn()
+    const { rerender } = render(
+      <ThreadComposer {...makeProps({ livePlayhead: 50, onPost, onDraftClear })} />,
+    )
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.focus(ta)
+    fireEvent.change(ta, { target: { value: 'note text' } })
+    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+
+    await flushMicrotasks()
+    // Still in flight — nothing has been cleared. The optimistic clear failed
+    // exactly here: it discarded all five on the same stack as the keydown.
+    expect(ta.value).toBe('note text')
+    expect(onDraftClear).not.toHaveBeenCalled()
+
+    settle()
+    await flushMicrotasks()
+    expect(ta.value).toBe('')
+    expect(onDraftClear).toHaveBeenCalledOnce()
+    // …and the freeze state went with it: the chip live-tracks again.
+    rerender(<ThreadComposer {...makeProps({ livePlayhead: 90, onPost, onDraftClear })} />)
+    expect(screen.getByTestId('composer-chip')).toHaveTextContent('1:30')
+  })
+
+  it('ignores a second submit while the first is still in flight (double-submit guard)', async () => {
+    // Enter held down, or a double-click on the send button: the second
+    // `notes.create` for the same body is itself a duplicate-slug throw.
+    const { onPost, settle } = pendingPost()
+    render(<ThreadComposer {...makeProps({ livePlayhead: 50, onPost })} />)
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.focus(ta)
+    fireEvent.change(ta, { target: { value: 'note text' } })
+    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+    fireEvent.click(screen.getByRole('button', { name: /post note/i }))
+
+    // Fire-then-flush-then-count. `waitFor(() => expect(fn).toHaveBeenCalledOnce())`
+    // could NOT guard this: it resolves at the first tick where the count is 1,
+    // so a second call landing later stays invisible.
+    await flushMicrotasks()
+    expect(onPost).toHaveBeenCalledTimes(1)
+
+    settle()
+    await flushMicrotasks()
+    expect(ta.value).toBe('')
+  })
+
+  it('accepts a retry after a rejected post (the in-flight flag is released)', async () => {
+    const onPost = failThenSucceedPost()
+    const onDraftClear = vi.fn()
+    render(<ThreadComposer {...makeProps({ livePlayhead: 50, onPost, onDraftClear })} />)
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.focus(ta)
+    fireEvent.change(ta, { target: { value: 'note text' } })
+    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+    await flushMicrotasks()
+
+    // Without the `finally`, `inFlight` stays true here and the composer is dead
+    // for the rest of this mount — text preserved, but permanently unpostable
+    // behind an error the user cannot act on. Arguably worse than #176 itself.
+    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+    await flushMicrotasks()
+
+    expect(onPost).toHaveBeenCalledTimes(2)
+    expect(ta.value).toBe('')
+    expect(onDraftClear).toHaveBeenCalledOnce()
+  })
+
+  it('keeps keystrokes typed WHILE the post is in flight (no clobber)', async () => {
+    const { onPost, settle } = pendingPost()
+    const onDraftClear = vi.fn()
+    render(<ThreadComposer {...makeProps({ livePlayhead: 50, onPost, onDraftClear })} />)
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.focus(ta)
+    fireEvent.change(ta, { target: { value: 'note text' } })
+    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+    // The user keeps typing during the in-flight create.
+    fireEvent.change(ta, { target: { value: 'note text — and one more thing' } })
+
+    settle()
+    await flushMicrotasks()
+    // A bare `setDraft('')` after the await would discard these keystrokes.
+    expect(ta.value).toBe('note text — and one more thing')
+    // And the persisted entry must NOT be dropped: it still holds live text, so
+    // clearing it would diverge the durable draft from what is on screen.
+    expect(onDraftClear).not.toHaveBeenCalled()
   })
 })

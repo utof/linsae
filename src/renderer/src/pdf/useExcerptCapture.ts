@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { clientRectsToPdfRect } from './clientRectsToPdfRect'
 import { useExcerptStore } from './excerptState'
+import { locateQuoteInPageText } from './locateQuoteInPageText'
 import type { PageRegistryEntry } from './PdfPage'
 
 interface UseExcerptCaptureArgs {
@@ -106,14 +107,31 @@ export function useExcerptCapture({ pdfId, registryRef, scrollEl }: UseExcerptCa
         // (e.g. usePdfDocument's loadingTask.destroy()); degrade to no prefix/suffix
         // rather than leak an unhandled rejection from this async listener.
         .catch(() => '')
-      // A cross-page quote cannot occur in the anchor page's own text, so `idx` is -1
-      // and the guards below omit all four fields — deliberate, honest degradation
-      // (ADR 0058). Unchanged from v0.6 by design; no new branch.
-      const idx = fullText.indexOf(text)
-      const prefix = idx > 0 ? fullText.slice(Math.max(0, idx - 32), idx) : ''
-      const suffix = idx >= 0 ? fullText.slice(idx + text.length, idx + text.length + 32) : ''
-      const textStart = idx >= 0 ? idx : undefined
-      const textEnd = idx >= 0 ? idx + text.length : undefined
+      // `null` now means the quote is GENUINELY ABSENT from this page's text — in
+      // practice a cross-page selection, whose tail lives on page N+1. The guards below
+      // then omit all four fields: deliberate, honest degradation (ADR 0058).
+      //
+      // Through v0.8 this was `fullText.indexOf(text)`, and the comment here said the
+      // same thing — which is why #189 went unnoticed for two milestones. `indexOf`
+      // ALSO returned -1 for every MULTI-LINE selection on a single page, because
+      // `sel.toString()` joins visual lines with `\n` while `fullText` joins
+      // `getTextContent()` items with a space. That is a failing path this comment made
+      // look intended. The helper matches on a whitespace-insensitive basis and reports
+      // RAW offsets into `fullText`, so only real absence reaches the `null` branch and
+      // the offset basis every persisted locator uses is unchanged.
+      //
+      // Note the asymmetry it introduces: the helper TRIMS the quote before matching,
+      // so `[textStart, textEnd)` spans the trimmed text while `quote` below stores
+      // `sel.toString()` verbatim. A selection ending on a line break therefore has
+      // `quote.length !== textEnd - textStart`. Both are correct; they measure
+      // different strings, and no reader combines them (ADR 0059 — `rect` is primary).
+      // NOT `range` — that name is already the DOM Range this selection came from
+      // (`:51`), and rebinding it here would be a redeclaration in the same block.
+      const quoteRange = locateQuoteInPageText(fullText, text)
+      const prefix = quoteRange
+        ? fullText.slice(Math.max(0, quoteRange.start - 32), quoteRange.start)
+        : ''
+      const suffix = quoteRange ? fullText.slice(quoteRange.end, quoteRange.end + 32) : ''
       set({
         text,
         locator: {
@@ -129,8 +147,13 @@ export function useExcerptCapture({ pdfId, registryRef, scrollEl }: UseExcerptCa
           quote: text,
           prefix,
           suffix,
-          ...(textStart !== undefined ? { textStart } : {}),
-          ...(textEnd !== undefined ? { textEnd } : {}),
+          // One spread, not two: the pair is a single decision ("located, or not"),
+          // and two independent `!== undefined` checks could be desynchronised by a
+          // later edit into a locator carrying a start without an end. The spread
+          // itself is load-bearing under `exactOptionalPropertyTypes` — writing
+          // `textStart,` directly is `error TS2375`, because absent and
+          // present-undefined are different types here.
+          ...(quoteRange ? { textStart: quoteRange.start, textEnd: quoteRange.end } : {}),
         },
         pdfId,
         page: pageNumber,
