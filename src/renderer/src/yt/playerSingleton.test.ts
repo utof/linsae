@@ -213,6 +213,15 @@ describe('playerSingleton cover (T10)', () => {
     // The ready timeout is left at its default here on purpose: it is orders of magnitude
     // longer than `vi.waitFor`'s window, so the timer cannot be what drops the cover below.
     const guest = await connectGuest(wv)
+    // The guest has ACKED by now — `pause()` round-trips the same port and MessagePort
+    // preserves order, so the ack was delivered and processed before this assertion. The
+    // cover must STILL be up: dropping on `ack` is the reveal-early regression that was
+    // shipped at `47a05f7` and reverted (spec N5, #65). Without this, wiring the drop to
+    // `whenAck` instead of `whenReady` passes every other assertion in this file.
+    await p.pause()
+    expect(guest.pause).toHaveBeenCalledTimes(1)
+    expect(cover.style.display).toBe('block')
+
     guest.emitReady()
 
     await vi.waitFor(() => {
@@ -257,6 +266,9 @@ describe('playerSingleton cover (T10)', () => {
     await p.load('M7lc1UVf-VE')
     await connectGuest(wv) // arms A's drop; the guest never becomes ready
 
+    // A's deadline must not have passed yet, or `load(B)`'s own raise would restore the
+    // cover and this test would pass whether or not `raiseCover` cancels anything.
+    expect(cover.style.display).toBe('block')
     await p.load('dQw4w9WgXcQ')
     // Past A's deadline, with no `dom-ready` for B yet — the cover must still be up.
     await new Promise((r) => {
