@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { dispatchWebviewEvent, fakeGuest } from '../../../../tests/yt-fake-guest'
 
-/** One recorded host→guest port transfer (the `contentWindow.postMessage` in `onDomReady`). */
+/** One recorded host→guest port transfer (the `contentWindow.postMessage` in `handshake()`). */
 type PortTransfer = { msg: unknown; port: MessagePort }
 
 /** The parts of the `<webview>` stub a test reads back. */
@@ -21,16 +21,16 @@ function stubWebview(el: HTMLElement) {
     insertCSS: vi.fn(async () => 'key'),
     setUserAgent: vi.fn(),
     // happy-dom gives an unknown element no `contentWindow`, so without this the port
-    // transfer in `onDomReady` throws into its own catch and every handshake assertion
+    // transfer in `handshake()` throws into its own catch and every handshake assertion
     // below it is vacuous.
     contentWindow: {
       postMessage: vi.fn((msg: unknown, _origin: string, transfer: Transferable[] = []) => {
         transfers.push({ msg, port: transfer[0] as MessagePort })
       }),
     },
-    // Staged for the C6 diagnostic that `onHandshakeFailed()` gains in Task 4 (spec §5.1):
-    // it reads the guest's current URL, and an unstubbed `getURL` would throw out of the
-    // handshake instead of letting T4/T11 assert. Nothing calls it at this commit.
+    // Read by the C6 diagnostic in `onHandshakeFailed()` (spec §5.1): it names the guest's
+    // current URL, and an unstubbed `getURL` would throw out of the handshake instead of
+    // letting T4 assert.
     getURL: vi.fn(() => 'https://www.youtube.com/watch?v=M7lc1UVf-VE'),
     transfers,
   })
@@ -87,19 +87,61 @@ function openGuest(...args: Parameters<typeof fakeGuest>): ReturnType<typeof fak
 }
 
 /**
+ * Dispatch `dom-ready` and resolve the ONE port transfer it produces — `{ msg: token,
+ * port }`, the raw material every handshake test works from.
+ *
+ * Indexed from a watermark rather than from 0 because the token is per-attempt (spec §5.5):
+ * a test that drives a second document must read the second transfer's token, not the first.
+ *
+ * Polls fast, and counts `>=` rather than `===`, because the handshake RETRIES on its own: a
+ * caller that means to answer this attempt has to be handed the port before its deadline
+ * passes, and a caller that doesn't must not be tripped up by attempt 2 landing mid-poll.
+ */
+async function domReadyTransfer(wv: StubbedWebview): Promise<PortTransfer> {
+  const before = wv.transfers.length
+  dispatchWebviewEvent(wv, 'dom-ready')
+  await vi.waitFor(
+    () => {
+      expect(wv.transfers.length).toBeGreaterThanOrEqual(before + 1)
+    },
+    { interval: 10 },
+  )
+  return wv.transfers[before]!
+}
+
+/**
  * Drive one host→guest handshake far enough that a guest is listening: dispatch
  * `dom-ready`, wait for the host's port transfer, and open a fake guest echoing the token
  * the host sent. The caller decides whether that guest ever emits `ready` — the two cases
  * T10 separates.
+ *
+ * Returning here does NOT mean the channel is published: the host still has to see the ack
+ * (spec §5.5 step 6). Callers that go on to invoke must `awaitPublished` first.
  */
 async function connectGuest(wv: StubbedWebview): Promise<ReturnType<typeof fakeGuest>> {
-  const before = wv.transfers.length
-  dispatchWebviewEvent(wv, 'dom-ready')
-  await vi.waitFor(() => {
-    expect(wv.transfers.length).toBe(before + 1)
-  })
-  const t = wv.transfers[before]!
+  const t = await domReadyTransfer(wv)
   return openGuest(t.port, { ack: String(t.msg) })
+}
+
+/**
+ * Block until the host has PUBLISHED the channel (spec §5.5 step 6), then hand the guest
+ * back with its call counters at zero.
+ *
+ * `rpc` is module-private on purpose (spec §8.1), so the only host-side observable for
+ * "published" is that an invoke round-trips to the guest — and polling that means calling
+ * `pause()` an indeterminate number of times. Hence the `mockClear()`: every caller below
+ * counts pauses afterwards, and a count that depends on how many times `vi.waitFor` happened
+ * to poll is not an assertion.
+ */
+async function awaitPublished(
+  p: ReturnType<typeof getPlayer>,
+  guest: ReturnType<typeof fakeGuest>,
+): Promise<void> {
+  await vi.waitFor(async () => {
+    await p.pause()
+    expect(guest.pause).toHaveBeenCalled()
+  })
+  guest.pause.mockClear()
 }
 
 afterEach(() => {
@@ -167,6 +209,7 @@ describe('playerSingleton (webview)', () => {
     // Round-trips a real invoke to prove the transferred port is LIVE, not merely
     // recorded. `pause()` is the spec's observable for a published channel (§8.1) —
     // `rpc` itself stays module-private on purpose.
+    await awaitPublished(p, guest)
     await p.pause()
     expect(guest.pause).toHaveBeenCalledTimes(1)
 
@@ -213,8 +256,9 @@ describe('playerSingleton cover (T10)', () => {
     // The ready timeout is left at its default here on purpose: it is orders of magnitude
     // longer than `vi.waitFor`'s window, so the timer cannot be what drops the cover below.
     const guest = await connectGuest(wv)
-    // The guest has ACKED by now — `pause()` round-trips the same port and MessagePort
-    // preserves order, so the ack was delivered and processed before this assertion. The
+    await awaitPublished(p, guest)
+    // The guest has ACKED by now — `awaitPublished` proved it, since the host publishes on
+    // nothing else, and `pause()` round-trips the same port afterwards. The
     // cover must STILL be up: dropping on `ack` is the reveal-early regression that was
     // shipped at `47a05f7` and reverted (spec N5, #65). Without this, wiring the drop to
     // `whenAck` instead of `whenReady` passes every other assertion in this file.
@@ -275,5 +319,139 @@ describe('playerSingleton cover (T10)', () => {
       setTimeout(r, 400)
     })
     expect(cover.style.display).toBe('block')
+  })
+})
+
+/**
+ * T1, T4, T5, T6 (spec §8.2) — the #213 half: `rpc` is non-null IFF the guest document that
+ * is currently committed has acknowledged the channel (contract C1).
+ *
+ * Every assertion here is made through `pause()`. `rpc` stays module-private (spec §8.1), and
+ * an invoke that reaches a given fake guest is the only proof that THAT guest owns the
+ * channel — a port that was merely transferred proves nothing, which is precisely the bug.
+ */
+describe('playerSingleton handshake (T1, T4, T5, T6)', () => {
+  /** `console.warn` calls that are the C6 diagnostic, and not one of the other warners. */
+  function diagnostics(warn: { mock: { calls: unknown[][] } }): unknown[][] {
+    // Filtered by prefix on purpose: `safeExec` and `safeInsertCSS` warn on the same console
+    // in the same handler, so an unfiltered spy counts the wrong calls (spec §8.2, T4).
+    return warn.mock.calls.filter((c) => String(c[0]).startsWith('[player] handshake failed'))
+  }
+
+  it('re-arms on the second dom-ready: the newer guest owns the channel (T1)', async () => {
+    const p = getPlayer()
+    const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
+
+    const first = await connectGuest(wv)
+    await awaitPublished(p, first)
+
+    // A second committed document. On HEAD this is refused outright by `if (rpc || !wv)`,
+    // which is #213: the first document to fire `dom-ready` — a consent wall, a redirect —
+    // keeps the channel forever and the real watch page never gets one.
+    const second = await connectGuest(wv)
+    await awaitPublished(p, second)
+
+    expect(wv.transfers.length).toBe(2)
+    expect(wv.transfers[0]!.port).not.toBe(wv.transfers[1]!.port)
+    // Each attempt carries its own token, so a late ack from the first cannot publish (C4).
+    expect(wv.transfers[0]!.msg).not.toBe(wv.transfers[1]!.msg)
+
+    // The live channel is the SECOND one. Asserting only that the second guest hears the
+    // invoke would pass while both are hooked; the zero on the first is what pins "never
+    // survives its document" (C1).
+    await p.pause()
+    expect(second.pause).toHaveBeenCalledTimes(1)
+    expect(first.pause).toHaveBeenCalledTimes(0)
+  })
+
+  it('gives up after maxAttempts and says so exactly once when the guest never acks (T4)', async () => {
+    // Shrunken so the three attempts plus their backoffs are ~45ms rather than ~9s. Restored
+    // in `afterEach` — real timers, never `vi.useFakeTimers()` (spec §8.1).
+    handshakeConfig.ackTimeoutMs = 10
+    handshakeConfig.retryBackoffMs = 5
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const p = getPlayer()
+    const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
+
+    dispatchWebviewEvent(wv, 'dom-ready')
+
+    await vi.waitFor(() => {
+      expect(diagnostics(warn).length).toBe(1)
+    })
+    // Settle past another whole attempt's worth of wall clock: "exactly one" is the claim,
+    // and `vi.waitFor` returns the instant the count first reaches 1.
+    await new Promise((r) => {
+      setTimeout(r, 60)
+    })
+    expect(diagnostics(warn).length).toBe(1)
+    expect(wv.executeJavaScript).toHaveBeenCalledTimes(handshakeConfig.maxAttempts)
+    expect(wv.transfers.length).toBe(handshakeConfig.maxAttempts)
+    // C6: the diagnostic has to name the document it gave up on, or it cannot be acted on.
+    // Joined rather than indexed so it holds whether the URL is interpolated or a second arg.
+    expect(diagnostics(warn)[0]!.join(' ')).toContain('https://www.youtube.com/watch?v=M7lc1UVf-VE')
+    // The whole point of `.catch()`ing the handshake rather than `void`-ing it (plan item 7):
+    // a throw inside it must not reach the runner as an unhandled rejection.
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes('handshake threw')).length).toBe(0)
+
+    // Exhausted means UNPUBLISHED, not "published to a guest that never spoke": a guest that
+    // only now starts listening on the first transferred port hears nothing.
+    const guest = openGuest(wv.transfers[0]!.port, { ack: false })
+    await p.pause()
+    expect(guest.pause).not.toHaveBeenCalled()
+  })
+
+  it('drops an ack that echoes the wrong token, and publishes on the right one (T5)', async () => {
+    // Long enough that the stale ack below reaches attempt 1 while it is still LIVE — an ack
+    // posted after its candidate was discarded would land on a closed port and this test
+    // would pass no matter what `whenAck` did with the token.
+    handshakeConfig.ackTimeoutMs = 200
+    handshakeConfig.retryBackoffMs = 5
+    const p = getPlayer()
+    const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
+
+    const t0 = await domReadyTransfer(wv)
+    // Answers on the wire, but echoes a token this attempt never sent — the shape of an ack
+    // from a superseded attempt or a document that has already gone away (contract C4).
+    const stale = openGuest(t0.port, { ack: `${String(t0.msg)}-superseded` })
+
+    // The attempt must run out its deadline and RETRY, which is the observable that the ack
+    // was refused. Asserting `stale.pause` alone here would be an assertion into an empty
+    // window — nothing would have happened yet either way.
+    const t1 = await vi.waitFor(() => {
+      expect(wv.transfers.length).toBe(2)
+      return wv.transfers[1]!
+    })
+    await p.pause()
+    expect(stale.pause).not.toHaveBeenCalled()
+
+    // The next attempt echoes correctly and publishes, so this is not merely a test that the
+    // handshake never publishes at all.
+    const fresh = openGuest(t1.port, { ack: String(t1.msg) })
+    await awaitPublished(p, fresh)
+    await p.pause()
+    expect(fresh.pause).toHaveBeenCalledTimes(1)
+    expect(stale.pause).not.toHaveBeenCalled()
+  })
+
+  it('does not publish on the port transfer — only on the ack that follows it (T6)', async () => {
+    const p = getPlayer()
+    const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
+
+    // Everything a channel needs EXCEPT the ack: the runtime is injected, the port is
+    // transferred, and a guest is listening on the far end of it. HEAD would have published
+    // before any of that (`rpc = createRpc(port1)` ahead of both), which is #213's narrow
+    // half — the guest swaps documents in this window and the port is orphaned.
+    const t = await domReadyTransfer(wv)
+    const guest = openGuest(t.port, { ack: false })
+    await p.pause()
+    expect(guest.pause).not.toHaveBeenCalled()
+
+    // The one missing fact, supplied by hand rather than at construction so that the "before"
+    // window above is real and not a race.
+    t.port.postMessage({ t: 'ack', token: String(t.msg) })
+
+    await awaitPublished(p, guest)
+    await p.pause()
+    expect(guest.pause).toHaveBeenCalledTimes(1)
   })
 })

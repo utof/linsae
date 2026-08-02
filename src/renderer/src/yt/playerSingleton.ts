@@ -37,6 +37,8 @@ interface WebviewElement extends HTMLElement {
   insertCSS(css: string): Promise<string>
   removeInsertedCSS(key: string): Promise<void>
   contentWindow: Window
+  /** The guest's current URL — the payload of the C6 diagnostic (spec §5.1). */
+  getURL(): string
 }
 
 /** The extra (non-Player) members the singleton exposes. */
@@ -52,8 +54,20 @@ type PlayerInstance = Player & {
   toggleFullscreen(): void
 }
 
-/** Fixed nonce for the host→guest port transfer (spec §4.1). Not secret; just unique. */
+/**
+ * Stem of the host→guest handshake token (spec §4.1). Not secret; just unique.
+ *
+ * Not the gate on its own any more: each attempt sends `${NONCE}:${seq}` so that an ack can
+ * be matched to the attempt that is still current, and a late one from a superseded attempt
+ * or a dead document is inert rather than publishing a channel (contract C4, spec §5.5).
+ */
 const NONCE = 'mx-port-7f3a9'
+
+/**
+ * Pause the guest's <video> without the RPC, for the window where there is no channel to
+ * invoke on (spec §5.9). Same selector as `play()`'s snippet; no user gesture needed.
+ */
+const PAUSE_JS = "var v=document.querySelector('#movie_player video');if(v){v.pause();}"
 
 /**
  * Timing + retry bounds for the guest handshake, exported as a MUTABLE object so tests can
@@ -66,9 +80,10 @@ const NONCE = 'mx-port-7f3a9'
  * change** — a shrunk timeout left behind is visible to every later test in the file, and
  * under `isolate: false` to later files too.
  *
- * Only `readyTimeoutMs` has a consumer at this commit (the cover timer). The rest are
- * specified here whole because the handshake rewrite they bound lands in the next task and
- * splitting the object across two commits would leave the spec's §5.1 half-true in both.
+ * `armWatchdogMs` is the one field with no consumer at this commit — the navigation watchdog
+ * it bounds lands with the `did-start-navigation` listener (spec §5.3). The object is
+ * specified whole because splitting it across commits would leave the spec's §5.1 half-true
+ * in both.
  *
  * @see docs/specs/v0.8.3-player-transport.md §5.1
  * @issue utof/linsae#213
@@ -89,7 +104,22 @@ let cover: HTMLDivElement | null = null
 let spinner: HTMLDivElement | null = null
 // Key returned by the last CLEAN_CSS insertCSS, so setYoutubeChrome can removeInsertedCSS it.
 let cssKey: string | null = null
+// PUBLISHED: acked by the guest document that is currently committed, and by contract C1
+// non-null on no other terms. Everything below is what keeps that true (spec §5.1).
 let rpc: Rpc | null = null
+// Half-built: a channel whose port has been transferred but whose ack has not arrived. Held
+// in module state rather than only in `handshake()`'s closure so `teardown()` can destroy it
+// — otherwise a candidate outlives the document it was built for, holding an open port.
+let pendingRpc: Rpc | null = null
+// Monotonic; names the attempt that is current. Every resume point in `handshake()` compares
+// its own captured `seq` against this, which is how a superseded attempt learns it lost (C4).
+let handshakeSeq = 0
+// Retries within the CURRENT document — reset by `teardown()`, so `maxAttempts` is spent per
+// document rather than per app run (spec §5.5).
+let attempts = 0
+// The C6 watchdog for a navigation that starts and never commits (spec §5.3). Cleared by
+// `teardown()`; armed by the `did-start-navigation` listener that owns it.
+let armWatchdog = 0
 // The bounded unconditional cover drop (spec §5.6). `window.setTimeout` deliberately:
 // the DOM overload returns a number, Node's returns a NodeJS.Timeout, and this file is
 // typechecked against both libs (see the same note in `NoteBubble.tsx`).
@@ -151,6 +181,20 @@ function applyState(f: VideoFlags & { currentTime: number; duration: number }): 
     })
     refreshSpinner()
   }
+}
+
+/**
+ * Drop the value cache back to "no guest has spoken yet" (#211 L1, spec §5.2 step 4).
+ *
+ * Deliberately does NOT notify `stateCbs`, and that is not an oversight: React consumers keep
+ * the previous `state` until a real guest event arrives. It is safe because the guest's
+ * `flags()` hard-codes `ready: true` (`inject/youtube-guest.ts`), so `deriveState` can never
+ * return `'unstarted'` from a guest event — the reset value cannot collide with the incoming
+ * video's first real state. Notifying here would instead flash every video change through a
+ * synthetic `'unstarted'` that no guest ever sent.
+ */
+function resetCache(): void {
+  cache = { currentTime: 0, duration: null, last: 'unstarted' }
 }
 
 /** Inject the spin keyframe into the HOST document once (the wrapper lives in host <body>). */
@@ -251,38 +295,186 @@ function syncBounds(): void {
   syncRaf = requestAnimationFrame(syncBounds)
 }
 
+// ── the guest handshake (spec §5.2 / §5.5) ───────────────────────────────────
+
 /**
- * Called on 'dom-ready': inject the guest runtime and transfer the port.
- * Guard: if rpc is already live (dom-ready can fire more than once across SPA nav),
- * skip re-initialisation to avoid double-hooking.
+ * Invalidate every piece of guest-derived state — the single point where contract C2 is
+ * enforced (spec §5.2). Called wherever the current document is going or already gone:
+ * `dom-ready` (§5.4, a NEW one has committed, so the old channel is dead by definition) and
+ * `destroyPlayer()` (§5.8).
+ *
+ * The order is load-bearing. `handshakeSeq++` goes first, so the instant this returns every
+ * attempt still in flight is stale by construction and none of them can publish — each
+ * compares its captured `seq` at every resume point. Then both channels are destroyed and
+ * nulled: `pendingRpc` too, because a candidate whose ack never arrives would otherwise hold
+ * an open port for the rest of the process.
+ *
+ * `handshake()` can be suspended between building a candidate and registering it, so a
+ * candidate created AFTER this ran would survive it — which is why §5.5 step 2 re-checks
+ * `seq` immediately after assigning `pendingRpc` rather than trusting this sweep alone.
+ *
+ * Both timers are cleared here rather than at the call sites, so no caller can forget one: a
+ * timer that outlives the state it was armed for fires into someone else's document, and in
+ * the suite it crosses `afterEach` into the next test's world (spec §5.8). The cover itself
+ * is left in whatever state it is in — `load()` raises it explicitly, and `dom-ready` re-arms
+ * the drop straight after calling this.
  */
-async function onDomReady(): Promise<void> {
+function teardown(): void {
+  handshakeSeq++
+  attempts = 0
+  pendingRpc?.destroy()
+  pendingRpc = null
+  rpc?.destroy()
+  rpc = null
+  resetCache()
+  if (armWatchdog) {
+    clearTimeout(armWatchdog)
+    armWatchdog = 0
+  }
+  clearCoverTimer()
+}
+
+/** Destroy an unpublished candidate and give up its claim on `pendingRpc` if it still holds it. */
+function discard(candidate: Rpc): void {
+  candidate.destroy()
+  if (pendingRpc === candidate) pendingRpc = null
+}
+
+/**
+ * The C6 diagnostic: exactly one `console.warn`, carrying the URL of the document the
+ * handshake gave up on. Without it the player rests in a silent dead state — which is how
+ * #213 survived two milestones, since `play()` bypasses the RPC and the chrome-hiding CSS
+ * re-fires outside the handshake, so a dead channel looks like a working player.
+ */
+function onHandshakeFailed(): void {
+  console.warn(
+    `[player] handshake failed after ${handshakeConfig.maxAttempts} attempts on`,
+    webview?.getURL(),
+  )
+}
+
+/**
+ * Re-enter the handshake after the backoff, unless this attempt has been superseded in the
+ * meantime.
+ *
+ * The `seq` re-check is what stops a retry from outliving its document: `teardown()` bumps
+ * `handshakeSeq`, so a timer armed by the outgoing document no-ops instead of injecting a
+ * runtime into the incoming one (or, in the suite, into the next test's webview).
+ */
+function retryLater(seq: number): void {
+  window.setTimeout(() => {
+    if (seq !== handshakeSeq) return
+    handshake().catch((e: unknown) => {
+      console.warn('[player] handshake threw', e)
+    })
+  }, handshakeConfig.retryBackoffMs)
+}
+
+/**
+ * `whenAck` raced against a deadline the caller owns (spec §5.5 step 4).
+ *
+ * The loser's timer is cancelled deliberately: `Promise.race` does not do it, and an
+ * abandoned `ackTimeoutMs` timer per attempt outlives the handshake it bounded — at three
+ * attempts a document that is already gone keeps a timer alive for seconds, and in the suite
+ * that crosses `afterEach` (spec §5.8).
+ *
+ * `false` is resolved EXPLICITLY rather than falling out as `undefined`: `whenAck` never
+ * resolves `false` (see `rpc.ts`), so the `false` arm of this race is always this timer, and
+ * an implicit `undefined` would type the result as `boolean | undefined` and work by accident.
+ */
+function raceAck(candidate: Rpc, token: string): Promise<boolean> {
+  let timer = 0
+  const deadline = new Promise<boolean>((resolve) => {
+    timer = window.setTimeout(() => {
+      resolve(false)
+    }, handshakeConfig.ackTimeoutMs)
+  })
+  return Promise.race([candidate.whenAck(token), deadline]).finally(() => {
+    clearTimeout(timer)
+  })
+}
+
+/**
+ * Establish one channel with the guest document that is currently committed, and publish it
+ * ONLY once that document has acknowledged it (contract C1, spec §5.5). Retries itself up to
+ * `maxAttempts` per document; every exit either publishes, hands off to a retry, or is a
+ * superseded attempt standing down for the one that replaced it.
+ *
+ * There is no `rpc` term in the entry check, and that is the fix for #213 rather than an
+ * omission: `dom-ready` has already called `teardown()` (§5.4), so an `rpc` seen here could
+ * only belong to a document that is provably gone. HEAD's `if (rpc || !wv) return` is exactly
+ * the guard that let a consent wall's channel refuse the real watch page forever.
+ *
+ * @issue utof/linsae#213
+ */
+async function handshake(): Promise<void> {
   const wv = webview
-  if (rpc || !wv) return
+  if (!wv) return
+  if (attempts++ >= handshakeConfig.maxAttempts) return void onHandshakeFailed()
 
+  // Per-attempt, so an ack can be matched to the attempt that sent it (C4). `attempts` is
+  // bounded per document; `handshakeSeq` is monotonic for the life of the module.
+  const seq = ++handshakeSeq
+  const token = `${NONCE}:${seq}`
+
+  // 1. Inject the guest runtime, armed for this token.
+  await safeExec(guestRuntime(token))
+  if (seq !== handshakeSeq) return
+
+  // 2. Build the channel into `pendingRpc`, NEVER into `rpc` — publishing here is #213's
+  //    narrow half, where the guest swaps documents before the transfer and leaves a
+  //    non-null `rpc` holding an orphaned port.
   const { port1, port2 } = new MessageChannel()
-  rpc = createRpc(port1)
+  const candidate = createRpc(port1)
+  pendingRpc = candidate
+  // Re-checked immediately: a `teardown()` during the await above swept a `pendingRpc` this
+  // candidate did not yet exist to be, so without this line the candidate outlives the very
+  // teardown meant to kill it (spec §5.2 step 3).
+  if (seq !== handshakeSeq) return void discard(candidate)
 
-  rpc.on('state', (f) => {
+  // 3. Transfer. `contentWindow` throws when the guest has gone away, and this runs inside a
+  //    promise, so an uncaught throw here becomes an unhandled rejection.
+  try {
+    wv.contentWindow.postMessage(token, '*', [port2])
+  } catch (e) {
+    console.warn('[player] port transfer failed', e)
+    discard(candidate)
+    retryLater(seq)
+    return
+  }
+
+  // 4. Wait for the guest to acknowledge THIS attempt, bounded by our own deadline.
+  const acked = await raceAck(candidate, token)
+
+  // 5. Two conditions, deliberately NOT merged into one retry. A superseded attempt must
+  //    stand down silently: retrying it would re-arm the guest with a new token, and the
+  //    guest's `initPort` destroys its prior rpc — killing the guest end of a channel the
+  //    host has already published and leaving `rpc` non-null with a dead peer. That is
+  //    precisely the state C1 exists to make impossible.
+  if (seq !== handshakeSeq) return void discard(candidate)
+  if (!acked) {
+    discard(candidate)
+    retryLater(seq)
+    return
+  }
+
+  // 6. Publish. The cover is NOT touched here — it keys on `ready`-or-timeout and never on
+  //    `ack` (N5/C3, see `dropCover`); what moves here is only the `whenReady` hook, which
+  //    must not fire for a candidate that never becomes the channel.
+  pendingRpc = null
+  rpc = candidate
+  candidate.on('state', (f) => {
     applyState(f as VideoFlags & { currentTime: number; duration: number })
   })
-  rpc.on('time', (t) => {
+  candidate.on('time', (t) => {
     const o = t as { currentTime: number; duration: number }
     cache.currentTime = o.currentTime
     if (o.duration > 0) cache.duration = o.duration
   })
-  // The cover's `ready` half — whichever of this and `armCoverTimer`'s timer comes first
-  // wins (spec §5.6). Registered here with the `state`/`time` listeners because it belongs
-  // to the same channel and must travel with them; `whenReady()` short-circuits on a
-  // `ready` it has already seen, so attaching it late cannot miss one.
-  void rpc.whenReady().then(dropCover)
-
-  await safeExec(guestRuntime(NONCE))
-  try {
-    wv.contentWindow.postMessage(NONCE, '*', [port2])
-  } catch (e) {
-    console.warn('[player] port transfer failed', e)
-  }
+  // Registered with the `state`/`time` listeners because it belongs to the same channel and
+  // must travel with it; `whenReady()` short-circuits on a `ready` it has already seen, so
+  // attaching it at publish cannot miss one (spec §5.6).
+  void candidate.whenReady().then(dropCover)
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
@@ -342,11 +534,20 @@ export function getPlayer(): PlayerInstance {
     // YouTube UI" debug toggle is on; re-applies on every (re)load otherwise. The cover is
     // NOT dropped here — see `dropCover`.
     if (!isYoutubeChromeShown()) safeInsertCSS()
+    // A committed `dom-ready` is the DEFINITIVE signal that the previous document is gone,
+    // where `did-start-navigation` is only an early warning that may never commit — so this
+    // is the authoritative invalidation point, and it runs BEFORE the cover is re-armed
+    // (`teardown()` clears that timer) and before the handshake (spec §5.4).
+    teardown()
     // A document committed, so the cover's deadline restarts with it. Armed OUTSIDE the
     // handshake on purpose: it has to survive every way the handshake can end, including
     // the ones that end well (spec §5.6 / N6, and `armCoverTimer`).
     armCoverTimer()
-    void onDomReady()
+    // `.catch()` rather than `void`: the handshake body has several throw sites now, and an
+    // unhandled rejection fails the suite in whichever file happens to be running.
+    handshake().catch((e: unknown) => {
+      console.warn('[player] handshake threw', e)
+    })
   })
 
   wrapper.appendChild(webview)
@@ -383,7 +584,11 @@ export function getPlayer(): PlayerInstance {
       // guest alive. Pause so audio doesn't keep playing while the view is hidden.
       wrapperEl.style.left = '-99999px'
       wrapperEl.style.top = '0px'
-      void rpc?.invoke('pause')
+      // The fallback is not belt-and-braces: `rpc` is null for as long as the handshake is
+      // still running (up to `maxAttempts × ackTimeoutMs`), and closing the pane in that
+      // window used to leave the video AUDIBLE with nothing on screen (spec §5.9).
+      if (rpc) void rpc.invoke('pause')
+      else void safeExec(PAUSE_JS)
     },
 
     async load(id: string): Promise<void> {
@@ -482,11 +687,10 @@ export function setPlayerInteractive(on: boolean): void {
  * Why: called by destroy() and by usePlayer cleanup on HMR / test afterEach.
  */
 export function destroyPlayer(): void {
-  rpc?.destroy()
-  rpc = null
-  // A live cover timer outliving the singleton is a documented flake generator: it crosses
-  // `afterEach` and fires into the next test's world (spec §5.8).
-  clearCoverTimer()
+  // Both channels, both timers, the sequence, the attempt count and the cache — leaving any
+  // of them behind is the spec §5.8 hazard: an in-flight handshake still awaiting its ack
+  // outlives the singleton and lands in the next test's world.
+  teardown()
   if (syncRaf) {
     cancelAnimationFrame(syncRaf)
     syncRaf = 0
@@ -500,7 +704,6 @@ export function destroyPlayer(): void {
   videoId = null
   host = null
   lastRectKey = ''
-  cache = { currentTime: 0, duration: null, last: 'unstarted' }
   stateCbs.clear()
   instance = null
 }
