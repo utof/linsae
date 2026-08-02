@@ -315,4 +315,47 @@ describe('guestRuntime — idempotent injection, re-armable receiver (C5)', () =
       probe.dispose()
     }
   })
+
+  it('does not double the media-event listeners when a <video> is already hooked', async () => {
+    // Every other test here runs against an EMPTY document, so `findVideo()` always fails and
+    // `attachVideo()` never runs — which means the 11 media-event listeners that spec §6.1
+    // lists FIRST among C5's hazards are unobserved by all of them. Without this test, moving
+    // `findVideo()`/`attachVideo()` back out of `wireDocument()` keeps the whole file green
+    // while re-arming doubles those 11 per channel.
+    document.body.innerHTML = '<ytd-app><div id="movie_player"><video></video></div></ytd-app>'
+    const video = document.querySelector('video')!
+    const perVideo: string[] = []
+    const realAdd = video.addEventListener.bind(video)
+    vi.spyOn(video, 'addEventListener').mockImplementation(((
+      type: string,
+      fn: EventListenerOrEventListenerObject,
+      opts?: boolean | AddEventListenerOptions,
+    ) => {
+      perVideo.push(type)
+      realAdd(type, fn, opts)
+    }) as unknown as typeof video.addEventListener)
+
+    const probe = probeGuest()
+    try {
+      const a = channel()
+      inject('nonce:5')
+      deliverPort('nonce:5', a.guestPort)
+      // The guest found the <video> and hooked it — otherwise the assertion below is vacuous
+      // for the same reason the empty-document tests cannot see this path at all.
+      expect(perVideo.length).toBeGreaterThan(0)
+      const hooked = perVideo.length
+      expect(await ackWithin(a.host, 'nonce:5')).toBe(true)
+
+      const b = channel()
+      inject('nonce:6')
+      deliverPort('nonce:6', b.guestPort)
+      // C5 on the with-video path: the re-armed channel is live, and not one extra listener
+      // was attached to the same element.
+      expect(await ackWithin(b.host, 'nonce:6')).toBe(true)
+      expect(perVideo.length).toBe(hooked)
+    } finally {
+      probe.dispose()
+      document.body.innerHTML = ''
+    }
+  })
 })
