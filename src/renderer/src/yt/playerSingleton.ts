@@ -427,9 +427,12 @@ async function handshake(): Promise<void> {
   const { port1, port2 } = new MessageChannel()
   const candidate = createRpc(port1)
   pendingRpc = candidate
-  // Re-checked immediately: a `teardown()` during the await above swept a `pendingRpc` this
-  // candidate did not yet exist to be, so without this line the candidate outlives the very
-  // teardown meant to kill it (spec §5.2 step 3).
+  // Spec §5.2 step 3 / §5.5 step 2 mandate this re-check. It cannot fire TODAY: the check
+  // after `safeExec` above already closed that window, and everything between there and here
+  // is synchronous (`new MessageChannel()` and `createRpc`'s `port.start?.()` never yield).
+  // It is kept because it stops being dead the moment anyone inserts an await into step 2 —
+  // at which point a `teardown()` would sweep a `pendingRpc` this candidate did not yet exist
+  // to be, and the candidate would outlive the teardown meant to kill it.
   if (seq !== handshakeSeq) return void discard(candidate)
 
   // 3. Transfer. `contentWindow` throws when the guest has gone away, and this runs inside a
