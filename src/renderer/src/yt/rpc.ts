@@ -13,15 +13,6 @@ type Wire =
   // a consent page), `ready` says a `<video>` was hooked. Spec §6.5 / contract C3.
   | { t: 'ack'; token: string }
 
-/**
- * Cap on already-seen ack tokens buffered for `whenAck`'s after-the-fact short-circuit.
- * One channel legitimately sees exactly ONE ack — each handshake attempt builds a fresh
- * `MessageChannel` (spec §5.5 step 2) — so this is 8× headroom, kept finite only so a
- * misbehaving guest cannot grow the set without bound. Note the cap touches ONLY the
- * short-circuit: a `whenAck` waiter registered before its ack is never capped.
- */
-const MAX_SEEN_ACKS = 8
-
 export interface Rpc {
   invoke<T = unknown>(method: string, ...args: unknown[]): Promise<T>
   handle(method: string, fn: (...args: unknown[]) => unknown | Promise<unknown>): void
@@ -31,8 +22,8 @@ export interface Rpc {
   whenReady(): Promise<void>
   /**
    * Resolves `true` once an `{ t: 'ack' }` echoing exactly `token` has arrived on this
-   * channel — including one that arrived BEFORE this call, since seen tokens are buffered
-   * (the same hazard `whenReady`'s `isReady` short-circuit closes).
+   * channel — including one that arrived BEFORE this call, since the last ack token is
+   * retained (the same hazard `whenReady`'s `isReady` short-circuit closes).
    *
    * Why the token rather than a bare `{ t: 'ack' }`: a late ack from a superseded handshake
    * attempt or a dead document must be inert, never publish a channel (contract C4).
@@ -69,7 +60,12 @@ export function createRpc(port: MessagePort, opts: { invokeTimeoutMs?: number } 
       r()
     }
   })
-  const seenAcks = new Set<string>()
+  // The last ack token seen on this channel, powering `whenAck`'s after-the-fact
+  // short-circuit. ONE token rather than a set of them: each handshake attempt builds a
+  // fresh `MessageChannel` (spec §5.5 step 2), so a channel legitimately sees exactly one
+  // ack. Last-write-wins therefore cannot discard a token a caller could still ask about,
+  // and a chatty guest cannot grow this without bound.
+  let lastAck: string | null = null
   const ackWaiters = new Set<{ token: string; resolve: (v: boolean) => void }>()
   const post = (m: Wire, transfer: Transferable[] = []) => port.postMessage(m, transfer)
 
@@ -100,7 +96,7 @@ export function createRpc(port: MessagePort, opts: { invokeTimeoutMs?: number } 
     } else if (m.t === 'ready') {
       readyResolve?.()
     } else if (m.t === 'ack') {
-      if (seenAcks.size < MAX_SEEN_ACKS) seenAcks.add(m.token)
+      lastAck = m.token
       ackWaiters.forEach((w) => {
         if (w.token === m.token) {
           ackWaiters.delete(w)
@@ -147,7 +143,7 @@ export function createRpc(port: MessagePort, opts: { invokeTimeoutMs?: number } 
       return isReady ? Promise.resolve() : readyPromise
     },
     whenAck(token) {
-      if (seenAcks.has(token)) return Promise.resolve(true)
+      if (lastAck === token) return Promise.resolve(true)
       return new Promise<boolean>((resolve) => {
         ackWaiters.add({ token, resolve })
       })
