@@ -326,8 +326,9 @@ describe('useExcerptCapture', () => {
     // `quote` is the FULL selection, spanning both pages (ADR 0058).
     expect(p?.locator.quote).toBe('the selected text afterpage four')
     // The anchor page's getTextContent() cannot contain a cross-page quote, so
-    // `indexOf` returns -1 and the EXISTING idx guards omit all four fields. Honest
-    // degradation, no new branch.
+    // `locateQuoteInPageText` returns null and the guards omit all four fields —
+    // and no normalization can rescue it, since the halves meet with no whitespace
+    // between them ('afterpage'). Honest degradation, no new branch.
     expect(p?.locator.textStart).toBeUndefined()
     expect(p?.locator.textEnd).toBeUndefined()
     expect(p?.locator.prefix).toBe('')

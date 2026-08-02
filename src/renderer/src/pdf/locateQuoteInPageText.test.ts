@@ -65,7 +65,7 @@ describe('locateQuoteInPageText', () => {
 
   it('IDENTITY: single-spaced text keeps the v0.6 offsets exactly', () => {
     // The cheapest signal that the offset basis did not move: these are the numbers
-    // pinned by the page-1 no-regression test (`useExcerptCapture.test.ts:215-216`)
+    // pinned by the page-1 no-regression test (`useExcerptCapture.test.ts:241-242`)
     // and cited by `adrs/0058-pdf-cross-page-selection-start-anchor.md:120`.
     expect(locateQuoteInPageText(V06_PAGE_TEXT, V06_QUOTE)).toEqual({ start: 7, end: 24 })
   })

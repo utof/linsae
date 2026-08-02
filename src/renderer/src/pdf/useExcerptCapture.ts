@@ -132,8 +132,6 @@ export function useExcerptCapture({ pdfId, registryRef, scrollEl }: UseExcerptCa
         ? fullText.slice(Math.max(0, quoteRange.start - 32), quoteRange.start)
         : ''
       const suffix = quoteRange ? fullText.slice(quoteRange.end, quoteRange.end + 32) : ''
-      const textStart = quoteRange?.start
-      const textEnd = quoteRange?.end
       set({
         text,
         locator: {
@@ -149,8 +147,13 @@ export function useExcerptCapture({ pdfId, registryRef, scrollEl }: UseExcerptCa
           quote: text,
           prefix,
           suffix,
-          ...(textStart !== undefined ? { textStart } : {}),
-          ...(textEnd !== undefined ? { textEnd } : {}),
+          // One spread, not two: the pair is a single decision ("located, or not"),
+          // and two independent `!== undefined` checks could be desynchronised by a
+          // later edit into a locator carrying a start without an end. The spread
+          // itself is load-bearing under `exactOptionalPropertyTypes` — writing
+          // `textStart,` directly is `error TS2375`, because absent and
+          // present-undefined are different types here.
+          ...(quoteRange ? { textStart: quoteRange.start, textEnd: quoteRange.end } : {}),
         },
         pdfId,
         page: pageNumber,

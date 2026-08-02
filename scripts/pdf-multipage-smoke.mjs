@@ -511,14 +511,19 @@ try {
         // first character has an empty `prefix` no matter what the capture does, so it
         // cannot tell a working locator from #189's dropped one — which is part of why
         // that bug shipped. Beginning one span in makes `prefix` observable for the
-        // excerpt-text-selectors gate below, and changes nothing here: every text item
-        // on page 3 starts at the same x, so the rect claims are unaffected.
+        // excerpt-text-selectors gate below, and changes nothing here: every LINE-START
+        // item on page 3 starts at x 56.8 (mid-line items do not — measured: 169.6,
+        // 174.2, 183.4, 103.0, 107.5, 116.8), and the drag still spans three of them,
+        // so the union's left edge is unchanged and the rect claims hold.
         const selected = await win.evaluate((page) => {
           const host = document.querySelector(`[data-page-number="${page}"]`)
           const spans = Array.from(host.querySelectorAll('.textLayer span')).filter(
             (el) => el.firstChild?.nodeType === 3 && el.textContent.trim(),
           )
-          if (spans.length < 2) return { spanCount: spans.length }
+          // 3, not 2: the drag starts at spans[1], so two spans leaves first === last
+          // and produces a SINGLE-span selection — passing the guard while failing the
+          // thing it guards.
+          if (spans.length < 3) return { spanCount: spans.length }
           const first = spans[1].firstChild
           const last = spans[Math.min(4, spans.length - 1)].firstChild
           const range = document.createRange()
@@ -534,7 +539,7 @@ try {
           }
         }, MULTI_PAGE_COUNT)
         assert.ok(
-          selected.spanCount >= 2,
+          selected.spanCount >= 3,
           `page ${MULTI_PAGE_COUNT}'s text layer has ${selected.spanCount} non-empty span(s) — the fixture changed and there is no multi-span drag to make`,
         )
         assert.ok(selected.text.trim().length > 0, 'the selection is empty — nothing to excerpt')
