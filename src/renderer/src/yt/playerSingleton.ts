@@ -629,6 +629,12 @@ export function getPlayer(): PlayerInstance {
     // event that will ever schedule a drop — N6's permanent black screen over the very page
     // the user has to click. The deadline restarts with the navigation, so it stays bounded
     // and stays unconditional.
+    //
+    // Not an N5 early reveal in any case where the navigation COMMITS: `dom-ready`'s own
+    // `teardown()` sweeps this timer and re-arms from there, so the effective deadline is
+    // unchanged. The one case it does move earlier is a navigation that takes longer than
+    // `readyTimeoutMs` to commit — and revealing a stuck load after 10s is N6's escape hatch
+    // working as intended, not a regression.
     armCoverTimer()
     armWatchdog = window.setTimeout(onNavigationStalled, handshakeConfig.armWatchdogMs)
   })
