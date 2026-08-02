@@ -22,6 +22,9 @@
  *                            end-to-end proof Task 3.1 deferred to here), and — as a
  *                            SEPARATE gate, because they are separate claims — whose
  *                            rect is right in that page's user space (criterion 4).
+ *   G3d text selectors     — and that the SAME multi-line drag keeps prefix / suffix /
+ *                            textStart / textEnd (#189). This script is what found
+ *                            that bug; no happy-dom test can, so the fix is gated here.
  *   G4 zoom to ZOOM_MAX    — resident canvas bytes AND renderer working set stay under
  *                            stated §4.4 ceilings, and the reader keeps its page
  *                            (criterion 3).
@@ -503,21 +506,37 @@ try {
         // resolves through `range.startContainer` → `closest('[data-page-number]')`.
         // Spanning several spans is what a user produces, and what exercises the
         // multi-rect union in `clientRectsToPdfRect`.
+        //
+        // It starts at the SECOND span, not the first. A drag from the page's very
+        // first character has an empty `prefix` no matter what the capture does, so it
+        // cannot tell a working locator from #189's dropped one — which is part of why
+        // that bug shipped. Beginning one span in makes `prefix` observable for the
+        // excerpt-text-selectors gate below, and changes nothing here: every text item
+        // on page 3 starts at the same x, so the rect claims are unaffected.
         const selected = await win.evaluate((page) => {
           const host = document.querySelector(`[data-page-number="${page}"]`)
           const spans = Array.from(host.querySelectorAll('.textLayer span')).filter(
             (el) => el.firstChild?.nodeType === 3 && el.textContent.trim(),
           )
-          const first = spans[0].firstChild
-          const last = spans[Math.min(3, spans.length - 1)].firstChild
+          if (spans.length < 2) return { spanCount: spans.length }
+          const first = spans[1].firstChild
+          const last = spans[Math.min(4, spans.length - 1)].firstChild
           const range = document.createRange()
           range.setStart(first, 0)
           range.setEnd(last, last.length)
           const sel = window.getSelection()
           sel.removeAllRanges()
           sel.addRange(range)
-          return { text: sel.toString(), startIsTextNode: range.startContainer.nodeType === 3 }
+          return {
+            spanCount: spans.length,
+            text: sel.toString(),
+            startIsTextNode: range.startContainer.nodeType === 3,
+          }
         }, MULTI_PAGE_COUNT)
+        assert.ok(
+          selected.spanCount >= 2,
+          `page ${MULTI_PAGE_COUNT}'s text layer has ${selected.spanCount} non-empty span(s) — the fixture changed and there is no multi-span drag to make`,
+        )
         assert.ok(selected.text.trim().length > 0, 'the selection is empty — nothing to excerpt')
         assert.ok(selected.startIsTextNode, 'expected a text-node Range boundary (a real drag)')
         detail.selection = selected.text
@@ -585,6 +604,53 @@ try {
           `the rect's left edge is ${x}, expected ~${PAGE3_TEXT_LEFT_PDF_X} — every text item on page ${MULTI_PAGE_COUNT} starts at that x, so a rect reaching further left has unioned in boxes that are not glyphs`,
         )
         return `left edge ${x} ≈ ${PAGE3_TEXT_LEFT_PDF_X}, and the box sits inside ${PAGE3_USER_W} × ${PAGE3_USER_H}`
+      })
+
+      // ── G3d — the TEXT selectors survive a multi-line drag (#189) ──────────
+      // This script FOUND #189: the drag above spans four spans, so `sel.toString()`
+      // joins them with `\n` while capture joins `getTextContent()` items with a
+      // space, `indexOf` missed, and all four text fields were dropped. No Vitest test
+      // could see it — happy-dom renders no text layer and has no real Selection, so
+      // every unit fixture asserts the newline into existence rather than producing
+      // one. That is exactly how the bug shipped, and why the fix needs a gate HERE
+      // and not only in `useExcerptCapture.test.ts`.
+      await gate('excerpt-text-selectors', async () => {
+        assert.ok(detail.locator, 'no locator captured (see excerpt-page-resolution)')
+        const { prefix, suffix, textStart, textEnd, quote } = detail.locator
+
+        // Without a line break in the selection this gate is vacuous — the v0.6
+        // `indexOf` matched single-line quotes fine. Assert the premise first.
+        assert.ok(
+          quote.includes('\n'),
+          `the selection is single-line (${JSON.stringify(quote.slice(0, 60))}) — this gate cannot distinguish the fix from the bug`,
+        )
+        assert.equal(
+          typeof textStart,
+          'number',
+          `textStart is absent for a multi-line selection — #189 has regressed (locator ${JSON.stringify(detail.locator)})`,
+        )
+        assert.equal(typeof textEnd, 'number', 'textEnd is absent though textStart is present')
+        // The raw span is at least the collapsed, trimmed quote: it can be LONGER
+        // (a whitespace run inside the match is one char in the quote and several in
+        // the page text) but never shorter. Catches an offset pair that is present
+        // but nonsense — which `typeof` alone would wave through.
+        const collapsed = quote.trim().replace(/\s+/g, ' ')
+        assert.ok(
+          textEnd - textStart >= collapsed.length,
+          `[${textStart}, ${textEnd}) spans ${textEnd - textStart} chars, less than the ${collapsed.length}-char quote it should cover`,
+        )
+        // The drag starts one span in and ends well before the page does, so both
+        // disambiguators have text to draw on. An empty one here means the locate
+        // failed and the caller fell back to its no-match branch.
+        assert.ok(
+          prefix.length > 0,
+          'prefix is empty though the selection starts mid-page — the quote was not located in the page text',
+        )
+        assert.ok(
+          suffix.length > 0,
+          'suffix is empty though the selection ends mid-page — the quote was not located in the page text',
+        )
+        return `[${textStart}, ${textEnd}) over a ${quote.split('\n').length}-line quote, prefix ${JSON.stringify(prefix.slice(-24))}, suffix ${JSON.stringify(suffix.slice(0, 24))}`
       })
 
       // ── G3c — read-back lands on page N WITH the flash (criterion 6) ───────

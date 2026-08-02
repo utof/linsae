@@ -49,10 +49,16 @@ clip them.
 
 **The dropped text selectors are honest degradation, not an oversight.** The
 prefix/suffix/offsets come from the anchor page's own `getTextContent()`, and a cross-page
-quote cannot occur in the anchor page's text — so `fullText.indexOf(text)` returns `-1` and
-the **pre-existing** `idx >= 0` guards already omit all four fields
-(`useExcerptCapture.ts:112-116`). No new branch was added. ADR 0059 explains why losing them
-costs almost nothing: `rect` is the primary anchor and the text selectors are advisory.
+quote cannot occur in the anchor page's text — so the lookup finds nothing and the guards
+omit all four fields (`useExcerptCapture.ts:110-136`). No new branch was added. ADR 0059
+explains why losing them costs almost nothing: `rect` is the primary anchor and the text
+selectors are advisory.
+
+> v0.8 spelled that lookup `fullText.indexOf(text)` returning `-1`, guarded by `idx >= 0`.
+> v0.8.2 replaced it with `locateQuoteInPageText` returning `null` (#189 — see Consequences).
+> The decision above is unaffected; what changed is only which selections reach the
+> no-match branch. The old spelling is recorded here because the paragraph originally cited
+> it, and a reader chasing `indexOf` in the current file will not find it.
 
 **"Cross-page" means ADJACENT WINDOWED pages only.** This is a scope statement, not a
 limitation discovered later. Pages unmount once they pass overscan (`overscan` is `1` at fit
@@ -87,13 +93,25 @@ churn, and every v0.6/v0.6.4 locator stays valid.
 - **A cross-page excerpt reads back to the top of its start page's rect**, i.e. to the
   beginning of what was selected — which is the useful end of it. The tail on page N+1 is in
   `quote` but has no geometry.
-- **Known limitation — the text selectors are dropped for every MULTI-LINE selection, not
-  just cross-page ones** ([#189](https://github.com/utof/linsae/issues/189)).
+- **FIXED in v0.8.2 — was: the text selectors are dropped for every MULTI-LINE selection,
+  not just cross-page ones** ([#189](https://github.com/utof/linsae/issues/189)).
   `sel.toString()` joins visual lines with `\n` while `getTextContent()` items are joined
-  with a space, so `fullText.indexOf(text)` returns `-1` for any selection spanning a line
-  break. The same `idx >= 0` guards then omit prefix/suffix/textStart/textEnd. Because
-  `rect` is the primary anchor (ADR 0059), read-back still works; what is lost is the future
-  different-edition re-anchor.
+  with a space, so `fullText.indexOf(text)` returned `-1` for any selection spanning a line
+  break and the `idx >= 0` guards omitted prefix/suffix/textStart/textEnd. This ADR shipped
+  describing that as accepted degradation; it was a bug, and saying so here is what let it
+  sit for two milestones. v0.8.2 replaced the `indexOf` with
+  `src/renderer/src/pdf/locateQuoteInPageText.ts` — a whitespace-insensitive match that
+  reports **raw** offsets into the page text, so already-persisted locators keep their
+  basis. A multi-line selection now carries all four fields
+  (`useExcerptCapture.test.ts:533-565`), and the real-Electron `excerpt-text-selectors`
+  gate pins it in the product, where the bug was found and where happy-dom cannot look.
+
+  **What this does NOT change: the cross-page case above is still honest degradation.** A
+  quote whose tail lives on page N+1 genuinely is not in the anchor page's text, so the
+  helper returns `null` and the same four fields are still omitted — under no normalization
+  can that quote match (`useExcerptCapture.test.ts:306-335`). Do not read this fix as
+  making cross-page text selectors recoverable; that would need the multi-page locator this
+  ADR rejected above.
 - **Anything that changes `overscan` changes what "adjacent" means.** Raising overscan
   widens the window in which a cross-page selection can be made; dropping it to 0 at zoom >
   1 means a zoomed-in cross-page drag usually cannot be made at all.
@@ -109,20 +127,24 @@ churn, and every v0.6/v0.6.4 locator stays valid.
 
 - https://dom.spec.whatwg.org/#concept-range — a Range's start is before-or-equal its end in
   tree order; direction lives on `Selection.anchorNode`/`focusNode`, not on the Range.
-- `src/renderer/src/pdf/useExcerptCapture.ts:53-65` — element-safe walk-up from
+- `src/renderer/src/pdf/useExcerptCapture.ts:54-66` — element-safe walk-up from
   `range.startContainer` to `[data-page-number]` (a legal Range boundary point is
   `(element, childIndex)`, so `startContainer` can itself be an Element and a bare
-  `.parentElement?.closest(…)` climbs past the page wrapper); `:76-93` — the zero-area +
-  anchor-page client-rect filter; `:112-116` — the pre-existing `idx >= 0` guards that omit
-  the four text fields.
+  `.parentElement?.closest(…)` climbs past the page wrapper); `:77-94` — the zero-area +
+  anchor-page client-rect filter; `:110-136` — the `locateQuoteInPageText` lookup and the
+  guards that omit the four text fields when it returns `null`.
+- `src/renderer/src/pdf/locateQuoteInPageText.ts` — the v0.8.2 lookup (#189): matches
+  whitespace-insensitively, reports RAW offsets so persisted locators keep their basis.
 - `src/renderer/src/pdf/clientRectsToPdfRect.ts` — unchanged from v0.6; unions whatever
   rects it is given, which is why the filter above must run first.
-- `src/renderer/src/pdf/useExcerptCapture.test.ts:192-224` (page-1 no-regression:
-  byte-identical v0.6 locator), `:280-309` (cross-page selection anchors to the START page),
-  `:311-339` (rect not smeared across the gap), `:341-378` (zero-area `<br>` rects dropped),
-  `:260-278` (Element `startContainer`).
-- `scripts/pdf-multipage-smoke.mjs` — the `excerpt-page-resolution` and
-  `excerpt-rect-geometry` gates (real Electron; happy-dom renders no text layer).
+- `src/renderer/src/pdf/useExcerptCapture.test.ts:218-250` (page-1 no-regression:
+  byte-identical v0.6 locator), `:306-335` (cross-page selection anchors to the START page,
+  and still drops the four text fields after the #189 fix), `:337-365` (rect not smeared
+  across the gap), `:367-404` (zero-area `<br>` rects dropped), `:286-304` (Element
+  `startContainer`), `:533-565` (#189: a multi-line selection KEEPS the four fields).
+- `scripts/pdf-multipage-smoke.mjs` — the `excerpt-page-resolution`,
+  `excerpt-rect-geometry` and `excerpt-text-selectors` gates (real Electron; happy-dom
+  renders no text layer).
 - `docs/specs/v0.8-multipage-pdf.md` §4.7.
 - `adrs/0056-pdf-continuous-scroll-virtualization.md` — the windowing (and `overscan`) that
   bounds "adjacent"; `adrs/0059-pdf-read-back-rect-primary.md` — why the dropped text
