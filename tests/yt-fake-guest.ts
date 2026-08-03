@@ -15,6 +15,16 @@
  * **Every consuming file must call `destroyGuests()` in `afterEach`** — see its docblock for
  * why nothing here can enforce that.
  *
+ * Two more rules for any file driving this harness, both learned the expensive way in v0.8.3:
+ *
+ * 1. **Never `vi.useFakeTimers()` here.** `handshake()` awaits `safeExec` and real MessagePort
+ *    delivery, and happy-dom groups zero-delay timeouts into ONE shared Node timer under
+ *    `isolate: false` — so faking timers deadlocks the handshake instead of speeding it up. Use
+ *    real timers, shrink `handshakeConfig`, and wait with `vi.waitFor`.
+ * 2. **`handshakeConfig` is exported MUTABLE module state.** Shrinking it is the supported way to
+ *    make these tests fast, but a file that mutates it must save and restore in `afterEach`, or it
+ *    silently reconfigures every later file in the run (again: `isolate: false`).
+ *
  * @see docs/specs/v0.8.3-player-transport.md §8.1
  */
 
