@@ -18,6 +18,11 @@
  * document currently answers to is therefore the LAST one injected — a port transferred
  * with a superseded token is ignored, which is the guest-side half of contract C4.
  *
+ * TWO PHASES, and mixing them is the reversal to avoid: per-DOCUMENT wiring (listeners,
+ * observers, intervals, the <video> hunt) belongs in `wireDocument()`; per-CHANNEL work (the
+ * ack, the invoke handlers) in `initPort()`. Hoisted code reads the CLOSURE `rpc`, which
+ * `initPort` repoints. See `adrs/0065-guest-rpc-handshake-rearm.md` D6.
+ *
  * Adapted from aidenlx/media-extended (MIT) —
  *   web/userscript/youtube.ts, lib/remote-player/{init-port,hook}.
  *
