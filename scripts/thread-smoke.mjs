@@ -126,6 +126,12 @@ const results = {
   transportBarNotCovered: 'FAIL',
   followCrossesPanes: 'FAIL',
   rateBadgeCycles: 'FAIL',
+  // ── the #213 forced swap's own PREMISE (SMOKE_FORCE_SWAP=1) ────────────────
+  // Everything below is measured under "the homepage committed as the FIRST document". If that
+  // did not happen the run silently degrades to the ordinary single-document scenario, six
+  // PASSes print and the process exits 0 over the exact defect the flag exists to expose — so
+  // the premise is a recorded gate, not a log line. See `forceDocumentSwap` step 2.
+  forcedSwapCommitted: FORCE_SWAP ? 'FAIL' : 'SKIP',
   // ── transport — live guest only ───────────────────────────────────────────
   transportDuration: SMOKE_PLAYBACK ? 'FAIL' : 'SKIP',
   fullscreenSelector: SMOKE_PLAYBACK ? 'FAIL' : 'SKIP',
@@ -219,10 +225,14 @@ const YT_HOME = 'https://www.youtube.com/'
  *    `dom-ready` it sees, so if the watch page wins the race the channel is good, the duration
  *    arrives, and the gate passes on broken code. `waitForFunction` polls inside the renderer,
  *    so the assignment lands without a round-trip's worth of latency.
- *  - It waits for `window.__linsaeGuest` before swapping back. That sentinel is published LAST
- *    by the guest runtime, after the port receiver is installed, so it means "armed" rather
- *    than "the script started". The `href` term is what stops the outgoing watch document —
- *    which also carries the sentinel — from answering for the homepage.
+ *  - It waits for `window.__linsaeGuest` before swapping back — bounded, because on the code
+ *    this exists to fail the sentinel never arrives. That sentinel is published LAST by the
+ *    guest runtime, after the port receiver is installed, so it means "armed" rather than "the
+ *    script started". The `href` term is what stops the outgoing watch document — which also
+ *    carries the sentinel — from answering for the homepage.
+ *  - It RECORDS the premise as the `forcedSwapCommitted` gate, on the fix-independent `href`
+ *    and never on the sentinel. Without that, a swap that quietly failed to take leaves the six
+ *    live gates measuring an ordinary single-document run and exiting 0 (step 2).
  *
  * NOT session interception (spec §8.3 rules it out with reasons): `webRequest` cannot serve a
  * body, `data:`/`file:` redirects are blocked for top-frame navigations, and
@@ -268,10 +278,19 @@ async function forceDocumentSwap(win) {
   // re-assigning the SAME value works because `SrcAttribute`'s MutationObserver exists
   // precisely to catch a same-value write.
   //
-  // Bounded to ~400ms, not "until it takes": each accepted assignment CANCELS the navigation
-  // the previous one started, so an unbounded loop would keep restarting the homepage load and
-  // it could never commit. 400ms is ~20× the attach round-trip and a fraction of any network
-  // document's time to commit, so the watch page cannot slip through underneath it.
+  // Bounded to ~400ms (5 × 80ms), not "until it takes": each accepted assignment supersedes the
+  // navigation the previous one started — "Set the ongoing navigation for navigable to
+  // navigationId. This will have the effect of aborting other ongoing navigations of navigable"
+  // (HTML Standard §7.4.2.2 "Navigate", step 20) — so an unbounded loop would keep restarting
+  // the homepage load and it could never commit.
+  //
+  // The 400ms itself is REASONING, not measurement, and is deliberately not dressed as one: it
+  // is long enough to outlast the `createGuest()` → attach-IPC window described above (the only
+  // window that swallows an assignment) and short enough that no network document commits
+  // underneath it. What IS measured is the outcome either side of the bound — one assignment is
+  // dropped, five are not (spec §8.3, correction 1). Reading `wv.getWebContentsId()` back would
+  // make 400ms a ceiling rather than a schedule; not done here because it would change working,
+  // measured code (utof/linsae#219).
   const hijacked = await win.waitForFunction(
     (home) => {
       const wv = document.querySelector('#yt-player-wrapper webview')
@@ -297,7 +316,21 @@ async function forceDocumentSwap(win) {
   // published LAST by the runtime, after the port receiver is installed, so it means "armed"
   // rather than "the script started". The `href` term is what stops the outgoing watch
   // document — which carries the sentinel too — from answering for the homepage.
+  //
+  // The two terms are polled together but they are NOT the same claim, and only ONE of them is
+  // the premise the gate below records:
+  //   - `href` is FIX-INDEPENDENT. It is the guest reporting its own `location` over
+  //     `executeJavaScript`, which answers whether or not the host ever injected anything.
+  //   - `g` is the host's injection — precisely what is broken on the code this run exists to
+  //     falsify, where the host refuses to re-inject and the sentinel is legitimately absent.
+  // Waiting on `g` alone therefore cannot tell "the homepage never committed" from "the host
+  // refused to inject": on the pre-fix source neither breaks the loop, both read as 60 × 500ms
+  // of silence, and the swap-back happens 30s later for no reason. So break on `g` when it
+  // comes, and otherwise stop `HOME_GRACE_POLLS` after the homepage is first seen committed —
+  // a committed homepage is the only thing step 3 actually needs.
+  const HOME_GRACE_POLLS = 10
   let armed = null
+  let homePolls = 0
   for (let i = 0; i < 60; i++) {
     await sleep(500)
     armed = await win.evaluate(async () => {
@@ -309,12 +342,44 @@ async function forceDocumentSwap(win) {
         return null
       }
     })
-    if (armed?.g === true && !armed.href.includes('/watch')) break
+    const onHome = !!armed && !armed.href.includes('/watch')
+    if (onHome) homePolls++
+    if (onHome && armed.g === true) break
+    if (homePolls > HOME_GRACE_POLLS) break
   }
-  // NOT fatal, and not an assertion. On the code this gate exists to fail, the host may refuse
-  // to inject into the homepage at all — and a throw here would kill the run before any gate
-  // recorded anything, turning an observable FAIL into a crash. Log it and let the gates speak.
+  // `g` is a DIAGNOSTIC, never an assertion. On the code this run exists to fail the host may
+  // refuse to inject into the homepage at all, so `{g: false}` is the EXPECTED pre-fix reading;
+  // a throw on it would kill the run before any gate recorded anything, turning an observable
+  // FAIL into a crash — and gating on it would fail here for the very reason the live gates are
+  // supposed to discover, converting the falsification into a tautology.
   console.log(`thread-smoke: [force-swap] homepage guest = ${JSON.stringify(armed)}`)
+
+  // The premise, RECORDED rather than logged — the point of B1. Everything the six live gates
+  // measure under SMOKE_FORCE_SWAP is conditional on the homepage having committed first; if it
+  // did not, this function returns normally, the gates run against a single-document scenario,
+  // six PASSes print and the process exits 0. That is not hypothetical: the first build of this
+  // gate set the homepage, had it silently dropped (step 1), and the guest sat on `/watch` for
+  // 30s — caught by a human reading a log line. `skipGate`'s rule ("a silent skip is
+  // indistinguishable from a pass") is the same rule, one level up.
+  //
+  // This is a PREMISE check, not a fix check: it must pass on the pre-fix source as well as on
+  // the branch. Hence `href` and never `g` — see the paragraph above.
+  await gate('forcedSwapCommitted', 'the homepage committed as the FIRST document', () => {
+    assert.ok(
+      armed,
+      'the guest never answered executeJavaScript — the premise of every live gate below is unverified, so their results say nothing about the re-arm',
+    )
+    assert.match(
+      armed.href,
+      /^https?:/,
+      `the guest reports ${armed.href}, which is not a committed http(s) document — there is no second document for the host to re-arm against`,
+    )
+    assert.ok(
+      !armed.href.includes('/watch'),
+      `the guest is still on ${armed.href} — the homepage assignment never took, so the watch page is the FIRST document and this run cannot see #213 at all`,
+    )
+    return `guest on ${armed.href} before the swap back (__linsaeGuest ${armed.g} — diagnostic, not gated)`
+  })
 
   // Step 3. Back to the watch page. This is the document the host must re-arm against.
   await win.evaluate((src) => {
@@ -1335,6 +1400,11 @@ try {
   line('rate badge cycles', 'rateBadgeCycles')
   console.log('')
   console.log(
+    `thread-smoke RESULTS (#213 forced swap)${FORCE_SWAP ? '' : ' [set SMOKE_FORCE_SWAP=1]'}:`,
+  )
+  line('homepage committed 1st', 'forcedSwapCommitted')
+  console.log('')
+  console.log(
     `thread-smoke RESULTS (transport) — live guest${SMOKE_PLAYBACK ? '' : ' [set SMOKE_PLAYBACK=1]'}:`,
   )
   line('duration reaches bar', 'transportDuration')
@@ -1365,6 +1435,10 @@ try {
     results.rateBadgeCycles,
   ]
   const liveChecks = [
+    // The forced swap's premise belongs here rather than with the CI-safe set: like the six
+    // below it is only ever asked for by a flag, and like them it is fatal the moment it is. A
+    // run whose premise did not hold must not be able to exit 0 on six PASSes underneath it.
+    results.forcedSwapCommitted,
     results.transportDuration,
     results.fullscreenSelector,
     results.transportPlayPause,

@@ -68,10 +68,16 @@ type PlayerInstance = Player & {
    * Whether the CURRENT guest document is showing a consent / sign-in lightbox the user has
    * to click through — the guest's own `needs-interaction` signal, not an inference (§8.4).
    *
-   * NOT authoritative on the C6 watchdog path: the guest emits this from `checkConsent()`
-   * inside `wireDocument()`, which no-ops on a re-arm (`domWired`), so a channel re-armed
-   * against an already-wired document never re-states the current value. False here means
-   * "no guest has told us otherwise", never "provably no wall".
+   * NOT authoritative after ANY re-arm of an already-wired document. The C6 watchdog is the
+   * loudest such path, not the only one — the ordinary ack-timeout retry reaches the same state:
+   * `retryLater` re-enters `handshake()`, whose `safeExec(guestRuntime(token))` hits the guest
+   * runtime's `if (window.__linsaeGuest) { arm(NONCE); return; }` short-circuit, so the new port
+   * lands in `initPort` and the `wireDocument()` it calls no-ops on `domWired`. `checkConsent()`
+   * therefore never re-runs, and `lastConsentActive` stays latched inside the guest's closure.
+   * Concretely: on a walled document whose FIRST attempt's ack times out, the attempt that does
+   * publish reads `false` here, and the smoke fails a wall as a transport break.
+   *
+   * False means "no guest has told us otherwise", never "provably no wall".
    */
   needsInteraction: boolean
 }
@@ -377,8 +383,10 @@ function teardown(): void {
   rpc = null
   resetCache()
   // A consent wall belongs to the document that raised it, so it is invalidated with
-  // everything else the outgoing guest told us (spec §8.4). The incoming document's own
-  // `checkConsent()` re-states it on its first DOM pass.
+  // everything else the outgoing guest told us (spec §8.4). `false` is the safe reset: the
+  // incoming document's `checkConsent()` emits only on a TRANSITION away from its own
+  // `lastConsentActive`, which starts `false`, so it reports a wall it HAS and stays silent
+  // about one it does not — which is exactly what this reset already assumed.
   setNeedsInteraction(false)
   if (armWatchdog) {
     clearTimeout(armWatchdog)
@@ -605,10 +613,15 @@ export function getPlayer(): PlayerInstance {
   // (electron#7700); off-screen keeps the guest alive.
   wrapper.style.cssText =
     'position:fixed;left:-99999px;top:0;width:640px;height:360px;z-index:1;overflow:hidden;background:#000;'
-  // Stamped up front so the attribute always EXISTS: a reader that tests
-  // `dataset.needsInteraction === 'true'` cannot otherwise tell "no wall" from "this build has
-  // no readout at all", and `scripts/thread-smoke.mjs` decides SKIP vs FAIL on exactly that.
-  wrapper.dataset.needsInteraction = 'false'
+  // Stamped through the single writer, so the module flag and the attribute agree BY
+  // CONSTRUCTION rather than because the first `setNeedsInteraction()` happens to run early.
+  //
+  // Not for the smoke's predicate — that reads `dataset.needsInteraction === 'true'`, which
+  // `undefined` and `'false'` answer identically, so `scripts/thread-smoke.mjs` cannot tell
+  // whether this line ran. What the stamp buys is the DevTools readout: "is the player black
+  // because of a wall, or because the transport died" is answerable by inspecting the element
+  // from the moment it exists, with no "…or does this build simply have no readout" caveat.
+  setNeedsInteraction(false)
 
   webview = document.createElement('webview') as unknown as WebviewElement
   webview.setAttribute('partition', 'persist:yt-player')

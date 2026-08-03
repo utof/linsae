@@ -122,8 +122,9 @@ async function topVisible(scroller) {
 /**
  * Polls `readFn()` every `intervalMs` until `done(latest, previous)` is true or
  * `deadlineMs` elapses, then returns the last read (`previous` is `null` on the
- * first check). Mirrors thread-smoke.mjs's poll-until-condition-or-deadline loop
- * (scripts/thread-smoke.mjs:106-136) — replaces arbitrary fixed settle sleeps,
+ * first check). Mirrors the poll-until-condition-or-deadline loop in
+ * `scripts/thread-smoke.mjs` that logs `DOM poll i/20` while waiting for the guest
+ * `<webview>`'s `src` — replaces arbitrary fixed settle sleeps,
  * which false-fail a slow/cold layout sizer and false-pass a fast one.
  */
 async function poll(readFn, { done, deadlineMs, intervalMs = 100 }) {

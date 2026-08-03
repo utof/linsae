@@ -672,8 +672,12 @@ describe('playerSingleton consent readout (§8.4)', () => {
 
     // A wall belongs to the document that raised it. Carrying it across a navigation would make
     // the smoke SKIP the very run in which the new document's transport died — and the guest
-    // cannot correct it from the other side: `checkConsent()` lives in `wireDocument()`, which
-    // no-ops on a re-arm, so nothing re-states the value for an already-wired document.
+    // cannot correct it from the other side. NOT because `wireDocument()` no-ops: this is a
+    // CROSS-document navigation (`isInPlace: false`), and a genuinely new document runs a fresh
+    // `wireDocument()`. The reason is that `checkConsent()` emits only on a TRANSITION against a
+    // per-document `lastConsentActive` that starts `false`, so a wall-free new document emits
+    // NOTHING and a latched host `true` would never be corrected. (An in-place re-arm is worse
+    // still — see `PlayerInstance.needsInteraction`'s TSDoc — but it is not what this dispatches.)
     dispatchWebviewEvent(wv, 'did-start-navigation', { isMainFrame: true, isInPlace: false })
     expect(readout(p)).toEqual({ getter: false, attr: 'false' })
   })
