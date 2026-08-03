@@ -214,8 +214,16 @@ describe('playerSingleton cover (T10)', () => {
     // A drop armed for video A keeps running across `load(B)` and can fire before B's own
     // `dom-ready` re-arms it — revealing a still-loading B (spec N5). HEAD had this same
     // path, not a safer one: its `Promise.race` did not cancel its loser either, and the
-    // loser there was the `timeout(10000)` that RAN the drop. So `raiseCover`'s cancel
-    // closes a reveal-early hole rather than merely declining to open a new one.
+    // loser there was the `timeout(10000)` that RAN the drop. So the cancel closes a
+    // reveal-early hole rather than merely declining to open a new one.
+    //
+    // WHICH cancel, precisely — measured, because a single-clause answer here is wrong and
+    // the next agent will act on it. Removing `clearCoverTimer()` from `raiseCover` ALONE is
+    // green 34/34; removing it from `teardown()` ALONE is green 26/26; removing BOTH reds this
+    // test. The clear that actually closes the hole is `teardown()`'s, since `load()` calls
+    // `teardown()` before `raiseCover()` — `raiseCover`'s is dead today for exactly the reason
+    // the `rpc` entry term in `handshake()` is dead (ADR 0065 Consequences §1). Do not conclude
+    // from one green mutation that either guard is harmless; the suite defends only the pair.
     handshakeConfig.readyTimeoutMs = 300
     const p = getPlayer()
     const { wv, cover } = coverAndSpinner(p)

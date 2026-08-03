@@ -373,6 +373,10 @@ function syncBounds(): void {
  * or re-arm the drop: clearing without doing one of the two is how the cover ends up with no
  * pending drop and no event that will ever schedule one (N6). `load()` takes the raise arm,
  * which is why it is not a counter-example to the rule.
+ *
+ * One caller does neither, and it is deliberate: `destroyPlayer()` removes the wrapper outright,
+ * so there is no cover left to strand. Named here because the rule above reads as absolute and a
+ * reader checking it will otherwise find an unexplained counter-example.
  */
 function teardown(): void {
   handshakeSeq++
