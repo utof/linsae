@@ -337,7 +337,7 @@ describe('guestRuntime — idempotent injection, re-armable receiver (C5)', () =
     //   wireDocument();
     //   if (videoEl) { var vv = videoEl; videoEl = null; attachVideo(vv); }
     // That reds this test alone (`expected 33 to be 22`) and nothing else in the file.
-    // Whoever closes that issue must re-emit the snapshot WITHOUT re-running `attachVideo`.
+    // Whoever closes #222 must re-emit the snapshot WITHOUT re-running `attachVideo`.
     // (Merely hoisting `findVideo()` out of `wireDocument()` is caught by test 1 instead, and
     // does not double the 11 — `attachVideo`'s `if (v === videoEl) return` guard stops it.)
     const probe = probeGuest()

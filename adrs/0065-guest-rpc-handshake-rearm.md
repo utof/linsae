@@ -11,7 +11,9 @@ Date: 2026-08-03
 ## Context
 
 The docked YouTube player drives the in-page `<video>` over a `MessagePort` RPC transferred into the
-guest with `contentWindow.postMessage` (ADR 0016 D7/D9). Until v0.8.3 the host opened that channel in
+guest with `contentWindow.postMessage` (ADR 0016 — its header and Task-1 spike context; the transfer
+is not one of 0016's numbered decisions, D7 being the injection mechanism and D9 the guest-as-string).
+Until v0.8.3 the host opened that channel in
 a single `dom-ready` handler whose first line was `if (rpc || !wv) return`, and which assigned
 `rpc = createRpc(port1)` **before** injecting the guest runtime and **before** transferring the port.
 
@@ -144,9 +146,13 @@ regressions:
 - **Hoisting the `<video>` hunt out of `wireDocument()` into `initPort()`.** On a document with no
   `<video>` yet, the `if (!findVideo())` branch starts a 200 ms `setInterval`; a re-arm would start a
   second one. That is exactly the duplication C5 forbids.
-- **Forcing a re-attach on re-arm** (dropping `attachVideo`'s `if (v === videoEl) return`, or nulling
-  `videoEl` in `initPort`). That installs a **second** copy of all 11 media-event listeners on the
-  same element, so every state transition is reported twice.
+- **Forcing a re-attach on re-arm.** That installs a **second** copy of all 11 media-event listeners
+  on the same element, so every state transition is reported twice. **It takes the pair of edits, not
+  either one alone** — a re-arm no-ops in `wireDocument()` on `domWired`, so nothing re-calls
+  `attachVideo` and dropping its `if (v === videoEl) return` in isolation changes nothing. The
+  measured falsifier is `wireDocument(); if (videoEl) { var vv = videoEl; videoEl = null;
+  attachVideo(vv); }` → `expected 33 to be 22`, recorded in `youtube-guest.test.ts`. Nominating a
+  single clause here would let a future agent test it, see green, and conclude the guard is dead.
 
 **D7 — the preload path stays rejected; ADR 0016 D7/D8 is untouched.**
 
@@ -245,7 +251,7 @@ emission is unrecoverable on the second channel. Concretely: **on a walled docum
 attempt's ack times out, the attempt that publishes reads `false`**, and the smoke reports a wall as
 a transport break. `false` here means "no guest has told us otherwise", never "provably no wall". The
 same gap denies a re-armed channel its initial `state` and its `ready` (`attachVideo` early-returns
-on `v === videoEl`); one `initPort` re-sync closes all three, and is filed as such.
+on `v === videoEl`); one `initPort` re-sync closes all three. Filed as [#222](https://github.com/utof/linsae/issues/222).
 
 **Known residual — a guest renderer crash is not covered.** A crash replaces the document with **no
 navigation at all**: no `did-start-navigation`, no `dom-ready`, so nothing tears down and `rpc` stays
