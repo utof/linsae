@@ -126,7 +126,7 @@ function stubWebview(el: HTMLElement): void {
  * unrestored `document.createElement` spy leaks into unrelated later files.
  *
  * @see docs/specs/v0.8.3-player-transport.md §8.1
- * @issue utof/linsae#154
+ * @issue utof/linsae#203
  */
 export function installWebviewStub(): () => void {
   const orig = document.createElement.bind(document)
@@ -228,7 +228,7 @@ const guests: ReturnType<typeof fakeGuest>[] = []
  * behind. Under `isolate: false` (`vitest.config.ts`) unrestored state "leaks into unrelated
  * later files and fails them in confusing places" — the lesson `tests/pdf-layout.ts` records.
  *
- * @issue utof/linsae#154
+ * @issue utof/linsae#203
  */
 export function openGuest(...args: Parameters<typeof fakeGuest>): ReturnType<typeof fakeGuest> {
   const g = fakeGuest(...args)
@@ -250,7 +250,7 @@ export function openGuest(...args: Parameters<typeof fakeGuest>): ReturnType<typ
  * in some unrelated later file, never as a failure of the test that caused it. Same contract,
  * and same reasoning, as `installWebviewStub`'s restore fn and `tests/pdf-layout.ts`.
  *
- * @issue utof/linsae#154
+ * @issue utof/linsae#203
  */
 export function destroyGuests(): void {
   guests.splice(0).forEach((g) => {
