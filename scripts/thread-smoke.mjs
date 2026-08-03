@@ -23,7 +23,7 @@
  *   - `jumpPillDirection` reads `playheadY (0) < viewTop (0) + 8` and answers `'up'`
  *     unconditionally (`thread/rail-layout.ts:180`), so the pill's direction is untestable.
  *   - `duration` is only ever written from an RPC `state`/`time` event
- *     (`playerSingleton.ts:115-126`), so with no guest there is no fill, no ticks, and
+ *     (`playerSingleton.ts`'s `applyState`), so with no guest there is no fill, no ticks, and
  *     `TransportBar.tsx:120` swallows every track click. That is why the geometry gates are
  *     the OPT-IN half: not preference, necessity.
  * Every transport gate below carries its own anti-vacuity premise (and two carry a live
@@ -435,7 +435,7 @@ try {
 
   // `playerSingleton` reports guest-runtime and port-transfer trouble to the renderer
   // console and swallows it otherwise (`safeExec`, `safeInsertCSS`, and the `postMessage`
-  // try/catch at playerSingleton.ts:190-195). Collect those: when the live half below finds
+  // try/catch inside `handshake()`). Collect those: when the live half below finds
   // no RPC, they are the difference between "a consent wall ate the port" and a real break.
   // The listener survives the reload — it is bound to the Page, not the document.
   const playerLogs = []
@@ -616,7 +616,7 @@ try {
   // POLLED, and run through `gate()` rather than a bare `assert` (v0.8.2 B4). Two changes,
   // neither of them a relaxation — the assertion is identical and it still fails the run:
   //   - one 3s sleep was a race against `insertCSS`, which is fired from the guest's
-  //     'dom-ready' (playerSingleton.ts:253-260) and re-fired on every SPA navigation.
+  //     'dom-ready' listener (playerSingleton.ts) and re-fired on every SPA navigation.
   //     Polling to 20s distinguishes "the CSS never applied" from "we looked too early".
   //   - a bare assert here threw past every check below it, so a CLEAN_CSS problem hid the
   //     entire transport suite. "Which of these broke" is the product of a diagnostic smoke
@@ -843,7 +843,8 @@ try {
       )
     }
     assert.ok(g.bar.height >= 20, `the bar is ${g.bar.height}px tall — collapsed, not laid out`)
-    // The fixed wrapper tracks the host placeholder rect each frame (playerSingleton.ts:150).
+    // The fixed wrapper tracks the host placeholder rect each frame (playerSingleton.ts's
+    // syncBounds).
     for (const k of ['left', 'top', 'width', 'height']) {
       assert.ok(
         Math.abs(g.wrapper[k] - g.host[k]) <= 1,
@@ -1064,14 +1065,14 @@ try {
 
     /**
      * The HOST's view of duration, off the bar's own readout — 0 until an RPC `state`/`time`
-     * event lands (`playerSingleton.ts:115-126`, `:185-188`).
+     * event lands (`playerSingleton.ts`'s `applyState` and its `'time'` listener).
      *
      * This, not "the guest has a <video>", is the precondition for every gate below. A guest
      * can be playing perfectly while the host knows nothing: `play()` goes straight in over
-     * `executeJavaScript` (`:315`) whereas pause/seek/rate are RPC invokes and duration only
-     * ever arrives as an RPC event. An earlier revision of this gate keyed on the guest video
-     * and produced four confident FAILs pointing at the transport for a port that was never
-     * connected.
+     * `executeJavaScript` (`play()`'s `safeExec`) whereas pause/seek/rate are RPC invokes
+     * and duration only ever arrives as an RPC event. An earlier revision of this gate
+     * keyed on the guest video and produced four confident FAILs pointing at the transport
+     * for a port that was never connected.
      */
     const hostDurationSec = async () => {
       const txt = await pane.locator('[data-testid="transport-time"]').textContent()
@@ -1181,7 +1182,7 @@ try {
         'YouTube still has the button fullscreen drives',
         async () => {
           // `toggleFullscreen` shells out to `#movie_player .ytp-fullscreen-button`
-          // (playerSingleton.ts:359-362). A spy on the host proves nothing about YouTube's
+          // (playerSingleton.ts). A spy on the host proves nothing about YouTube's
           // DOM; this asserts the one thing that actually rots — the selector. Whether the
           // guest then enters fullscreen is not asserted (see the report/ADR): an OOPIF
           // fullscreen transition under a bare X server is not a claim this can make.

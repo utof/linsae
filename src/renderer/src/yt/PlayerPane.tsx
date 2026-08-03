@@ -22,7 +22,7 @@ import { usePlayer } from './usePlayer'
  * `useSetSetting('player.videoId')` before calling `openPane('player')`.
  *
  * Also hosts the `TransportBar` (B2): YouTube's native controls are suppressed in the
- * guest (`inject/youtube-guest.ts:121`, `v.controls = false`), so between the v0.6.4 B5
+ * guest (`inject/youtube-guest.ts`'s `attachVideo`, `v.controls = false`), so between the v0.6.4 B5
  * lift and here the docked player had NO scrubber, speed badge, follow-toggle or
  * fullscreen — only whatever the bare webview happened to accept. (#169)
  *
@@ -56,7 +56,7 @@ export function PlayerPane(): React.JSX.Element {
 /**
  * Pane layout. A flex COLUMN so the transport bar can sit under the host without
  * overlapping it. Shrinking the host is safe — the fixed webview re-reads the host's
- * rect every frame in the `syncBounds` rAF loop (playerSingleton.ts:150-167).
+ * rect every frame in the `syncBounds` rAF loop (playerSingleton.ts).
  */
 const PANE: React.CSSProperties = {
   width: '100%',
@@ -102,17 +102,18 @@ function PlayerPaneInner({ videoId }: { videoId: string }): React.JSX.Element {
   const cycleRate = useTransportStore((s) => s.cycleRate)
 
   // Re-push the rate at the guest. REQUIRED, not belt-and-braces: `load(id)`
-  // reassigns `webviewEl.src` (playerSingleton.ts:299-307) — a full guest reload that
+  // reassigns `webviewEl.src` (playerSingleton.ts's `load`) — a full guest reload that
   // destroys the `<video>` the guest's `setRate` handler wrote to
-  // (inject/youtube-guest.ts:203) — and `Player` has no `getPlaybackRate()` to read the
-  // truth back, so this store is the ONLY holder. Without the re-push the badge would
-  // read 1.75× while playback ran at 1×.
+  // (`inject/youtube-guest.ts`'s `initPort`) — and `Player` has no `getPlaybackRate()` to
+  // read the truth back, so this store is the ONLY holder. Without the re-push the badge
+  // would read 1.75× while playback ran at 1×.
   //
   // `state` is in the deps on purpose: `setPlaybackRate` is `rpc?.invoke('setRate', r)`
-  // (playerSingleton.ts:337-339) and `load()` NULLS `rpc` (:303) until the reloaded
-  // guest's dom-ready re-creates it — so the push fired at videoId-change time is
-  // swallowed. A state event is the only public signal that the new guest's port is
-  // live. Pushing again on later state changes is idempotent and cheap.
+  // (playerSingleton.ts's `setPlaybackRate`) and `load()` calls `teardown()`, which
+  // destroys and nulls `rpc`, until the reloaded guest's `dom-ready` re-handshakes it —
+  // so the push fired at videoId-change time is swallowed. A state event is the only
+  // public signal that the new guest's port is live. Pushing again on later state
+  // changes is idempotent and cheap.
   //
   // Do NOT delete this in favour of `onRate` below: `onRate` covers only the click.
   // biome-ignore lint/correctness/useExhaustiveDependencies: videoId + state are re-run TRIGGERS, not values the body reads — the guest they push to was replaced. Same pattern as the `videoId` dep on `usePlayerState`'s poll effect.
@@ -143,7 +144,7 @@ function PlayerPaneInner({ videoId }: { videoId: string }): React.JSX.Element {
               void player.pause()
             } else {
               // play() goes straight to the guest WITH a user gesture — routing it
-              // over RPC loses the transient activation (playerSingleton.ts:309-319).
+              // over RPC loses the transient activation (playerSingleton.ts's `play`).
               void player.play()
             }
           }}
