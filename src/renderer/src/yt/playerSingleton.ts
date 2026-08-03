@@ -64,6 +64,16 @@ type PlayerInstance = Player & {
   unmount(): void
   /** Toggle YouTube's own (native) fullscreen from inside the guest. */
   toggleFullscreen(): void
+  /**
+   * Whether the CURRENT guest document is showing a consent / sign-in lightbox the user has
+   * to click through — the guest's own `needs-interaction` signal, not an inference (§8.4).
+   *
+   * NOT authoritative on the C6 watchdog path: the guest emits this from `checkConsent()`
+   * inside `wireDocument()`, which no-ops on a re-arm (`domWired`), so a channel re-armed
+   * against an already-wired document never re-states the current value. False here means
+   * "no guest has told us otherwise", never "provably no wall".
+   */
+  needsInteraction: boolean
 }
 
 /**
@@ -131,6 +141,10 @@ let armWatchdog = 0
 // the DOM overload returns a number, Node's returns a NodeJS.Timeout, and this file is
 // typechecked against both libs (see the same note in `NoteBubble.tsx`).
 let coverTimer = 0
+// The guest's consent/sign-in readout (spec §8.4): true between a `needs-interaction`
+// `{active:true}` and the next `{active:false}` or `teardown()`. Reset per document, because a
+// wall belongs to the document that raised it.
+let needsInteraction = false
 let videoId: string | null = null
 let cache: { currentTime: number; duration: number | null; last: PlayerState } = {
   currentTime: 0,
@@ -202,6 +216,26 @@ function applyState(f: VideoFlags & { currentTime: number; duration: number }): 
  */
 function resetCache(): void {
   cache = { currentTime: 0, duration: null, last: 'unstarted' }
+}
+
+/**
+ * Record the guest's `needs-interaction` state and MIRROR it onto the wrapper as
+ * `data-needs-interaction` (spec §8.4).
+ *
+ * Two readouts for one flag, because they have different reachers. The
+ * `PlayerInstance.needsInteraction` getter is the typed host API — what Vitest asserts and what
+ * a future consent hint in `PlayerPane` would read. The attribute is the only channel a
+ * Playwright `win.evaluate` can reach: the singleton is module state inside a bundle, so
+ * `scripts/thread-smoke.mjs` has no handle on the instance and reads host state out of the DOM
+ * for everything else too. It doubles as the DevTools readout for "is the player black because
+ * of a wall, or because the transport died" — the exact question the smoke's SKIP-vs-FAIL split
+ * asks (`walled`).
+ *
+ * Not a signal to `stateCbs`: nothing renders off it yet, and a wall is not a `PlayerState`.
+ */
+function setNeedsInteraction(active: boolean): void {
+  needsInteraction = active
+  if (wrapper) wrapper.dataset.needsInteraction = active ? 'true' : 'false'
 }
 
 /** Inject the spin keyframe into the HOST document once (the wrapper lives in host <body>). */
@@ -342,6 +376,10 @@ function teardown(): void {
   rpc?.destroy()
   rpc = null
   resetCache()
+  // A consent wall belongs to the document that raised it, so it is invalidated with
+  // everything else the outgoing guest told us (spec §8.4). The incoming document's own
+  // `checkConsent()` re-states it on its first DOM pass.
+  setNeedsInteraction(false)
   if (armWatchdog) {
     clearTimeout(armWatchdog)
     armWatchdog = 0
@@ -533,6 +571,14 @@ async function handshake(): Promise<void> {
     cache.currentTime = o.currentTime
     if (o.duration > 0) cache.duration = o.duration
   })
+  // The guest's consent/sign-in wall, direct from the guest rather than inferred (spec §8.4).
+  // Registered HERE and not on the candidate at step 2, for the same reason as the two above:
+  // a superseded attempt that never became the channel must not write host state. Its guest
+  // still ACKS from a consent page — `ack` is "transport live", never "video ready" (C3) —
+  // so a listener attached earlier would let a dead document's wall outlive it.
+  candidate.on('needs-interaction', (p) => {
+    setNeedsInteraction((p as { active?: boolean } | null)?.active === true)
+  })
   // Registered with the `state`/`time` listeners because it belongs to the same channel and
   // must travel with it; `whenReady()` short-circuits on a `ready` it has already seen, so
   // attaching it at publish cannot miss one (spec §5.6).
@@ -559,6 +605,10 @@ export function getPlayer(): PlayerInstance {
   // (electron#7700); off-screen keeps the guest alive.
   wrapper.style.cssText =
     'position:fixed;left:-99999px;top:0;width:640px;height:360px;z-index:1;overflow:hidden;background:#000;'
+  // Stamped up front so the attribute always EXISTS: a reader that tests
+  // `dataset.needsInteraction === 'true'` cannot otherwise tell "no wall" from "this build has
+  // no readout at all", and `scripts/thread-smoke.mjs` decides SKIP vs FAIL on exactly that.
+  wrapper.dataset.needsInteraction = 'false'
 
   webview = document.createElement('webview') as unknown as WebviewElement
   webview.setAttribute('partition', 'persist:yt-player')
@@ -657,6 +707,9 @@ export function getPlayer(): PlayerInstance {
     },
     get videoId() {
       return videoId
+    },
+    get needsInteraction() {
+      return needsInteraction
     },
 
     mount(hostEl: HTMLElement): void {

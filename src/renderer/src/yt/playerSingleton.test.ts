@@ -586,3 +586,95 @@ describe('playerSingleton navigation (T2, T3, T7, T11)', () => {
     })
   })
 })
+
+/**
+ * Spec §8.4 — the consent readout. `scripts/thread-smoke.mjs` decides SKIP vs FAIL on it, and
+ * the two are not interchangeable: a wall is an environment fact, a dead transport is the bug
+ * this milestone exists to close. Before this, the smoke inferred the difference from the guest
+ * DOM (`diag.consent || !diag.hasVideo || !href.includes('/watch')`) while the guest was already
+ * emitting the fact directly, to zero consumers.
+ *
+ * Both readouts are asserted in every test here: the getter (the typed host API) and the
+ * `data-needs-interaction` attribute (the only one a Playwright `win.evaluate` can reach). A
+ * test that checked one would let the other rot, and the one the smoke reads is the attribute.
+ */
+describe('playerSingleton consent readout (§8.4)', () => {
+  /** Both readouts of the ONE flag, so no test can assert half of it. */
+  function readout(p: ReturnType<typeof getPlayer>): { getter: boolean; attr: string | undefined } {
+    return { getter: p.needsInteraction, attr: p.wrapper.dataset.needsInteraction }
+  }
+
+  it('follows the guest through both edges of a consent lightbox', async () => {
+    const p = getPlayer()
+    const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
+    // Stamped at construction, so a reader can tell "no wall" from "this build has no readout".
+    expect(readout(p)).toEqual({ getter: false, attr: 'false' })
+
+    const guest = await connectGuest(wv)
+    await awaitPublished(p, guest)
+
+    // The guest emits on every TRANSITION of `ytd-consent-bump-v2-lightbox`, not once.
+    guest.rpc.send('needs-interaction', { active: true })
+    await vi.waitFor(() => {
+      expect(readout(p)).toEqual({ getter: true, attr: 'true' })
+    })
+
+    // The falling edge matters as much: the user dismisses the wall and the smoke must stop
+    // skipping. A latch here would turn one wall into a permanently-skipped suite.
+    guest.rpc.send('needs-interaction', { active: false })
+    await vi.waitFor(() => {
+      expect(readout(p)).toEqual({ getter: false, attr: 'false' })
+    })
+  })
+
+  it('is not written by a candidate that never became the channel', async () => {
+    // C3, as a host-side rule: the guest ACKS from a consent page with no `<video>` at all, so
+    // a wall is exactly what an unpublished candidate is most likely to report. Registering the
+    // listener on the candidate rather than at publish (spec §5.5 step 6) would let a
+    // superseded attempt's wall — a document the host has already given up on — set host state.
+    const p = getPlayer()
+    const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
+
+    const t = await domReadyTransfer(wv)
+    const guest = openGuest(t.port, { ack: false })
+    guest.rpc.send('needs-interaction', { active: true })
+
+    // Wait out the DELIVERY, do not merely fail to observe it. `send` posts; the host's
+    // `onmessage` runs a macrotask later, so a synchronous read here is green even when the
+    // listener IS wrongly attached to the candidate — measured: registering it at §5.5 step 2
+    // instead of step 6 left this test 26/26 green until this round-trip was added.
+    // A `res` for this probe cannot arrive before the event above was dispatched: it is the
+    // same port, and MessagePort delivery is ordered. `no handler:` is the host's own reply to
+    // an unknown method (`rpc.ts`), so the rejection IS the proof rather than a timeout.
+    await expect(guest.rpc.invoke('__delivery_probe')).rejects.toThrow('no handler')
+
+    await p.pause()
+    expect(guest.pause).not.toHaveBeenCalled()
+    expect(readout(p)).toEqual({ getter: false, attr: 'false' })
+
+    t.port.postMessage({ t: 'ack', token: String(t.msg) })
+    await awaitPublished(p, guest)
+    guest.rpc.send('needs-interaction', { active: true })
+    await vi.waitFor(() => {
+      expect(readout(p)).toEqual({ getter: true, attr: 'true' })
+    })
+  })
+
+  it('is invalidated with the document that raised it (C2)', async () => {
+    const p = getPlayer()
+    const wv = p.wrapper.querySelector('webview') as unknown as StubbedWebview
+    const guest = await connectGuest(wv)
+    await awaitPublished(p, guest)
+    guest.rpc.send('needs-interaction', { active: true })
+    await vi.waitFor(() => {
+      expect(readout(p)).toEqual({ getter: true, attr: 'true' })
+    })
+
+    // A wall belongs to the document that raised it. Carrying it across a navigation would make
+    // the smoke SKIP the very run in which the new document's transport died — and the guest
+    // cannot correct it from the other side: `checkConsent()` lives in `wireDocument()`, which
+    // no-ops on a re-arm, so nothing re-states the value for an already-wired document.
+    dispatchWebviewEvent(wv, 'did-start-navigation', { isMainFrame: true, isInPlace: false })
+    expect(readout(p)).toEqual({ getter: false, attr: 'false' })
+  })
+})
