@@ -16,9 +16,9 @@ fullscreen button**: two milestones of a player you could only start by clicking
 That is #169.
 
 `TransportBar` is purely presentational — six data props and five callbacks. The callbacks were never
-the obstacle: `usePlayer` returns the full singleton handle (`usePlayer.ts:57`), which already exposes
-`play` / `pause` / `seekTo` / `setPlaybackRate` / `toggleFullscreen`, and calling those mounts nothing,
-so the single-mount invariant (ADR 0016) is not in play. **Three of the six data props had no source,
+the obstacle: `usePlayer` returns the full singleton handle (the `player` field of its `return`), which
+already exposes `play` / `pause` / `seekTo` / `setPlaybackRate` / `toggleFullscreen`, and calling those
+mounts nothing, so the single-mount invariant (ADR 0016) is not in play. **Three of the six data props had no source,
 and two of those are cross-pane:**
 
 - **`followOn` is not a display flag.** It gates `ThreadView`'s follow auto-scroll and

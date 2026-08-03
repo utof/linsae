@@ -234,8 +234,11 @@ export function ThreadView({
   // ── duration write-back (I-4) ─────────────────────────────────────────────
   // Write the resolved duration back to video_sources exactly once per mount.
   // A ref flag prevents repeat writes under React StrictMode double-invoke.
-  // Why: getDuration() is 0 until the video is cued, so we write only after
-  // usePlayerState's re-poll yields a non-null value.
+  // Why: getDuration() is null until the video is cued (the singleton's cache starts
+  // null and both writers are guarded by `duration > 0`), so we write only after
+  // usePlayerState's re-poll yields a non-null value. The ref makes this the LAST
+  // duration latch in the stack — the hooks re-poll forever, so a wrong first value
+  // here is the one that survives to disk (see `load()` in playerSingleton.ts, #211 L2).
   //
   // @see src/renderer/src/yt/usePlayerState.ts (I-4 comment in the rAF loop)
   const durationWrittenRef = useRef(false)

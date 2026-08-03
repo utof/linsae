@@ -695,10 +695,11 @@ export function getPlayer(): PlayerInstance {
       // §5.7: the FULL invalidation, NOT the `rpc?.destroy(); rpc = null` this replaces.
       // That pair looks equivalent and is not — it does not bump `handshakeSeq`, so an
       // attempt already past its port transfer survives the load and publishes the OUTGOING
-      // document's channel. Video A's guest then feeds A's duration into video B's cache,
-      // `usePlayerState` latches the first non-null read, and `ThreadView`'s
-      // `durationWrittenRef` writes it to B's `video_sources` row on disk (#211). It also
-      // left `pendingRpc` holding an open port and the cache full of A's numbers.
+      // document's channel. Video A's guest then feeds A's duration into video B's cache. The
+      // hooks re-poll and would recover, but `ThreadView`'s `durationWrittenRef` latches the
+      // FIRST non-null duration it is handed and never rewrites, so `api.videoSources.upsert`
+      // puts A's number on B's `video_sources` row — ON DISK, surviving restart (#211 L2).
+      // It also left `pendingRpc` holding an open port and the cache full of A's numbers.
       teardown()
       raiseCover()
       webviewEl.src = watchUrl(id)

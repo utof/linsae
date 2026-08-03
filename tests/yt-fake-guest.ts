@@ -1,3 +1,22 @@
+/**
+ * Harness for driving the REAL `playerSingleton` under happy-dom. The filename names the
+ * guest side, but every export serves that one job, from both ends of the transport: the HOST
+ * side (`stubWebview`/`installWebviewStub`/`StubbedWebview` — a stubbed Electron `<webview>`
+ * and the `document.createElement` spy that installs it) and the GUEST side (`fakeGuest` on
+ * the far end of the transferred `MessagePort`, plus `dispatchWebviewEvent`/`domReadyTransfer`/
+ * `connectGuest`/`awaitPublished`, which walk the handshake between the two).
+ *
+ * Nothing here mocks the code under test — both consumers import `playerSingleton.ts`
+ * unmocked; this module only supplies the two Electron-only surfaces happy-dom has no answer
+ * for. It lives in `tests/` rather than beside the singleton because two files now drive the
+ * same singleton, and a second copy of the fixture is how the two drift apart.
+ *
+ * **Every consuming file must call `destroyGuests()` in `afterEach`** — see its docblock for
+ * why nothing here can enforce that.
+ *
+ * @see docs/specs/v0.8.3-player-transport.md §8.1
+ */
+
 import { expect, type Mock, vi } from 'vitest'
 import type { VideoFlags } from '../src/renderer/src/yt/player-state'
 import { createRpc, type Rpc } from '../src/renderer/src/yt/rpc'
@@ -146,7 +165,10 @@ export function installWebviewStub(): () => void {
  *     the handshake.
  *   - `{ ack: false }` — post nothing, for tests that ack by hand later.
  *
- * Caller owns teardown: `guest.rpc.destroy()`.
+ * **Prefer `openGuest`**, which is this function plus enrolment in `destroyGuests()`. Reach for
+ * `fakeGuest` directly only when the guest must outlive the current file's `afterEach` — and
+ * then teardown is yours: `guest.rpc.destroy()`, in a `finally` or its own hook, never as the
+ * test's last statement (that line is skipped exactly when an assertion throws).
  *
  * @see docs/specs/v0.8.3-player-transport.md §8.1
  * @issue utof/linsae#213
@@ -197,12 +219,14 @@ export function fakeGuest(
 const guests: ReturnType<typeof fakeGuest>[] = []
 
 /**
- * `fakeGuest`, with the teardown registered for you.
+ * `fakeGuest`, enrolled in this module's teardown list. **Your file still has to drain that
+ * list: `afterEach(destroyGuests)`.** Nothing is registered with vitest here — see
+ * `destroyGuests`.
  *
- * Why not `guest.rpc.destroy()` as the test's own last statement: that line is skipped exactly
- * when an assertion throws, so a failing test leaves an open `MessagePort` behind. Under
- * `isolate: false` (`vitest.config.ts`) unrestored state "leaks into unrelated later files and
- * fails them in confusing places" — the lesson `tests/pdf-layout.ts` records.
+ * Why enrol rather than `guest.rpc.destroy()` as the test's own last statement: that line is
+ * skipped exactly when an assertion throws, so a failing test leaves an open `MessagePort`
+ * behind. Under `isolate: false` (`vitest.config.ts`) unrestored state "leaks into unrelated
+ * later files and fails them in confusing places" — the lesson `tests/pdf-layout.ts` records.
  *
  * @issue utof/linsae#154
  */
@@ -212,7 +236,22 @@ export function openGuest(...args: Parameters<typeof fakeGuest>): ReturnType<typ
   return g
 }
 
-/** Destroy every guest opened since the last call. Call in `afterEach`. */
+/**
+ * Destroy every guest opened since the last call. **`afterEach(destroyGuests)`, in every file
+ * that opens one** — this module's whole cross-file safety contract is this one call.
+ *
+ * Why it cannot be enforced here: registering a hook at import time would bind it to whichever
+ * file imported first, and `openGuest` has no vitest context to hook from, so the drain has to
+ * be the caller's. Forgetting it fails NOTHING locally — measured 2026-08-03: with the call
+ * commented out of `usePlayerState.test.tsx`, `vitest run src/renderer/src/yt/` is 9 files / 72
+ * tests green. What leaks is an open `MessagePort` per guest plus `createRpc`'s pending 1000ms
+ * `invoke` timers, and the renderer project sets `isolate: false` (`vitest.config.ts`), so one
+ * happy-dom context is shared by every file in a worker: the cost lands as a #203-shaped flake
+ * in some unrelated later file, never as a failure of the test that caused it. Same contract,
+ * and same reasoning, as `installWebviewStub`'s restore fn and `tests/pdf-layout.ts`.
+ *
+ * @issue utof/linsae#154
+ */
 export function destroyGuests(): void {
   guests.splice(0).forEach((g) => {
     g.rpc.destroy()
@@ -229,6 +268,12 @@ export function destroyGuests(): void {
  * Polls fast, and counts `>=` rather than `===`, because the handshake RETRIES on its own: a
  * caller that means to answer this attempt has to be handed the port before its deadline
  * passes, and a caller that doesn't must not be tripped up by attempt 2 landing mid-poll.
+ *
+ * Why: `dispatchWebviewEvent` + a hand-rolled `waitFor` is the four-line preamble of nearly
+ * every handshake test, and the two indexing decisions above are the ones a re-derivation gets
+ * wrong — silently, as a token mismatch that reads like a product bug.
+ *
+ * @see docs/specs/v0.8.3-player-transport.md §5.5
  */
 export async function domReadyTransfer(wv: StubbedWebview): Promise<PortTransfer> {
   const before = wv.transfers.length
@@ -249,6 +294,12 @@ export async function domReadyTransfer(wv: StubbedWebview): Promise<PortTransfer
  *
  * Returning here does NOT mean the channel is published: the host still has to see the ack
  * (spec §5.5 step 6). Callers that go on to invoke must `awaitPublished` first.
+ *
+ * The guest is opened through `openGuest`, so **your file must `afterEach(destroyGuests)`** —
+ * calling this without that leaks a `MessagePort` into every later file in the worker
+ * (`isolate: false`), and nothing here will tell you.
+ *
+ * @see docs/specs/v0.8.3-player-transport.md §5.5 step 6
  */
 export async function connectGuest(wv: StubbedWebview): Promise<ReturnType<typeof fakeGuest>> {
   const t = await domReadyTransfer(wv)
@@ -268,6 +319,8 @@ export async function connectGuest(wv: StubbedWebview): Promise<ReturnType<typeo
  *
  * `player` is typed structurally rather than as `ReturnType<typeof getPlayer>` so this module
  * stays free of an import of the code under test.
+ *
+ * @see docs/specs/v0.8.3-player-transport.md §8.1
  */
 export async function awaitPublished(
   player: { pause(): Promise<void> },

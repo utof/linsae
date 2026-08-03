@@ -83,8 +83,8 @@ const BAR_SLOT: React.CSSProperties = { flex: '0 0 auto', padding: 8 }
  *
  * The transport is driven by `usePlayer`'s OWN return value — deliberately NOT a
  * second `usePlayerState(videoId)`. Both hooks return the identical
- * `{ player, currentTime, state, duration }` shape (usePlayer.ts:57 /
- * usePlayerState.ts:58); this component already runs `usePlayer` and was simply
+ * `{ player, currentTime, state, duration }` shape (the `return` of `usePlayer` and of
+ * `usePlayerState`); this component already runs `usePlayer` and was simply
  * discarding it, so adding `usePlayerState` here would only duplicate the ~5 Hz rAF
  * poll and the `onStateChange` subscription. `player` is the full singleton handle
  * (`playerRef = useRef(getPlayer())`), which is what the five callbacks need.

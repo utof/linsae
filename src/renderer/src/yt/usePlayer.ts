@@ -5,10 +5,13 @@ import { getPlayer } from './playerSingleton'
 /**
  * Mounts the singleton into `hostRef`, loads `videoId`, and exposes a coarse
  * playhead tick (~5 Hz via rAF) plus a duration re-read on every one of those
- * ticks (getDuration() returns 0/null until the video is cued, and the
- * singleton drops the cached value on every guest reset — a one-shot, or a
- * latch on the first non-null read, would leave the scrubber scaled to null or
- * to the outgoing video for the life of the mount; #211 L2, spec §7 L2).
+ * ticks (getDuration() returns null — never 0 — until the video is cued: the
+ * singleton's `cache.duration` starts null and both writers are guarded by
+ * `duration > 0` (`applyState` and the `time` handler in playerSingleton.ts), so
+ * the IFrame API's own 0 never reaches a caller. The singleton also drops the
+ * cached value on every guest reset, so a one-shot — or a latch on the first
+ * non-null read — would leave the scrubber scaled to null or to the outgoing
+ * video for the life of the mount; #211 L2, spec §7 L2).
  *
  * Why: singleton pattern documented in playerSingleton.ts + ADR 0008/0016.
  * The webview is NEVER re-parented (moving a <webview> destroys its guest —
