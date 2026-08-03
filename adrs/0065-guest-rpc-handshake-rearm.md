@@ -11,8 +11,8 @@ Date: 2026-08-03
 ## Context
 
 The docked YouTube player drives the in-page `<video>` over a `MessagePort` RPC transferred into the
-guest with `contentWindow.postMessage` (ADR 0016 — its header and Task-1 spike context; the transfer
-is not one of 0016's numbered decisions, D7 being the injection mechanism and D9 the guest-as-string).
+guest with `contentWindow.postMessage` (ADR 0016 §1's Task-1 spike, and §6 fact 1; the transfer is
+not one of 0016's numbered decisions, D7 being the injection mechanism and D9 the guest-as-string).
 Until v0.8.3 the host opened that channel in
 a single `dom-ready` handler whose first line was `if (rpc || !wv) return`, and which assigned
 `rpc = createRpc(port1)` **before** injecting the guest runtime and **before** transferring the port.
@@ -57,6 +57,10 @@ trusted to be followed by anything.
 The direction matters. Making the *early* signal authoritative would leave a `dom-ready` that arrives
 with no tracked navigation unhandled; making the *committed* signal authoritative handles both, and
 costs one extra `resetCache()` per document, which is correct anyway.
+
+**These two halves are load-bearing together and the suite only defends them together** —
+re-adding the `rpc` term to `handshake()` alone measures 26/26 green. See Consequences §1; it is the
+single most important fact in this document for anyone about to "simplify" the guard.
 
 **D2 — `rpc` is non-null iff a channel has been acknowledged by the document that is currently
 committed (contract C1).**
@@ -151,8 +155,10 @@ regressions:
   either one alone** — a re-arm no-ops in `wireDocument()` on `domWired`, so nothing re-calls
   `attachVideo` and dropping its `if (v === videoEl) return` in isolation changes nothing. The
   measured falsifier is `wireDocument(); if (videoEl) { var vv = videoEl; videoEl = null;
-  attachVideo(vv); }` → `expected 33 to be 22`, recorded in `youtube-guest.test.ts`. Nominating a
-  single clause here would let a future agent test it, see green, and conclude the guard is dead.
+  attachVideo(vv); }`, applied in `initPort`. It reds `youtube-guest.test.ts`'s with-`<video>` C5 test
+  with **`expected 22 to be 11`** (1 failed / 5 passed) — at the test's *anti-vacuity* guard, not at
+  its delta assertion, which never runs. Re-measured 2026-08-03. Nominating a single clause here
+  would let a future agent test it, see green, and conclude the guard is dead.
 
 **D7 — the preload path stays rejected; ADR 0016 D7/D8 is untouched.**
 
@@ -230,9 +236,17 @@ Two things make this worth a permanent record:
    thread switch away from a video whose duration is cached, that first read returns the **outgoing**
    video's duration, `ThreadView`'s `durationWrittenRef` latches it, and `api.videoSources.upsert`
    writes it to the incoming video's row. That is #211's exact symptom reached ahead of `load()`
-   rather than through it. **Traced through source, not executed** — it is recorded here so it is
-   investigated as a known gap rather than rediscovered as a new bug, and it is why #211 should be
-   closed on the `load()`-path claim its acceptance actually names.
+   rather than through it.
+
+   **Since measured, and it reproduces** — 20/20 race configurations across four mocked-IPC
+   latencies and four frame cadences, stable over 3 consecutive full-matrix runs, with a negative
+   control returning the correct value in the same harness. The stale write beat `load(B)` by
+   10–30 ms in every configuration, and in 9 of 12 sweep rows the poll's first read landed *before*
+   the note query that both sides gate on resolved — so the fast side leads by construction, not by
+   luck. Method, results and the preserved probe:
+   `docs/research/2026-08-03-issue211-second-route.md`. Tracked as
+   [#223](https://github.com/utof/linsae/issues/223); spec §9's third acceptance criterion carries a
+   CORRECTED marker recording that the milestone does not meet it.
 
    (Note also that the tree position of the two hooks is a static fact, not a user choice: the player
    pane's `homeDock` is `'right'` in the `PANES` registry, `openPane` always uses it, `hydrate` drops

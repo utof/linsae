@@ -510,6 +510,13 @@ function raceAck(candidate: Rpc, token: string): Promise<boolean> {
  * only belong to a document that is provably gone. HEAD's `if (rpc || !wv) return` is exactly
  * the guard that let a consent wall's channel refuse the real watch page forever.
  *
+ * **Putting the term back is invisible to the test suite — measured 26/26 green.** The `rpc`
+ * term is dead code only *because* `dom-ready` calls `teardown()` below; restore both and this
+ * file's own T1 test goes red. So the suite defends the pair, never this line alone. Read ADR
+ * 0065 before touching it.
+ *
+ * @see adrs/0065-guest-rpc-handshake-rearm.md (D1/D2, and Consequences on why the suite cannot
+ *   catch this reversal by itself)
  * @issue utof/linsae#213
  */
 async function handshake(): Promise<void> {
@@ -663,6 +670,10 @@ export function getPlayer(): PlayerInstance {
     // where `did-start-navigation` is only an early warning that may never commit — so this
     // is the authoritative invalidation point, and it runs BEFORE the cover is re-armed
     // (`teardown()` clears that timer) and before the handshake (spec §5.4).
+    //
+    // This call is half of a pair: it is what makes `handshake()`'s missing `rpc` entry term
+    // safe. Delete it and #213 returns — the channel latches to whichever document committed
+    // first. See ADR 0065 (D1/D2).
     teardown()
     // A document committed, so the cover's deadline restarts with it. Armed OUTSIDE the
     // handshake on purpose: it has to survive every way the handshake can end, including

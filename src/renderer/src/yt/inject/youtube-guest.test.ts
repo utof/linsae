@@ -336,7 +336,9 @@ describe('guestRuntime — idempotent injection, re-armable receiver (C5)', () =
     // gets no `ready`/`state` snapshot" gap — re-attaching the existing element on re-arm:
     //   wireDocument();
     //   if (videoEl) { var vv = videoEl; videoEl = null; attachVideo(vv); }
-    // That reds this test alone (`expected 33 to be 22`) and nothing else in the file.
+    // That reds this test alone (`expected 22 to be 11`, 1 failed / 5 passed) and nothing else in
+    // the file. Note it fails at the anti-vacuity guard below, NOT at the delta assertion — under
+    // the mutation the count is already 22 at that guard, so the delta never runs.
     // Whoever closes #222 must re-emit the snapshot WITHOUT re-running `attachVideo`.
     // (Merely hoisting `findVideo()` out of `wireDocument()` is caught by test 1 instead, and
     // does not double the 11 — `attachVideo`'s `if (v === videoEl) return` guard stops it.)
