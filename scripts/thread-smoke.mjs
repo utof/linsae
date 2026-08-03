@@ -279,18 +279,23 @@ async function forceDocumentSwap(win) {
   // precisely to catch a same-value write.
   //
   // Bounded to ~400ms (5 × 80ms), not "until it takes": each accepted assignment supersedes the
-  // navigation the previous one started — "Set the ongoing navigation for navigable to
-  // navigationId. This will have the effect of aborting other ongoing navigations of navigable"
-  // (HTML Standard §7.4.2.2 "Navigate", step 20) — so an unbounded loop would keep restarting
-  // the homepage load and it could never commit.
+  // navigation the previous one started. HTML Standard §7.4.2.2 "Navigate", step 20 — the
+  // normative sentence is "Set the ongoing navigation for navigable to navigationId."; the
+  // consequence is its attached NOTE, quoted separately because it is a note and not normative
+  // text: "This will have the effect of aborting other ongoing navigations of navigable, since
+  // at certain points during navigation changes to the ongoing navigation will cause further
+  // work to be abandoned." So an unbounded loop would keep restarting the homepage load and it
+  // could never commit.
   //
   // The 400ms itself is REASONING, not measurement, and is deliberately not dressed as one: it
   // is long enough to outlast the `createGuest()` → attach-IPC window described above (the only
   // window that swallows an assignment) and short enough that no network document commits
-  // underneath it. What IS measured is the outcome either side of the bound — one assignment is
-  // dropped, five are not (spec §8.3, correction 1). Reading `wv.getWebContentsId()` back would
-  // make 400ms a ceiling rather than a schedule; not done here because it would change working,
-  // measured code (utof/linsae#219).
+  // underneath it. What IS measured is the outcome either side of the bound, from two different
+  // sources: that ONE assignment is dropped is spec §8.3, correction 1; that FIVE are not is
+  // this file's own runs, recorded in `forceDocumentSwap`'s docblock above — every one of them
+  // reports the guest on the homepage. Reading `wv.getWebContentsId()` back would make 400ms a
+  // ceiling rather than a schedule; not done here because it would change working, measured
+  // code (utof/linsae#219).
   const hijacked = await win.waitForFunction(
     (home) => {
       const wv = document.querySelector('#yt-player-wrapper webview')
@@ -326,9 +331,36 @@ async function forceDocumentSwap(win) {
   // Waiting on `g` alone therefore cannot tell "the homepage never committed" from "the host
   // refused to inject": on the pre-fix source neither breaks the loop, both read as 60 × 500ms
   // of silence, and the swap-back happens 30s later for no reason. So break on `g` when it
-  // comes, and otherwise stop `HOME_GRACE_POLLS` after the homepage is first seen committed —
+  // comes, and otherwise stop `HOME_GRACE_POLLS` after the homepage is first seen COMMITTED —
   // a committed homepage is the only thing step 3 actually needs.
-  const HOME_GRACE_POLLS = 10
+  //
+  // "Committed" is `^https?:` AND NOT `/watch`, and the first half is load-bearing rather than
+  // decoration: `about:blank` is the guest's initial empty document — what `location.href`
+  // reports between attach and the homepage's commit — and `!includes('/watch')` alone accepts
+  // it. Counting `about:blank` polls would start the grace clock before the homepage exists,
+  // when the clock is there to bound the HOST's injection. The loud failure mode is a flake
+  // (the grace expires on `about:blank`, and the premise gate FAILs saying "the guest reports
+  // about:blank"). The quiet one is worse and is why this is a blocker rather than a tidy-up: a
+  // grace spent on `about:blank` can also expire before the homepage's `dom-ready`, step 3
+  // fires first, the pre-fix build latches `rpc` to the WATCH page, and all six live gates pass
+  // on broken code with `forcedSwapCommitted` passing too — #213 re-entering one layer up,
+  // through the door this bound opened.
+  //
+  // The bound therefore has to cover commit → `dom-ready` → `safeExec(guestRuntime)`, not
+  // commit alone: 20 × 500ms = 10s. That 10s is REASONING, like the 400ms above, and is not
+  // dressed as measurement — what IS measured is narrower, from the per-poll `href` logged
+  // below over 4 cold-partition runs (2 branch, 2 pre-fix `d06c951`, 2026-08-03):
+  //   - the homepage was ALREADY committed at poll 1 in 4/4; `about:blank` was never observed,
+  //     so the tightened term has so far cost nothing and prevented nothing on this machine —
+  //     it is insurance against a slower cold load, not a fix for an observed flake;
+  //   - on the branch the sentinel arrived at poll 2 — ONE poll of grace consumed, so 20 is
+  //     ~20× the observed need and 10 would also have sufficed here;
+  //   - on the pre-fix source it never arrives, the loop ends at poll 21, and the raise costs
+  //     that run ~5s (10.5s vs 5.5s). That asymmetry is the whole argument: too-long only
+  //     lengthens a run that is already failing, too-short greens a broken build.
+  // The 60-poll ceiling still caps the genuinely-broken case at 30s, and this still cuts ~20s
+  // of the ~25s the unbounded wait used to spend on every falsification run.
+  const HOME_GRACE_POLLS = 20
   let armed = null
   let homePolls = 0
   for (let i = 0; i < 60; i++) {
@@ -342,7 +374,11 @@ async function forceDocumentSwap(win) {
         return null
       }
     })
-    const onHome = !!armed && !armed.href.includes('/watch')
+    // Per-poll, not just the final reading: the poll at which the homepage commits and the poll
+    // at which it arms are the only evidence that HOME_GRACE_POLLS is a bound and not a guess,
+    // and they are re-measured by every run rather than trusted from this comment.
+    console.log(`thread-smoke: [force-swap] poll ${i + 1}/60 — ${JSON.stringify(armed)}`)
+    const onHome = !!armed && /^https?:/.test(armed.href) && !armed.href.includes('/watch')
     if (onHome) homePolls++
     if (onHome && armed.g === true) break
     if (homePolls > HOME_GRACE_POLLS) break
@@ -364,6 +400,10 @@ async function forceDocumentSwap(win) {
   //
   // This is a PREMISE check, not a fix check: it must pass on the pre-fix source as well as on
   // the branch. Hence `href` and never `g` — see the paragraph above.
+  //
+  // RESIDUAL, named rather than fixed: this proves "on a committed non-watch document at
+  // swap-back time", not that the homepage committed BEFORE the watch page. Ordering still
+  // rests on step 1's 400ms argument, not on an observation (utof/linsae#220).
   await gate('forcedSwapCommitted', 'the homepage committed as the FIRST document', () => {
     assert.ok(
       armed,
@@ -1069,10 +1109,16 @@ try {
       // not pass" while proving nothing, which is how #169 shipped. The raw `diag` stays in the
       // failure message below so a human still sees the href and the `<video>`.
       //
-      // Not authoritative on the C6 watchdog path: the guest's `checkConsent()` lives in
-      // `wireDocument()`, which no-ops on a re-arm, so a channel re-armed against an
-      // already-wired document never re-states the wall. Reads false there, which fails rather
-      // than skips — the safe direction, and the reason this is a readout and not a proof.
+      // NOT authoritative after ANY re-arm of an already-wired document. The C6 watchdog is the
+      // loudest such path, not the only one — the ordinary ack-timeout retry reaches the same
+      // state: `retryLater` re-enters `handshake()`, whose `safeExec(guestRuntime(token))` hits
+      // the guest runtime's `if (window.__linsaeGuest) { arm(NONCE); return; }` short-circuit,
+      // so the new port lands in `initPort` and the `wireDocument()` it calls no-ops on
+      // `domWired`. `checkConsent()` therefore never re-runs and `lastConsentActive` stays
+      // latched in the guest's closure. Concretely: on a walled document whose FIRST attempt's
+      // ack times out, the attempt that does publish reads false here — and false fails rather
+      // than skips, which is the safe direction and the reason this is a readout, not a proof.
+      // (Mirrors `PlayerInstance.needsInteraction`'s TSDoc in `playerSingleton.ts`.)
       //
       // `insertCSS` re-fires on every dom-ready and is NOT evidence the RPC came up. Neither is
       // an `ack`: the guest acks from a consent page with no `<video>` at all (contract C3).
