@@ -1,10 +1,11 @@
 /**
  * Harness for driving the REAL `playerSingleton` under happy-dom. The filename names the
  * guest side, but every export serves that one job, from both ends of the transport: the HOST
- * side (`stubWebview`/`installWebviewStub`/`StubbedWebview` — a stubbed Electron `<webview>`
- * and the `document.createElement` spy that installs it) and the GUEST side (`fakeGuest` on
- * the far end of the transferred `MessagePort`, plus `dispatchWebviewEvent`/`domReadyTransfer`/
- * `connectGuest`/`awaitPublished`, which walk the handshake between the two).
+ * side (`installWebviewStub`/`StubbedWebview` — a stubbed Electron `<webview>` and the
+ * `document.createElement` spy that installs it) and the GUEST side (`openGuest`, and the
+ * lower-level `fakeGuest` it wraps, on the far end of the transferred `MessagePort`, plus
+ * `dispatchWebviewEvent`/`domReadyTransfer`/`connectGuest`/`awaitPublished`, which walk the
+ * handshake between the two).
  *
  * Nothing here mocks the code under test — both consumers import `playerSingleton.ts`
  * unmocked; this module only supplies the two Electron-only surfaces happy-dom has no answer
