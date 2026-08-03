@@ -8,6 +8,10 @@ type Wire =
   | { t: 'res'; id: number; ok: boolean; value?: unknown; error?: string }
   | { t: 'event'; event: string; payload: unknown }
   | { t: 'ready' }
+  // `ack` and `ready` are DIFFERENT facts and neither may be inferred from the other:
+  // `ack` says the transport is live and is sent before any DOM work (so it fires even on
+  // a consent page), `ready` says a `<video>` was hooked. Spec §6.5 / contract C3.
+  | { t: 'ack'; token: string }
 
 export interface Rpc {
   invoke<T = unknown>(method: string, ...args: unknown[]): Promise<T>
@@ -16,6 +20,22 @@ export interface Rpc {
   on(event: string, cb: (payload: unknown) => void): () => void
   signalReady(): void
   whenReady(): Promise<void>
+  /**
+   * Resolves `true` once an `{ t: 'ack' }` echoing exactly `token` has arrived on this
+   * channel — including one that arrived BEFORE this call, since the last ack token is
+   * retained (the same hazard `whenReady`'s `isReady` short-circuit closes).
+   *
+   * Why the token rather than a bare `{ t: 'ack' }`: a late ack from a superseded handshake
+   * attempt or a dead document must be inert, never publish a channel (contract C4).
+   *
+   * Why it never rejects and never self-times-out: the handshake owns the deadline, as
+   * `Promise.race([whenAck(token), delay(ackTimeoutMs) → false])` (spec §5.5 step 4). The
+   * `false` arm of the return type is therefore always the caller's, never this promise's.
+   *
+   * @see docs/specs/v0.8.3-player-transport.md §6.6
+   * @issue utof/linsae#213
+   */
+  whenAck(token: string): Promise<boolean>
   destroy(): void
 }
 
@@ -40,6 +60,13 @@ export function createRpc(port: MessagePort, opts: { invokeTimeoutMs?: number } 
       r()
     }
   })
+  // The last ack token seen on this channel, powering `whenAck`'s after-the-fact
+  // short-circuit. ONE token rather than a set of them: each handshake attempt builds a
+  // fresh `MessageChannel` (spec §5.5 step 2), so a channel legitimately sees exactly one
+  // ack. Last-write-wins therefore cannot discard a token a caller could still ask about,
+  // and a chatty guest cannot grow this without bound.
+  let lastAck: string | null = null
+  const ackWaiters = new Set<{ token: string; resolve: (v: boolean) => void }>()
   const post = (m: Wire, transfer: Transferable[] = []) => port.postMessage(m, transfer)
 
   port.onmessage = async (e: MessageEvent) => {
@@ -68,6 +95,14 @@ export function createRpc(port: MessagePort, opts: { invokeTimeoutMs?: number } 
       })
     } else if (m.t === 'ready') {
       readyResolve?.()
+    } else if (m.t === 'ack') {
+      lastAck = m.token
+      ackWaiters.forEach((w) => {
+        if (w.token === m.token) {
+          ackWaiters.delete(w)
+          w.resolve(true)
+        }
+      })
     }
   }
   port.start?.()
@@ -107,7 +142,18 @@ export function createRpc(port: MessagePort, opts: { invokeTimeoutMs?: number } 
     whenReady() {
       return isReady ? Promise.resolve() : readyPromise
     },
+    whenAck(token) {
+      if (lastAck === token) return Promise.resolve(true)
+      return new Promise<boolean>((resolve) => {
+        ackWaiters.add({ token, resolve })
+      })
+    },
     destroy() {
+      // In-flight `invoke` promises reject via their own timers; in-flight `whenAck`
+      // promises are abandoned unsettled, deliberately. Every specified caller races a
+      // deadline it owns (spec §5.5 step 4), so nothing awaits one bare, and the whole
+      // `Rpc` closure — waiters included — becomes unreachable together. Do NOT "fix"
+      // this by resolving them `false`: that would publish a channel on a dead port.
       pending.forEach((p) => {
         clearTimeout(p.timer)
       })

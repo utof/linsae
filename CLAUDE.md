@@ -157,6 +157,8 @@ Each milestone = its own branch named `v0.x/feature` (e.g. `v0.2/youtube-annotat
 
 **There is no CI, by decision (user, 2026-08-01):** single developer, and lefthook is the authoritative gate — it already runs biome, both typechecks, the full vitest suite, knip, and the design-token check on every code commit, so a hosted re-run buys nothing but latency. `gh pr checks` reporting "no checks reported" is expected, not a misconfiguration. Don't re-propose CI without a reason that postdates this line.
 
+**Carve-out — hosted jobs that lefthook CANNOT run are not "CI" for this rule (user, 2026-08-03).** The rule above bans *redundancy with lefthook*; every clause of its rationale is about a hosted re-run buying nothing. A job that lefthook cannot perform is a different thing and is allowed, provided it is **`workflow_dispatch`-only (never on push/PR)** and adds nothing to `package.json`. The instance that prompted this: `.github/workflows/mutation.yml` (v0.8.3) installs Stryker into the runner for manual mutation sweeps — 46s for 20 mutants, so a repo-wide run is hours and cannot live in the dev loop. **`gh pr checks` must still report "no checks reported"** on an ordinary PR; if a carve-out job ever starts gating a merge, it has become CI and this carve-out no longer covers it.
+
 **Commit messages follow Conventional Commits** (`feat:` / `fix:`, and others; optional scope `feat(scope)`). The plan's literal `git commit -m "…"` examples predate this rule — apply a conventional prefix when executing them.
 
 ## Repo hygiene

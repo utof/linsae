@@ -262,8 +262,8 @@ describe('PlayerPane transport bar (B2, #169)', () => {
   it('(f) renders every transport control beside the docked player', async () => {
     await renderPaneWithVideo()
 
-    // Native YouTube controls are suppressed in the guest (youtube-guest.ts:121,
-    // `v.controls = false`), so these ARE the player's only control surface.
+    // Native YouTube controls are suppressed in the guest (youtube-guest.ts's
+    // attachVideo, `v.controls = false`), so these ARE the player's only control surface.
     expect(screen.getByLabelText('play')).toBeInTheDocument()
     expect(screen.getByTestId('scrubber-track')).toBeInTheDocument()
     expect(screen.getByLabelText('playback speed')).toBeInTheDocument()
@@ -338,10 +338,10 @@ describe('PlayerPane transport bar (B2, #169)', () => {
   })
 
   it('(m) RE-PUSHES the rate when the video changes (load() reloads the guest, wiping it)', async () => {
-    // load(id) reassigns webviewEl.src (playerSingleton.ts:299-307) — a full guest
-    // reload that destroys the <video> the guest's setRate wrote to
-    // (youtube-guest.ts:203). The store is the sole holder of `rate` and Player has no
-    // getPlaybackRate(), so without this the badge reads 1.25× while playback runs 1×.
+    // load(id) reassigns webviewEl.src (playerSingleton.ts's load) — a full guest
+    // reload that destroys the <video> the guest's setRate handler wrote to
+    // (youtube-guest.ts's initPort). The store is the sole holder of `rate` and Player
+    // has no getPlaybackRate(), so without this the badge reads 1.25× while playback runs 1×.
     mockVideoIdSetting('vid-A')
     const { qc } = renderPane()
     await waitFor(() => expect(load).toHaveBeenCalledWith('vid-A'))
@@ -360,10 +360,11 @@ describe('PlayerPane transport bar (B2, #169)', () => {
   })
 
   it('(n) RE-PUSHES the rate on a guest state event (the port is null right after load)', async () => {
-    // setPlaybackRate is `rpc?.invoke('setRate', r)` (playerSingleton.ts:337-339) and
-    // load() nulls `rpc` (:303) until the reloaded guest's dom-ready re-creates it, so a
-    // push fired at videoId-change time is swallowed. A state event is the only public
-    // signal that the new guest's port is live — hence it is also a re-push trigger.
+    // setPlaybackRate is `rpc?.invoke('setRate', r)` (playerSingleton.ts's
+    // setPlaybackRate) and load() calls teardown(), which destroys and nulls `rpc`, until
+    // the reloaded guest's dom-ready re-handshakes it, so a push fired at videoId-change
+    // time is swallowed. A state event is the only public signal that the new guest's
+    // port is live — hence it is also a re-push trigger.
     await renderPaneWithVideo()
     fireEvent.click(screen.getByLabelText('playback speed'))
     setPlaybackRate.mockClear()

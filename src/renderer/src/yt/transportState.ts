@@ -74,19 +74,20 @@ interface TransportState {
  *   the entire point of the B5 lift.
  *
  *   **"Player-scoped" names THIS STORE's lifetime, not the player's.** `rate` is held
- *   ONLY here: `load(id)` reassigns the webview's `src` (`playerSingleton.ts:299-307`),
+ *   ONLY here: `load(id)` reassigns the webview's `src` (`playerSingleton.ts`'s `load`),
  *   a full guest reload, which destroys the `<video>` that the guest's `setRate`
- *   handler writes to (`yt/inject/youtube-guest.ts:203`), and `Player` exposes no
+ *   handler writes to (`yt/inject/youtube-guest.ts`'s `initPort`), and `Player` exposes no
  *   `getPlaybackRate()` to read the truth back. The store never pushes. Re-pushing on
  *   video change is therefore the CONSUMER's standing obligation; without it the badge
  *   and actual playback diverge silently.
  *
  *   **Copy `PlayerPane.tsx`'s effect, not the obvious one.** Keying it on
- *   `[videoId, rate]` alone is inert: `load()` sets `rpc = null` (`playerSingleton.ts:303`)
- *   BEFORE reassigning `src`, and `setPlaybackRate` is `rpc?.invoke('setRate', r)`
- *   (`:337-339`), so the push fired at videoId-change time is swallowed by the optional
- *   chain. The deps must also carry the player `state` — a guest state event is the only
- *   public signal that the reloaded port is live. See `PlayerPane.tsx:109-124`, and
+ *   `[videoId, rate]` alone is inert: `load()` calls `teardown()`, which destroys and
+ *   nulls `rpc`, BEFORE reassigning `src`, and `setPlaybackRate` is
+ *   `rpc?.invoke('setRate', r)` (`playerSingleton.ts`'s `setPlaybackRate`), so the push
+ *   fired at videoId-change time is swallowed by the optional chain. The deps must also
+ *   carry the player `state` — a guest state event is the only public signal that the
+ *   reloaded port is live. See `PlayerPane.tsx`'s rate re-push effect, and
  *   `PlayerPane.test.tsx`'s `(n)`, which covers exactly that path.
  * - `markers` are THREAD-scoped, and `useMarkerPublisher` below owns that lifecycle —
  *   NOT the caller. `ThreadView` is the sole publisher and calls the hook; the hook

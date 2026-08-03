@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "testRunner": "vitest",
+  "plugins": ["@stryker-mutator/vitest-runner"],
+  "vitest": { "configFile": "vitest.stryker.config.ts" },
+  "coverageAnalysis": "perTest",
+  "reporters": ["html", "json", "clear-text", "progress"],
+  "timeoutMS": 10000,
+  "concurrency": 2,
+  "thresholds": { "high": 80, "low": 60, "break": null },
+  "mutate": [
+    "src/renderer/src/yt/**/*.ts",
+    "!src/renderer/src/yt/**/*.test.{ts,tsx}",
+    "!src/renderer/src/yt/inject/youtube-guest.ts",
+    "!src/renderer/src/yt/inject/clean-css.ts"
+  ]
+}

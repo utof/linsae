@@ -13,9 +13,9 @@
  *
  * WHY THE TRANSPORT IS GATED HERE AND NOT IN VITEST (#169). v0.6.4's B5 lifted the player
  * into the right-dock `PlayerPane` and dropped `ThreadView`'s `TransportBar`; YouTube's own
- * controls are suppressed in the guest (`yt/inject/youtube-guest.ts:121`, `v.controls =
- * false`), so for two milestones the docked player had no scrubber, speed badge, follow
- * toggle or fullscreen at all. v0.8.2 B1–B3 put them back. **Unit tests cannot show that
+ * controls are suppressed in the guest (`attachVideo`'s `v.controls = false`, in
+ * `yt/inject/youtube-guest.ts`), so for two milestones the docked player had no scrubber,
+ * speed badge, follow toggle or fullscreen at all. v0.8.2 B1–B3 put them back. **Unit tests cannot show that
  * they work**, because every claim the bar makes is geometric and happy-dom has no layout:
  *   - `getBoundingClientRect()` is all zeros there, so `TransportBar.tsx:123` takes its
  *     `rect.width > 0 ? … : 0` fallback and every track click seeks to 0. No test anywhere
@@ -23,7 +23,7 @@
  *   - `jumpPillDirection` reads `playheadY (0) < viewTop (0) + 8` and answers `'up'`
  *     unconditionally (`thread/rail-layout.ts:180`), so the pill's direction is untestable.
  *   - `duration` is only ever written from an RPC `state`/`time` event
- *     (`playerSingleton.ts:115-126`), so with no guest there is no fill, no ticks, and
+ *     (`playerSingleton.ts`'s `applyState`), so with no guest there is no fill, no ticks, and
  *     `TransportBar.tsx:120` swallows every track click. That is why the geometry gates are
  *     the OPT-IN half: not preference, necessity.
  * Every transport gate below carries its own anti-vacuity premise (and two carry a live
@@ -32,6 +32,7 @@
  *
  * Run: pnpm smoke:thread   (after `pnpm exec electron-vite build && pnpm rebuild:electron`)
  *      SMOKE_PLAYBACK=1 pnpm smoke:thread   (adds the live-guest half)
+ *      SMOKE_FORCE_SWAP=1 pnpm smoke:thread (the #213 gate — implies SMOKE_PLAYBACK)
  *
  * NOTE: The watch page may show a consent/bot wall on a fresh `persist:yt-player`
  * partition. The CI-safe checks tolerate it (insertCSS + guest run regardless of
@@ -54,7 +55,24 @@ import { _electron as electron } from 'playwright'
 
 const VIDEO_ID = 'M7lc1UVf-VE'
 const VIDEO_TITLE = 'Smoke Video'
-const SMOKE_PLAYBACK = process.env.SMOKE_PLAYBACK === '1'
+
+/**
+ * The #213 gate (spec §8.3): force the guest to commit a SECOND document, so the live-guest
+ * half below measures whether the host RE-ARMS its channel rather than whether it got lucky on
+ * the first load. See `forceDocumentSwap` for the mechanism and why it is a `src` reassignment
+ * rather than session interception.
+ */
+const FORCE_SWAP = process.env.SMOKE_FORCE_SWAP === '1'
+
+/**
+ * `SMOKE_FORCE_SWAP=1` IMPLIES `SMOKE_PLAYBACK=1` (spec §8.3 step 0), and that is not a
+ * convenience. Everything the gate measures — `transportDuration`, the SKIP-vs-FAIL split — is
+ * inside the `if (!SMOKE_PLAYBACK)` branch below, and every live gate's default is
+ * `SMOKE_PLAYBACK ? 'FAIL' : 'SKIP'`. Without the implication, `SMOKE_FORCE_SWAP=1` on its own
+ * performs the swap, skips every gate that could see the consequences, and exits 0 — a green
+ * run over the exact defect the flag exists to expose.
+ */
+const SMOKE_PLAYBACK = process.env.SMOKE_PLAYBACK === '1' || FORCE_SWAP
 
 /**
  * Second video, seeded only under SMOKE_PLAYBACK, for the rate-survives-a-guest-reload
@@ -108,6 +126,12 @@ const results = {
   transportBarNotCovered: 'FAIL',
   followCrossesPanes: 'FAIL',
   rateBadgeCycles: 'FAIL',
+  // ── the #213 forced swap's own PREMISE (SMOKE_FORCE_SWAP=1) ────────────────
+  // Everything below is measured under "the homepage committed as the FIRST document". If that
+  // did not happen the run silently degrades to the ordinary single-document scenario, six
+  // PASSes print and the process exits 0 over the exact defect the flag exists to expose — so
+  // the premise is a recorded gate, not a log line. See `forceDocumentSwap` step 2.
+  forcedSwapCommitted: FORCE_SWAP ? 'FAIL' : 'SKIP',
   // ── transport — live guest only ───────────────────────────────────────────
   transportDuration: SMOKE_PLAYBACK ? 'FAIL' : 'SKIP',
   fullscreenSelector: SMOKE_PLAYBACK ? 'FAIL' : 'SKIP',
@@ -177,13 +201,241 @@ function openThreadButton(win, videoId, title) {
   })
 }
 
+/** Where the forced swap parks the guest first — see `forceDocumentSwap`. */
+const YT_HOME = 'https://www.youtube.com/'
+
+/**
+ * SMOKE_FORCE_SWAP=1 — make the guest commit TWO documents, deterministically (spec §8.3).
+ *
+ * #213 is the host latching its RPC channel to whichever document committed FIRST and never
+ * re-arming. In the wild the first document is a consent wall or the redirect it bounces
+ * through, so the watch page that follows talks to nobody; the player looks alive (`play()`
+ * bypasses the RPC, and the chrome-hiding CSS re-fires outside the handshake) while duration,
+ * pause, seek and rate are all dead. It reproduces on maybe one run in seven, which is why no
+ * gate ever caught it. This makes it 1 in 1: park the guest on the YouTube HOME PAGE, let its
+ * runtime come up there, then send it to the watch page. The homepage is not a contrivance —
+ * it is literally where the consent wall redirects.
+ *
+ * Three properties this leans on, none of them optional:
+ *
+ *  - It reassigns `wv.src` DIRECTLY rather than calling the host's `load()`. `load()` runs
+ *    `teardown()`, which is the fix; routing through it would test nothing.
+ *  - It hijacks the FIRST load, in-page, on the same rAF tick the element's `src` appears. The
+ *    homepage has to be the first document to COMMIT: the host latches on the first
+ *    `dom-ready` it sees, so if the watch page wins the race the channel is good, the duration
+ *    arrives, and the gate passes on broken code. `waitForFunction` polls inside the renderer,
+ *    so the assignment lands without a round-trip's worth of latency.
+ *  - It waits for `window.__linsaeGuest` before swapping back — bounded, because on the code
+ *    this exists to fail the sentinel never arrives. That sentinel is published LAST by the
+ *    guest runtime, after the port receiver is installed, so it means "armed" rather than "the
+ *    script started". The `href` term is what stops the outgoing watch document — which also
+ *    carries the sentinel — from answering for the homepage.
+ *  - It RECORDS the premise as the `forcedSwapCommitted` gate, on the fix-independent `href`
+ *    and never on the sentinel. Without that, a swap that quietly failed to take leaves the six
+ *    live gates measuring an ordinary single-document run and exiting 0 (step 2).
+ *
+ * NOT session interception (spec §8.3 rules it out with reasons): `webRequest` cannot serve a
+ * body, `data:`/`file:` redirects are blocked for top-frame navigations, and
+ * `protocol.handle('https', …)` on a `persist:` partition is undocumented and unverified.
+ *
+ * The swap does NOT exercise the C6 watchdog's re-arm. If a run ever shows an ack with no
+ * duration behind it, that is the known "a re-armed channel gets no initial snapshot" gap
+ * (`attachVideo` early-returns on the same `<video>`, so no `ready` and no initial `state`),
+ * not a transport failure. Do not read an `ack` as "video ready" either — the guest acks from a
+ * consent page with no `<video>` at all (contract C3).
+ *
+ * MEASURED 2026-08-03, this script against the pre-fix source (`d06c951`) in a detached
+ * worktree, versus the same script on the branch:
+ *   - pre-fix  3/3 `transportDuration FAIL`, each with `consent:false, hasVideo:true` and the
+ *              guest's own `<video>` reporting 1343.661s while the bar read nothing. Never SKIP.
+ *   - post-fix 3/3 PASS on all six live gates.
+ * The differential is visible in this function's own log line: pre-fix the homepage reports
+ * `{g: false}` — the host refuses to re-inject, which IS the defect — post-fix `{g: true}`.
+ *
+ * @issue utof/linsae#213
+ */
+async function forceDocumentSwap(win) {
+  // Step 1. Hijack the first load, in the same rAF tick the `src` appears. Returning the old
+  // value out of that tick is deliberate: it is the only moment the watch URL is guaranteed to
+  // still be readable, and step 3 needs it verbatim rather than a second guess at `watchUrl()`.
+  //
+  // ONE assignment is not enough, and the reason is Electron's, not ours. `SrcAttribute.parse()`
+  // (`lib/renderer/web-view/web-view-attributes.ts` @ v42.5.0) reads:
+  //
+  //     if (this.webViewImpl.guestInstanceId == null) {
+  //       if (this.webViewImpl.beforeFirstNavigation) {
+  //         this.webViewImpl.beforeFirstNavigation = false;
+  //         this.webViewImpl.createGuest();          // ← snapshots src via buildParams()
+  //       }
+  //       return;                                    // ← everything else here is DROPPED
+  //     }
+  //
+  // `load()`'s own assignment is the one that calls `createGuest()`, and `guestInstanceId` only
+  // arrives an IPC round-trip later (`createGuest().then(attachGuestInstance)`), so an
+  // assignment landing in between hits that bare `return` and vanishes — measured: the first
+  // build of this gate set the homepage, was silently ignored, and the guest reported
+  // `location.href` still on `/watch` 30s later. Re-asserting past the window is the fix, and
+  // re-assigning the SAME value works because `SrcAttribute`'s MutationObserver exists
+  // precisely to catch a same-value write.
+  //
+  // Bounded to ~400ms (5 × 80ms), not "until it takes": each accepted assignment supersedes the
+  // navigation the previous one started. HTML Standard §7.4.2.2 "Navigate", step 20 — the
+  // normative sentence is "Set the ongoing navigation for navigable to navigationId."; the
+  // consequence is its attached NOTE, quoted separately because it is a note and not normative
+  // text: "This will have the effect of aborting other ongoing navigations of navigable, since
+  // at certain points during navigation changes to the ongoing navigation will cause further
+  // work to be abandoned." So an unbounded loop would keep restarting the homepage load and it
+  // could never commit.
+  //
+  // The 400ms itself is REASONING, not measurement, and is deliberately not dressed as one: it
+  // is long enough to outlast the `createGuest()` → attach-IPC window described above (the only
+  // window that swallows an assignment) and short enough that no network document commits
+  // underneath it. What IS measured is the outcome either side of the bound, from two different
+  // sources: that ONE assignment is dropped is spec §8.3, correction 1; that FIVE are not is
+  // this file's own runs, recorded in `forceDocumentSwap`'s docblock above — every one of them
+  // reports the guest on the homepage. Reading `wv.getWebContentsId()` back would make 400ms a
+  // ceiling rather than a schedule; not done here because it would change working, measured
+  // code (utof/linsae#219).
+  const hijacked = await win.waitForFunction(
+    (home) => {
+      const wv = document.querySelector('#yt-player-wrapper webview')
+      const src = wv?.getAttribute('src') ?? ''
+      if (!src.includes('/watch')) return null
+      wv.src = home
+      return src
+    },
+    YT_HOME,
+    { timeout: 30_000, polling: 'raf' },
+  )
+  const watchSrc = await hijacked.jsonValue()
+  for (let i = 0; i < 5; i++) {
+    await sleep(80)
+    await win.evaluate((home) => {
+      const wv = document.querySelector('#yt-player-wrapper webview')
+      if (wv) wv.src = home
+    }, YT_HOME)
+  }
+  console.log(`thread-smoke: [force-swap] hijacked the first load — ${YT_HOME} before ${watchSrc}`)
+
+  // Step 2. Wait for the guest runtime to be ARMED on the homepage document. `__linsaeGuest` is
+  // published LAST by the runtime, after the port receiver is installed, so it means "armed"
+  // rather than "the script started". The `href` term is what stops the outgoing watch
+  // document — which carries the sentinel too — from answering for the homepage.
+  //
+  // The two terms are polled together but they are NOT the same claim, and only ONE of them is
+  // the premise the gate below records:
+  //   - `href` is FIX-INDEPENDENT. It is the guest reporting its own `location` over
+  //     `executeJavaScript`, which answers whether or not the host ever injected anything.
+  //   - `g` is the host's injection — precisely what is broken on the code this run exists to
+  //     falsify, where the host refuses to re-inject and the sentinel is legitimately absent.
+  // Waiting on `g` alone therefore cannot tell "the homepage never committed" from "the host
+  // refused to inject": on the pre-fix source neither breaks the loop, both read as 60 × 500ms
+  // of silence, and the swap-back happens 30s later for no reason. So break on `g` when it
+  // comes, and otherwise stop `HOME_GRACE_POLLS` after the homepage is first seen COMMITTED —
+  // a committed homepage is the only thing step 3 actually needs.
+  //
+  // "Committed" is `^https?:` AND NOT `/watch`, and the first half is load-bearing rather than
+  // decoration: `about:blank` is the guest's initial empty document — what `location.href`
+  // reports between attach and the homepage's commit — and `!includes('/watch')` alone accepts
+  // it. Counting `about:blank` polls would start the grace clock before the homepage exists,
+  // when the clock is there to bound the HOST's injection. The loud failure mode is a flake
+  // (the grace expires on `about:blank`, and the premise gate FAILs saying "the guest reports
+  // about:blank"). The quiet one is worse and is why this is a blocker rather than a tidy-up: a
+  // grace spent on `about:blank` can also expire before the homepage's `dom-ready`, step 3
+  // fires first, the pre-fix build latches `rpc` to the WATCH page, and all six live gates pass
+  // on broken code with `forcedSwapCommitted` passing too — #213 re-entering one layer up,
+  // through the door this bound opened.
+  //
+  // The bound therefore has to cover commit → `dom-ready` → `safeExec(guestRuntime)`, not
+  // commit alone: 20 × 500ms = 10s. That 10s is REASONING, like the 400ms above, and is not
+  // dressed as measurement — what IS measured is narrower, from the per-poll `href` logged
+  // below over 4 cold-partition runs (2 branch, 2 pre-fix `d06c951`, 2026-08-03):
+  //   - the homepage was ALREADY committed at poll 1 in 4/4; `about:blank` was never observed,
+  //     so the tightened term has so far cost nothing and prevented nothing on this machine —
+  //     it is insurance against a slower cold load, not a fix for an observed flake;
+  //   - on the branch the sentinel arrived at poll 2 — ONE poll of grace consumed, so 20 is
+  //     ~20× the observed need and 10 would also have sufficed here;
+  //   - on the pre-fix source it never arrives, the loop ends at poll 21, and the raise costs
+  //     that run ~5s (10.5s vs 5.5s). That asymmetry is the whole argument: too-long only
+  //     lengthens a run that is already failing, too-short greens a broken build.
+  // The 60-poll ceiling still caps the genuinely-broken case at 30s, and this still cuts ~20s
+  // of the ~25s the unbounded wait used to spend on every falsification run.
+  const HOME_GRACE_POLLS = 20
+  let armed = null
+  let homePolls = 0
+  for (let i = 0; i < 60; i++) {
+    await sleep(500)
+    armed = await win.evaluate(async () => {
+      const wv = document.querySelector('#yt-player-wrapper webview')
+      if (!wv) return null
+      try {
+        return await wv.executeJavaScript('({g: !!window.__linsaeGuest, href: location.href})')
+      } catch (_e) {
+        return null
+      }
+    })
+    // Per-poll, not just the final reading: the poll at which the homepage commits and the poll
+    // at which it arms are the only evidence that HOME_GRACE_POLLS is a bound and not a guess,
+    // and they are re-measured by every run rather than trusted from this comment.
+    console.log(`thread-smoke: [force-swap] poll ${i + 1}/60 — ${JSON.stringify(armed)}`)
+    const onHome = !!armed && /^https?:/.test(armed.href) && !armed.href.includes('/watch')
+    if (onHome) homePolls++
+    if (onHome && armed.g === true) break
+    if (homePolls > HOME_GRACE_POLLS) break
+  }
+  // `g` is a DIAGNOSTIC, never an assertion. On the code this run exists to fail the host may
+  // refuse to inject into the homepage at all, so `{g: false}` is the EXPECTED pre-fix reading;
+  // a throw on it would kill the run before any gate recorded anything, turning an observable
+  // FAIL into a crash — and gating on it would fail here for the very reason the live gates are
+  // supposed to discover, converting the falsification into a tautology.
+  console.log(`thread-smoke: [force-swap] homepage guest = ${JSON.stringify(armed)}`)
+
+  // The premise, RECORDED rather than logged — the point of B1. Everything the six live gates
+  // measure under SMOKE_FORCE_SWAP is conditional on the homepage having committed first; if it
+  // did not, this function returns normally, the gates run against a single-document scenario,
+  // six PASSes print and the process exits 0. That is not hypothetical: the first build of this
+  // gate set the homepage, had it silently dropped (step 1), and the guest sat on `/watch` for
+  // 30s — caught by a human reading a log line. `skipGate`'s rule ("a silent skip is
+  // indistinguishable from a pass") is the same rule, one level up.
+  //
+  // This is a PREMISE check, not a fix check: it must pass on the pre-fix source as well as on
+  // the branch. Hence `href` and never `g` — see the paragraph above.
+  //
+  // RESIDUAL, named rather than fixed: this proves "on a committed non-watch document at
+  // swap-back time", not that the homepage committed BEFORE the watch page. Ordering still
+  // rests on step 1's 400ms argument, not on an observation (utof/linsae#220).
+  await gate('forcedSwapCommitted', 'the homepage committed as the FIRST document', () => {
+    assert.ok(
+      armed,
+      'the guest never answered executeJavaScript — the premise of every live gate below is unverified, so their results say nothing about the re-arm',
+    )
+    assert.match(
+      armed.href,
+      /^https?:/,
+      `the guest reports ${armed.href}, which is not a committed http(s) document — there is no second document for the host to re-arm against`,
+    )
+    assert.ok(
+      !armed.href.includes('/watch'),
+      `the guest is still on ${armed.href} — the homepage assignment never took, so the watch page is the FIRST document and this run cannot see #213 at all`,
+    )
+    return `guest on ${armed.href} before the swap back (__linsaeGuest ${armed.g} — diagnostic, not gated)`
+  })
+
+  // Step 3. Back to the watch page. This is the document the host must re-arm against.
+  await win.evaluate((src) => {
+    const wv = document.querySelector('#yt-player-wrapper webview')
+    if (wv) wv.src = src
+  }, watchSrc)
+  console.log(`thread-smoke: [force-swap] second document requested — ${watchSrc}`)
+}
+
 try {
   const win = await app.firstWindow()
   await win.waitForLoadState('domcontentloaded')
 
   // `playerSingleton` reports guest-runtime and port-transfer trouble to the renderer
   // console and swallows it otherwise (`safeExec`, `safeInsertCSS`, and the `postMessage`
-  // try/catch at playerSingleton.ts:190-195). Collect those: when the live half below finds
+  // try/catch inside `handshake()`). Collect those: when the live half below finds
   // no RPC, they are the difference between "a consent wall ate the port" and a real break.
   // The listener survives the reload — it is bound to the Page, not the document.
   const playerLogs = []
@@ -295,6 +547,11 @@ try {
     throw new Error('feed card thread affordance not found — the card did not render')
   }
 
+  // Immediately after the click and BEFORE every poll below, because the swap has to beat the
+  // watch page's own `dom-ready` (see `forceDocumentSwap`). Nothing between here and the click
+  // may await anything slower than a rAF.
+  if (FORCE_SWAP) await forceDocumentSwap(win)
+
   // ── CI-safe check 1: webview present ──────────────────────────────────────
   // Poll (≤40s, 2s interval) for a <webview> inside #yt-player-wrapper whose
   // src contains youtube.com/watch. NOT an iframe — the new engine is a <webview>.
@@ -359,7 +616,7 @@ try {
   // POLLED, and run through `gate()` rather than a bare `assert` (v0.8.2 B4). Two changes,
   // neither of them a relaxation — the assertion is identical and it still fails the run:
   //   - one 3s sleep was a race against `insertCSS`, which is fired from the guest's
-  //     'dom-ready' (playerSingleton.ts:253-260) and re-fired on every SPA navigation.
+  //     'dom-ready' listener (playerSingleton.ts) and re-fired on every SPA navigation.
   //     Polling to 20s distinguishes "the CSS never applied" from "we looked too early".
   //   - a bare assert here threw past every check below it, so a CLEAN_CSS problem hid the
   //     entire transport suite. "Which of these broke" is the product of a diagnostic smoke
@@ -586,7 +843,8 @@ try {
       )
     }
     assert.ok(g.bar.height >= 20, `the bar is ${g.bar.height}px tall — collapsed, not laid out`)
-    // The fixed wrapper tracks the host placeholder rect each frame (playerSingleton.ts:150).
+    // The fixed wrapper tracks the host placeholder rect each frame (playerSingleton.ts's
+    // syncBounds).
     for (const k of ['left', 'top', 'width', 'height']) {
       assert.ok(
         Math.abs(g.wrapper[k] - g.host[k]) <= 1,
@@ -662,8 +920,8 @@ try {
     assert.equal(await jumpPill.count(), 0, 'the jump pill is showing before anything scrolled')
 
     // Park the column at the bottom. Twice, 400ms apart: the mount-time follow scroll is
-    // `behavior: 'smooth'` (ThreadView.tsx:317) and overrides a single assignment made
-    // while it is still animating.
+    // `behavior: 'smooth'` (`ThreadView`'s `scrollClusterIntoView`) and overrides a single
+    // assignment made while it is still animating.
     const toBottom = () =>
       win.evaluate(() => {
         const el = document.querySelector('[data-testid="thread-scroll"]')
@@ -720,8 +978,9 @@ try {
       const v = document.querySelector('[data-testid="thread-scroll"]').getBoundingClientRect()
       return (p.top + p.height / 2 - v.top) / v.height
     })
-    // 'up' pins the pill to the TOP of the column, 'down' to the bottom (ThreadView.tsx:800).
-    // Reading it back positionally is the only way to see the direction at all.
+    // 'up' pins the pill to the TOP of the column, 'down' to the bottom — `ThreadView`'s
+    // jump-pill wrapper switches `top: 14` for `bottom: 14` on `pillDir`. Reading it back
+    // positionally is the only way to see the direction at all.
     assert.ok(
       rel < 0.5,
       `the pill rendered ${(rel * 100).toFixed(0)}% down the column — that is the 'down' placement, but the playhead is above the viewport`,
@@ -806,14 +1065,14 @@ try {
 
     /**
      * The HOST's view of duration, off the bar's own readout — 0 until an RPC `state`/`time`
-     * event lands (`playerSingleton.ts:115-126`, `:185-188`).
+     * event lands (`playerSingleton.ts`'s `applyState` and its `'time'` listener).
      *
      * This, not "the guest has a <video>", is the precondition for every gate below. A guest
      * can be playing perfectly while the host knows nothing: `play()` goes straight in over
-     * `executeJavaScript` (`:315`) whereas pause/seek/rate are RPC invokes and duration only
-     * ever arrives as an RPC event. An earlier revision of this gate keyed on the guest video
-     * and produced four confident FAILs pointing at the transport for a port that was never
-     * connected.
+     * `executeJavaScript` (`play()`'s `safeExec`) whereas pause/seek/rate are RPC invokes
+     * and duration only ever arrives as an RPC event. An earlier revision of this gate
+     * keyed on the guest video and produced four confident FAILs pointing at the transport
+     * for a port that was never connected.
      */
     const hostDurationSec = async () => {
       const txt = await pane.locator('[data-testid="transport-time"]').textContent()
@@ -838,13 +1097,35 @@ try {
       const diag = await inGuest(GUEST_DIAG)
       console.log(`thread-smoke: guest diagnostic = ${JSON.stringify(diag)}`)
       console.log(`thread-smoke: [player] console lines = ${JSON.stringify(playerLogs)}`)
-      // A consent / sign-in wall redirects the guest before the first 'dom-ready', and
-      // `onDomReady`'s `if (rpc) return` guard (playerSingleton.ts:175) means the runtime is
-      // never re-injected into the watch page that follows — so the port is orphaned and no
-      // event ever reaches the host. `insertCSS` re-fires on every dom-ready and is therefore
-      // NOT evidence the RPC came up. This is the documented fresh-partition limitation
-      // (header note + spec §11): dismiss the wall manually in `pnpm dev`, then re-run.
-      const walled = !diag || diag.consent || !diag.hasVideo || !diag.href?.includes('/watch')
+      // WALL OR BREAK — the one question this branch exists to answer, now asked of the guest
+      // instead of guessed from its DOM (spec §8.4). The guest emits `needs-interaction` on
+      // every consent-lightbox transition; the host records it and mirrors it onto the wrapper
+      // as `data-needs-interaction`, which is the only host state a `win.evaluate` can reach.
+      //
+      // Replaces `!diag || diag.consent || !diag.hasVideo || !diag.href?.includes('/watch')`.
+      // That predicate skipped strictly MORE, and every extra term skipped on evidence that a
+      // dead transport produces too: a host with no channel sees no duration, no `<video>` news
+      // and no navigation news, so "the guest is not where I expected" was as consistent with
+      // #213 as with a wall. Skipping is the dangerous direction — a SKIP satisfies "the run did
+      // not pass" while proving nothing, which is how #169 shipped. The raw `diag` stays in the
+      // failure message below so a human still sees the href and the `<video>`.
+      //
+      // NOT authoritative after ANY re-arm of an already-wired document. The C6 watchdog is the
+      // loudest such path, not the only one — the ordinary ack-timeout retry reaches the same
+      // state: `retryLater` re-enters `handshake()`, whose `safeExec(guestRuntime(token))` hits
+      // the guest runtime's `if (window.__linsaeGuest) { arm(NONCE); return; }` short-circuit,
+      // so the new port lands in `initPort` and the `wireDocument()` it calls no-ops on
+      // `domWired`. `checkConsent()` therefore never re-runs and `lastConsentActive` stays
+      // latched in the guest's closure. Concretely: on a walled document whose FIRST attempt's
+      // ack times out, the attempt that does publish reads false here — and false fails rather
+      // than skips, which is the safe direction and the reason this is a readout, not a proof.
+      // (Mirrors `PlayerInstance.needsInteraction`'s TSDoc in `playerSingleton.ts`.)
+      //
+      // `insertCSS` re-fires on every dom-ready and is NOT evidence the RPC came up. Neither is
+      // an `ack`: the guest acks from a consent page with no `<video>` at all (contract C3).
+      const walled = await win.evaluate(
+        () => document.getElementById('yt-player-wrapper')?.dataset.needsInteraction === 'true',
+      )
       const why = `the host never received a duration after 60s (guest ${JSON.stringify(diag)}, media ${JSON.stringify(media)}, logs ${JSON.stringify(playerLogs)})`
       if (walled) {
         for (const k of [
@@ -855,15 +1136,18 @@ try {
           'markerTicksPositioned',
           'rateSurvivesGuestReload',
         ]) {
-          skipGate(k, `${why} — consent/sign-in wall on the persist:yt-player partition`)
+          skipGate(
+            k,
+            `${why} — the guest reported needs-interaction: a consent/sign-in wall on the persist:yt-player partition`,
+          )
         }
       } else {
-        // The guest is on the watch page with a healthy <video> and the host still knows
-        // nothing: that is the MessagePort RPC itself, and it is a real failure, not an
-        // environment artefact. Fail it rather than skipping, and skip only the dependants.
+        // No guest ever reported a wall and the host still knows nothing: that is the
+        // MessagePort RPC itself, and it is a real failure, not an environment artefact. Fail
+        // it rather than skipping, and skip only the dependants.
         await gate('transportDuration', 'the guest duration reached the bar', async () => {
           assert.fail(
-            `${why} — the guest is on ${diag.href} with a <video>, so this is the MessagePort RPC (playerSingleton.ts:174-205), not a consent wall`,
+            `${why} — no needs-interaction from the guest, so this is the host↔guest handshake in playerSingleton.ts, not a consent wall`,
           )
         })
         for (const k of [
@@ -898,7 +1182,7 @@ try {
         'YouTube still has the button fullscreen drives',
         async () => {
           // `toggleFullscreen` shells out to `#movie_player .ytp-fullscreen-button`
-          // (playerSingleton.ts:359-362). A spy on the host proves nothing about YouTube's
+          // (playerSingleton.ts). A spy on the host proves nothing about YouTube's
           // DOM; this asserts the one thing that actually rots — the selector. Whether the
           // guest then enters fullscreen is not asserted (see the report/ADR): an OOPIF
           // fullscreen transition under a bare X server is not a claim this can make.
@@ -999,11 +1283,12 @@ try {
         //
         // It does not, and that is the app's behaviour rather than a measurement problem.
         // A seek made while PAUSED reaches the media element but emits nothing the host can
-        // see: the guest listens for `seeked` and not `seeking`
-        // (`inject/youtube-guest.ts:131`), its `time` rAF loop only runs while playing
-        // (`:100`), and a far seek into an unbuffered region may never complete at all in an
-        // unauthenticated session (the `seekTo` note at `:193-197`, ADR 0017). Observed
-        // here: the guest sat at 61.9% of the duration while the bar's fill read 0.1%.
+        // see: the guest listens for `seeked` and not `seeking` (`attachVideo`'s `mediaEvents`
+        // list in `inject/youtube-guest.ts`), its `time` rAF loop only runs while playing
+        // (`startRaf`, which bails on `v.paused`), and a far seek into an unbuffered region may
+        // never complete at all in an unauthenticated session (the guest's `seekTo` handler and
+        // its `allowSeekAhead` note, ADR 0017). Observed here: the guest sat at 61.9% of the
+        // duration while the bar's fill read 0.1%.
         //
         // A resume-then-measure variant would make the fill observable, but the guest RPC
         // handshake is currently unreliable enough (see the precondition above) that it
@@ -1062,13 +1347,13 @@ try {
       )
 
       await gate('rateSurvivesGuestReload', 'the rate lands in a RELOADED guest', async () => {
-        // The subtle one. `load(id)` reassigns the webview `src` (playerSingleton.ts:299-307)
-        // — a full guest reload that destroys the <video> the guest's setRate handler wrote
-        // to (inject/youtube-guest.ts:203) — and `Player` has no getPlaybackRate() to read
-        // the truth back, so the store is the only holder. PlayerPane re-pushes on the next
-        // `state` event because that is the only public signal the NEW port is live
-        // (PlayerPane.tsx:119-121). A unit test can only simulate the callback; the ordering
-        // inside onDomReady is exactly what it cannot see.
+        // The subtle one. `load(id)` reassigns the webview `src` — a full guest reload that
+        // destroys the <video> the guest's `setRate` handler wrote to — and `Player` has no
+        // getPlaybackRate() to read the truth back, so the store is the only holder. PlayerPane
+        // re-pushes on the next `state` event because that is the only public signal the NEW
+        // port is live (its rate `useEffect`, keyed on `state`). A unit test can only simulate
+        // the callback; where the re-push lands relative to the new document's handshake is
+        // exactly what it cannot see.
         await speedBtn.click()
         await speedBtn.click()
         assert.equal((await speedBtn.textContent())?.trim(), '1.5×', 'the badge is not at 1.5×')
@@ -1162,6 +1447,11 @@ try {
   line('rate badge cycles', 'rateBadgeCycles')
   console.log('')
   console.log(
+    `thread-smoke RESULTS (#213 forced swap)${FORCE_SWAP ? '' : ' [set SMOKE_FORCE_SWAP=1]'}:`,
+  )
+  line('homepage committed 1st', 'forcedSwapCommitted')
+  console.log('')
+  console.log(
     `thread-smoke RESULTS (transport) — live guest${SMOKE_PLAYBACK ? '' : ' [set SMOKE_PLAYBACK=1]'}:`,
   )
   line('duration reaches bar', 'transportDuration')
@@ -1192,6 +1482,10 @@ try {
     results.rateBadgeCycles,
   ]
   const liveChecks = [
+    // The forced swap's premise belongs here rather than with the CI-safe set: like the six
+    // below it is only ever asked for by a flag, and like them it is fatal the moment it is. A
+    // run whose premise did not hold must not be able to exit 0 on six PASSes underneath it.
+    results.forcedSwapCommitted,
     results.transportDuration,
     results.fullscreenSelector,
     results.transportPlayPause,
